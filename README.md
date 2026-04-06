@@ -157,7 +157,7 @@ For Claude Code / Cursor users — AI helps set up your subscription:
 | Package | What | Required? |
 |---------|------|-----------|
 | `@onesub/server` | Express middleware — the core | **Yes** |
-| `onesub` | React Native SDK (hook + paywall) | Optional |
+| `@onesub/sdk` | React Native SDK (hook + paywall) | Optional |
 | `@onesub/mcp-server` | AI setup tools | Optional |
 | `@onesub/shared` | Shared types | Auto-installed |
 

@@ -1,6 +1,6 @@
 {
   "name": "@onesub/mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server for onesub — AI tools for setting up in-app subscriptions in React Native / Expo apps",
   "type": "module",
   "bin": {
@@ -8,7 +8,9 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
