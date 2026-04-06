@@ -26,11 +26,11 @@ interface DiagnosisResult {
   references?: string[];
 }
 
-export async function runTroubleshoot(args: {
+export function runTroubleshoot(args: {
   issue: string;
   platform?: 'ios' | 'android' | 'both';
   logs?: string;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+}): { content: Array<{ type: 'text'; text: string }> } {
   const platform = args.platform ?? 'both';
   const issueLower = args.issue.toLowerCase();
 

@@ -1,9 +1,7 @@
-import type { SubscriptionInfo, GoogleNotificationPayload } from '@onesub/shared';
+import type { SubscriptionInfo, GoogleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
+import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 
-interface GoogleConfig {
-  packageName: string;
-  serviceAccountKey?: string;
-}
+type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
 
 /**
  * Google Play Developer API v3 — SubscriptionPurchase resource (partial).
@@ -71,27 +69,31 @@ interface GoogleDeveloperNotification {
  * different service accounts (rare but possible) are cached independently.
  */
 let cachedToken: { token: string; expiresAt: number; key: string } | null = null;
+let refreshPromise: Promise<string> | null = null;
 
 /**
  * Obtain a Google OAuth2 access token, returning a cached token if it has more
  * than 60 seconds of remaining validity. Google tokens are valid for 3600 seconds,
  * so this avoids a network round-trip on every API call.
+ *
+ * Promise deduplication prevents a thundering herd: concurrent callers that
+ * arrive while the token is being refreshed all await the same in-flight
+ * request instead of each issuing their own.
  */
 async function getCachedAccessToken(serviceAccountKey: string): Promise<string> {
   const now = Date.now();
-  if (
-    cachedToken !== null &&
-    cachedToken.key === serviceAccountKey &&
-    cachedToken.expiresAt - now > 60_000
-  ) {
+  if (cachedToken && cachedToken.key === serviceAccountKey && cachedToken.expiresAt - now > 60_000) {
     return cachedToken.token;
   }
-
-  const token = await getAccessToken(serviceAccountKey);
-  // Google tokens expire in 3600 s; store with a conservative margin already
-  // accounted for in the read path (60 s buffer above).
-  cachedToken = { token, expiresAt: now + 3600_000, key: serviceAccountKey };
-  return token;
+  if (!refreshPromise) {
+    refreshPromise = getAccessToken(serviceAccountKey)
+      .then((token) => {
+        cachedToken = { token, expiresAt: Date.now() + 3_600_000, key: serviceAccountKey };
+        return token;
+      })
+      .finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
 }
 
 /**
@@ -187,12 +189,12 @@ function deriveStatus(purchase: GoogleSubscriptionPurchase): SubscriptionInfo['s
 
   if (expiryMs > now) {
     // paymentState 0 = pending (grace period treated as active)
-    return 'active';
+    return SUBSCRIPTION_STATUS.ACTIVE;
   }
 
-  if (purchase.cancelReason !== undefined) return 'canceled';
+  if (purchase.cancelReason !== undefined) return SUBSCRIPTION_STATUS.CANCELED;
 
-  return 'expired';
+  return SUBSCRIPTION_STATUS.EXPIRED;
 }
 
 /**

@@ -14,7 +14,8 @@
   "dependencies": {
     "@onesub/shared": "*",
     "express": "^4.19.2",
-    "jose": "^5.9.6"
+    "jose": "^5.9.6",
+    "zod": "^3.23.0"
   },
   "peerDependencies": {
     "pg": ">=8.0.0"

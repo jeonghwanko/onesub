@@ -40,8 +40,8 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
 
   const router = Router();
 
-  // Parse JSON bodies for all OneSub routes
-  router.use(express.json());
+  // Parse JSON bodies for all OneSub routes (50 kb cap to prevent payload flooding)
+  router.use(express.json({ limit: '50kb' }));
 
   router.use(createValidateRouter(config, store));
   router.use(createStatusRouter(store));

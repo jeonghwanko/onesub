@@ -12,12 +12,12 @@ export const setupInputSchema = {
     .describe(`URL where @onesub/server is hosted (default: http://localhost:${DEFAULT_PORT})`),
 };
 
-export async function runSetup(args: {
+export function runSetup(args: {
   projectPath: string;
   productId: string;
   price: string;
   serverUrl?: string;
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+}): { content: Array<{ type: 'text'; text: string }> } {
   const serverUrl = args.serverUrl ?? `http://localhost:${DEFAULT_PORT}`;
 
   const output = buildSetupInstructions({

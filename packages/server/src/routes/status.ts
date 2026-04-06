@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import type { StatusResponse } from '@onesub/shared';
-import { ROUTES } from '@onesub/shared';
+import { ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 
 export function createStatusRouter(store: SubscriptionStore): Router {
@@ -22,6 +22,12 @@ export function createStatusRouter(store: SubscriptionStore): Router {
       return;
     }
 
+    if (userId.length > 256) {
+      const response: StatusResponse = { active: false, subscription: null };
+      res.status(400).json({ ...response, error: 'userId must not exceed 256 characters' });
+      return;
+    }
+
     try {
       const sub = await store.getByUserId(userId);
 
@@ -31,7 +37,7 @@ export function createStatusRouter(store: SubscriptionStore): Router {
         return;
       }
 
-      const active = sub.status === 'active';
+      const active = sub.status === SUBSCRIPTION_STATUS.ACTIVE;
       const response: StatusResponse = { active, subscription: sub };
       res.status(200).json(response);
     } catch (err) {

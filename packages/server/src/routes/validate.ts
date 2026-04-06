@@ -1,10 +1,18 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import type { ValidateReceiptRequest, ValidateReceiptResponse, OneSubServerConfig } from '@onesub/shared';
+import { z } from 'zod';
+import type { ValidateReceiptResponse, OneSubServerConfig } from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceipt } from '../providers/google.js';
+
+const validateSchema = z.object({
+  platform: z.enum(['apple', 'google']),
+  receipt: z.string().min(1).max(10000),
+  userId: z.string().min(1).max(256),
+  productId: z.string().min(1).max(256),
+});
 
 export function createValidateRouter(
   config: OneSubServerConfig,
@@ -13,28 +21,24 @@ export function createValidateRouter(
   const router = Router();
 
   router.post(ROUTES.VALIDATE, async (req: Request, res: Response) => {
-    const body = req.body as Partial<ValidateReceiptRequest>;
+    let platform: string;
+    let receipt: string;
+    let userId: string;
+    let productId: string;
 
-    const { platform, receipt, userId, productId } = body;
-
-    if (!platform || !receipt || !userId || !productId) {
-      const response: ValidateReceiptResponse = {
-        valid: false,
-        subscription: null,
-        error: 'Missing required fields: platform, receipt, userId, productId',
-      };
-      res.status(400).json(response);
-      return;
-    }
-
-    if (platform !== 'apple' && platform !== 'google') {
-      const response: ValidateReceiptResponse = {
-        valid: false,
-        subscription: null,
-        error: 'platform must be "apple" or "google"',
-      };
-      res.status(400).json(response);
-      return;
+    try {
+      ({ platform, receipt, userId, productId } = validateSchema.parse(req.body));
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        const response: ValidateReceiptResponse = {
+          valid: false,
+          subscription: null,
+          error: err.issues.map((e: { message: string }) => e.message).join(', '),
+        };
+        res.status(400).json(response);
+        return;
+      }
+      throw err;
     }
 
     try {

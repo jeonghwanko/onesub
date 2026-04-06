@@ -15,12 +15,12 @@ export const addPaywallInputSchema = {
     .describe('Visual style of the paywall screen'),
 };
 
-export async function runAddPaywall(args: {
+export function runAddPaywall(args: {
   title: string;
   features: string[];
   price: string;
   style?: 'minimal' | 'gradient' | 'card';
-}): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+}): { content: Array<{ type: 'text'; text: string }> } {
   const style = args.style ?? 'minimal';
   let code: string;
 
@@ -77,12 +77,6 @@ export async function runAddPaywall(args: {
   ].join('\n');
 
   return { content: [{ type: 'text', text }] };
-}
-
-function featureLines(features: string[], indent = '        '): string {
-  return features
-    .map((f) => `${indent}<Text style={styles.feature}>✓ {/* ${f} */}</Text>`)
-    .join('\n');
 }
 
 function featureData(features: string[]): string {

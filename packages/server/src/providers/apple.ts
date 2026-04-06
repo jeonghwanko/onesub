@@ -1,14 +1,8 @@
 import { decodeJwt, createRemoteJWKSet, jwtVerify } from 'jose';
-import type { SubscriptionInfo, AppleNotificationPayload } from '@onesub/shared';
+import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
+import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 
-interface AppleConfig {
-  bundleId: string;
-  sharedSecret?: string;
-  keyId?: string;
-  issuerId?: string;
-  privateKey?: string;
-  skipJwsVerification?: boolean;
-}
+type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
 /**
  * Decoded Apple signed transaction (JWS payload).
@@ -55,6 +49,13 @@ const appleJWKS = createRemoteJWKSet(
  */
 export async function decodeJws<T>(jws: string, skipVerification = false): Promise<T> {
   if (skipVerification) {
+    if (process.env['NODE_ENV'] === 'production') {
+      console.warn(
+        '[onesub/apple] WARNING: skipJwsVerification is enabled in production. ' +
+          'JWS signatures are NOT being verified. This is a security risk. ' +
+          'Disable skipJwsVerification before going live.'
+      );
+    }
     // Dev/test path: decode payload only, no signature check
     return decodeJwt(jws) as T;
   }
@@ -70,17 +71,17 @@ function deriveStatus(
   tx: AppleTransactionPayload,
   renewal: AppleRenewalPayload | null
 ): SubscriptionInfo['status'] {
-  if (tx.revocationDate) return 'canceled';
+  if (tx.revocationDate) return SUBSCRIPTION_STATUS.CANCELED;
 
   const now = Date.now();
   const expires = tx.expiresDate ?? 0;
 
-  if (expires > now) return 'active';
+  if (expires > now) return SUBSCRIPTION_STATUS.ACTIVE;
 
   // Expired — check if it was voluntarily canceled
-  if (renewal?.autoRenewStatus === 0) return 'canceled';
+  if (renewal?.autoRenewStatus === 0) return SUBSCRIPTION_STATUS.CANCELED;
 
-  return 'expired';
+  return SUBSCRIPTION_STATUS.EXPIRED;
 }
 
 /**
@@ -126,7 +127,7 @@ export async function validateAppleReceipt(
     expiresAt: new Date(tx.expiresDate).toISOString(),
     originalTransactionId: tx.originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
-    willRenew: status === 'active', // refined by renewal info in webhook
+    willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
   };
 }
 

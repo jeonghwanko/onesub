@@ -7,7 +7,7 @@ import type {
   OneSubServerConfig,
   SubscriptionInfo,
 } from '@onesub/shared';
-import { ROUTES } from '@onesub/shared';
+import { ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { decodeAppleNotification, decodeJws } from '../providers/apple.js';
 import {
@@ -95,35 +95,26 @@ export function createWebhookRouter(
    * Apple sends a JWS-signed payload with a `signedPayload` field.
    */
   router.post(ROUTES.WEBHOOK_APPLE, async (req: Request, res: Response) => {
-    // Apple sends the notification as { signedPayload: "<JWS>" }
-    // For V2, the outer envelope is also a JWS. Here we accept the decoded
-    // payload directly (consumers should verify/decode the outer JWS themselves,
-    // or use Apple's server-side library). We also accept the inner notification
-    // structure directly for testing and library consumers that pre-decode it.
-    const body = req.body as { signedPayload?: string } | AppleNotificationPayload;
+    // Apple sends the notification as { signedPayload: "<JWS>" }.
+    // Only the JWS-signed path is accepted. Pre-decoded payloads are rejected
+    // because they bypass signature verification and allow arbitrary state changes.
+    const body = req.body as { signedPayload?: string };
 
-    let payload: AppleNotificationPayload | null = null;
-
-    if ('notificationType' in body && body.data) {
-      // Pre-decoded payload passed directly
-      payload = body as AppleNotificationPayload;
-    } else if ('signedPayload' in body && body.signedPayload) {
-      // Decode and verify the outer JWS envelope using Apple's JWKS.
-      // skipJwsVerification is derived from the apple config for consistency.
-      try {
-        payload = await decodeJws<AppleNotificationPayload>(
-          body.signedPayload,
-          config.apple?.skipJwsVerification
-        );
-      } catch (err) {
-        console.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
-        res.status(400).json({ error: 'Invalid signedPayload' });
-        return;
-      }
+    if (!body.signedPayload) {
+      res.status(400).json({ error: 'Missing signedPayload' });
+      return;
     }
 
-    if (!payload) {
-      res.status(400).json({ error: 'Unrecognised Apple notification format' });
+    let payload: AppleNotificationPayload;
+
+    try {
+      payload = await decodeJws<AppleNotificationPayload>(
+        body.signedPayload,
+        config.apple?.skipJwsVerification
+      );
+    } catch (err) {
+      console.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
+      res.status(400).json({ error: 'Invalid signedPayload' });
       return;
     }
 
@@ -140,9 +131,9 @@ export function createWebhookRouter(
     // Derive final status from the notification type (overrides the JWS-derived status
     // when there is an explicit signal like REVOKE or EXPIRED).
     let finalStatus: SubscriptionInfo['status'] = status;
-    if (APPLE_CANCELED_TYPES.has(notificationType)) finalStatus = 'canceled';
-    else if (APPLE_EXPIRED_TYPES.has(notificationType)) finalStatus = 'expired';
-    else if (APPLE_ACTIVE_TYPES.has(notificationType)) finalStatus = 'active';
+    if (APPLE_CANCELED_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.CANCELED;
+    else if (APPLE_EXPIRED_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
+    else if (APPLE_ACTIVE_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
 
     try {
       const existing = await store.getByTransactionId(originalTransactionId);
@@ -222,14 +213,14 @@ export function createWebhookRouter(
 
       let finalStatus: SubscriptionInfo['status'];
       if (isGoogleActiveNotification(notificationType)) {
-        finalStatus = 'active';
+        finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
       } else if (isGoogleCanceledNotification(notificationType)) {
-        finalStatus = 'canceled';
+        finalStatus = SUBSCRIPTION_STATUS.CANCELED;
       } else if (isGoogleExpiredNotification(notificationType)) {
-        finalStatus = 'expired';
+        finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
       } else {
         // Unhandled notification type (paused, deferred, etc.) — re-fetch from Play API
-        finalStatus = 'active'; // optimistic; re-fetch below will correct it
+        finalStatus = SUBSCRIPTION_STATUS.ACTIVE; // optimistic; re-fetch below will correct it
       }
 
       if (existing) {

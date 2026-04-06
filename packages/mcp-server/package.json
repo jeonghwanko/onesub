@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@onesub/shared": "*"
+    "@onesub/shared": "*",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
