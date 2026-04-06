@@ -37,7 +37,7 @@ function buildSetupInstructions(opts: {
   const { productId, price, serverUrl } = opts;
 
   const providerCode = `// app/_layout.tsx  (or App.tsx for bare React Native)
-import { OneSubProvider } from 'onesub';
+import { OneSubProvider } from '@onesub/sdk';
 
 export default function RootLayout() {
   return (
@@ -55,7 +55,7 @@ export default function RootLayout() {
   const paywallCode = buildMinimalPaywall({ productId, price });
 
   const gateCode = `// anywhere in your app — gate premium features
-import { useOneSub } from 'onesub';
+import { useOneSub } from '@onesub/sdk';
 
 export function PremiumFeature() {
   const { isActive, isLoading, subscribe } = useOneSub();
@@ -226,7 +226,7 @@ function buildMinimalPaywall(opts: { productId: string; price: string }): string
 
   return `import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { useOneSub } from 'onesub';
+import { useOneSub } from '@onesub/sdk';
 
 export default function PaywallScreen() {
   const { subscribe, restore, isLoading } = useOneSub();

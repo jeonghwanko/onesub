@@ -59,7 +59,7 @@ export function runAddPaywall(args: {
     '',
     '**Direct trigger via hook** (no navigation):',
     '```ts',
-    "import { useOneSub } from 'onesub';",
+    "import { useOneSub } from '@onesub/sdk';",
     'const { subscribe } = useOneSub();',
     '// call subscribe() anywhere',
     '```',
@@ -96,7 +96,7 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { useOneSub } from 'onesub';
+import { useOneSub } from '@onesub/sdk';
 
 const FEATURES = [
 ${featureData(features)}
@@ -198,7 +198,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useOneSub } from 'onesub';
+import { useOneSub } from '@onesub/sdk';
 
 // npx expo install expo-linear-gradient
 
@@ -302,7 +302,7 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { useOneSub } from 'onesub';
+import { useOneSub } from '@onesub/sdk';
 
 const FEATURES = [
 ${featureData(features)}

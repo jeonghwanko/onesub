@@ -121,11 +121,11 @@ const { active } = await res.json();
 If you want a drop-in React hook + paywall component (built on react-native-iap):
 
 ```bash
-npm install onesub react-native-iap
+npm install @onesub/sdk react-native-iap
 ```
 
 ```tsx
-import { OneSubProvider, useOneSub } from 'onesub';
+import { OneSubProvider, useOneSub } from '@onesub/sdk';
 
 // Wrap your app
 <OneSubProvider config={{ serverUrl, productId }} userId={userId}>
