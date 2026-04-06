@@ -1,23 +1,44 @@
 {
   "name": "@onesub/mcp-server",
   "version": "0.1.0",
-  "description": "MCP server for onesub — AI tools for integrating monthly subscriptions + paywalls into mobile apps",
+  "description": "MCP server for onesub — AI tools for setting up in-app subscriptions in React Native / Expo apps",
   "type": "module",
   "bin": {
     "onesub-mcp": "dist/index.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "type-check": "tsc --noEmit"
   },
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "in-app-purchase",
+    "subscription",
+    "react-native",
+    "ai",
+    "claude",
+    "cursor"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeonghwanko/onesub.git",
+    "directory": "packages/mcp-server"
+  },
+  "homepage": "https://github.com/jeonghwanko/onesub",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@onesub/shared": "*",
-    "zod": "^3.24.0"
+    "@onesub/shared": "0.1.0",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

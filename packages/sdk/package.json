@@ -1,7 +1,7 @@
 {
-  "name": "onesub",
+  "name": "@onesub/sdk",
   "version": "0.1.0",
-  "description": "One subscription. That's it. React Native SDK for in-app subscriptions.",
+  "description": "React Native SDK for in-app subscriptions. useOneSub() hook + Paywall component. Built on react-native-iap.",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,10 +11,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist",
-    "src"
-  ],
+  "files": ["dist", "src"],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
@@ -26,11 +23,20 @@
     "subscription",
     "in-app-purchase",
     "paywall",
-    "iap"
+    "iap",
+    "react-native-iap",
+    "storekit",
+    "google-play"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeonghwanko/onesub.git",
+    "directory": "packages/sdk"
+  },
+  "homepage": "https://github.com/jeonghwanko/onesub",
   "license": "MIT",
   "dependencies": {
-    "@onesub/shared": "*"
+    "@onesub/shared": "0.1.0"
   },
   "peerDependencies": {
     "react": ">=18.0.0",

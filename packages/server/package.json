@@ -1,18 +1,44 @@
 {
   "name": "@onesub/server",
   "version": "0.1.0",
-  "description": "Express.js middleware/server for receipt validation, subscription status, and webhooks",
+  "description": "Server-side receipt validation middleware for react-native-iap. Apple StoreKit 2 + Google Play Billing. One line.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js"
   },
+  "keywords": [
+    "react-native-iap",
+    "in-app-purchase",
+    "receipt-validation",
+    "storekit",
+    "storekit2",
+    "google-play-billing",
+    "apple",
+    "google",
+    "subscription",
+    "iap",
+    "express",
+    "middleware",
+    "webhook",
+    "server"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeonghwanko/onesub.git",
+    "directory": "packages/server"
+  },
+  "homepage": "https://github.com/jeonghwanko/onesub",
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "dependencies": {
-    "@onesub/shared": "*",
+    "@onesub/shared": "0.1.0",
     "express": "^4.19.2",
     "jose": "^5.9.6",
     "zod": "^3.23.0"
