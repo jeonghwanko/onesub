@@ -1,0 +1,19 @@
+{
+  "name": "onesub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One subscription. That's it. AI-native subscription + paywall for mobile apps.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "dev:server": "npm run dev -w @onesub/server",
+    "type-check": "tsc --build",
+    "clean": "rm -rf packages/*/dist"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

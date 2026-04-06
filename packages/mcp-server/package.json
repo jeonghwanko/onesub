@@ -1,0 +1,29 @@
+{
+  "name": "@onesub/mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for onesub — AI tools for integrating monthly subscriptions + paywalls into mobile apps",
+  "type": "module",
+  "bin": {
+    "onesub-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@onesub/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
