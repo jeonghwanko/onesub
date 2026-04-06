@@ -1,0 +1,199 @@
+import { z } from 'zod';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const appleConnect = require('../../providers/apple-connect.js') as {
+  createAppleSubscription: (opts: unknown) => Promise<unknown>;
+  listAppleProducts: (opts: AppleListOpts) => Promise<AppleProduct[]>;
+};
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const googlePlay = require('../../providers/google-play.js') as {
+  createGoogleSubscription: (opts: unknown) => Promise<unknown>;
+  listGoogleProducts: (opts: GoogleListOpts) => Promise<GoogleProduct[]>;
+};
+
+interface AppleListOpts {
+  keyId: string;
+  issuerId: string;
+  privateKey: string;
+  appId: string;
+}
+
+interface AppleProduct {
+  productId: string;
+  name?: string;
+  status?: string;
+  type?: string;
+  price?: number;
+  currency?: string;
+}
+
+interface GoogleListOpts {
+  packageName: string;
+  serviceAccountKey: string;
+}
+
+interface GoogleProduct {
+  productId: string;
+  name?: string;
+  status?: string;
+  type?: string;
+  price?: number;
+  currency?: string;
+}
+
+export const listProductsInputSchema = {
+  platform: z.enum(['apple', 'google', 'both']).default('both'),
+  appleKeyId: z.string().optional(),
+  appleIssuerId: z.string().optional(),
+  applePrivateKey: z.string().optional(),
+  appleAppId: z.string().optional(),
+  googlePackageName: z.string().optional(),
+  googleServiceAccountKey: z.string().optional(),
+};
+
+type ListProductsArgs = {
+  platform?: 'apple' | 'google' | 'both';
+  appleKeyId?: string;
+  appleIssuerId?: string;
+  applePrivateKey?: string;
+  appleAppId?: string;
+  googlePackageName?: string;
+  googleServiceAccountKey?: string;
+};
+
+export async function runListProducts(
+  args: ListProductsArgs,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const platform = args.platform ?? 'both';
+  const needsApple = platform === 'apple' || platform === 'both';
+  const needsGoogle = platform === 'google' || platform === 'both';
+
+  let appleProducts: AppleProduct[] | null = null;
+  let googleProducts: GoogleProduct[] | null = null;
+  let appleError: string | null = null;
+  let googleError: string | null = null;
+
+  if (needsApple) {
+    if (
+      !args.appleKeyId ||
+      !args.appleIssuerId ||
+      !args.applePrivateKey ||
+      !args.appleAppId
+    ) {
+      appleError =
+        'Missing required Apple credentials: appleKeyId, appleIssuerId, applePrivateKey, appleAppId';
+    } else {
+      try {
+        appleProducts = await appleConnect.listAppleProducts({
+          keyId: args.appleKeyId,
+          issuerId: args.appleIssuerId,
+          privateKey: args.applePrivateKey,
+          appId: args.appleAppId,
+        });
+      } catch (err: unknown) {
+        appleError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  if (needsGoogle) {
+    if (!args.googlePackageName || !args.googleServiceAccountKey) {
+      googleError =
+        'Missing required Google credentials: googlePackageName, googleServiceAccountKey';
+    } else {
+      try {
+        googleProducts = await googlePlay.listGoogleProducts({
+          packageName: args.googlePackageName,
+          serviceAccountKey: args.googleServiceAccountKey,
+        });
+      } catch (err: unknown) {
+        googleError = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+
+  const text = buildListOutput({
+    needsApple,
+    needsGoogle,
+    appleProducts,
+    googleProducts,
+    appleError,
+    googleError,
+  });
+
+  return { content: [{ type: 'text', text }] };
+}
+
+function buildListOutput(opts: {
+  needsApple: boolean;
+  needsGoogle: boolean;
+  appleProducts: AppleProduct[] | null;
+  googleProducts: GoogleProduct[] | null;
+  appleError: string | null;
+  googleError: string | null;
+}): string {
+  const { needsApple, needsGoogle, appleProducts, googleProducts, appleError, googleError } =
+    opts;
+
+  const lines: string[] = ['# Subscription Products', ''];
+
+  if (needsApple) {
+    lines.push('## Apple App Store Connect', '');
+    if (appleError) {
+      lines.push(`**Error:** ${appleError}`, '');
+    } else if (!appleProducts || appleProducts.length === 0) {
+      lines.push('No subscription products found.', '');
+    } else {
+      lines.push(`Found **${appleProducts.length}** product(s).`, '');
+      lines.push('| Product ID | Name | Type | Status | Price |');
+      lines.push('|------------|------|------|--------|-------|');
+      for (const p of appleProducts) {
+        const name = p.name ?? '—';
+        const type = p.type ?? '—';
+        const status = p.status ?? '—';
+        const price =
+          p.price != null && p.currency
+            ? `${p.price} ${p.currency}`
+            : p.price != null
+              ? String(p.price)
+              : '—';
+        lines.push(`| \`${p.productId}\` | ${name} | ${type} | ${status} | ${price} |`);
+      }
+      lines.push('');
+    }
+  }
+
+  if (needsGoogle) {
+    lines.push('## Google Play Console', '');
+    if (googleError) {
+      lines.push(`**Error:** ${googleError}`, '');
+    } else if (!googleProducts || googleProducts.length === 0) {
+      lines.push('No subscription products found.', '');
+    } else {
+      lines.push(`Found **${googleProducts.length}** product(s).`, '');
+      lines.push('| Product ID | Name | Type | Status | Price |');
+      lines.push('|------------|------|------|--------|-------|');
+      for (const p of googleProducts) {
+        const name = p.name ?? '—';
+        const type = p.type ?? '—';
+        const status = p.status ?? '—';
+        const price =
+          p.price != null && p.currency
+            ? `${p.price} ${p.currency}`
+            : p.price != null
+              ? String(p.price)
+              : '—';
+        lines.push(`| \`${p.productId}\` | ${name} | ${type} | ${status} | ${price} |`);
+      }
+      lines.push('');
+    }
+  }
+
+  lines.push('---', '');
+  lines.push(
+    'Use `onesub_create_product` to add new products, or `onesub_check_status` to verify a specific user\'s subscription.',
+  );
+
+  return lines.join('\n');
+}

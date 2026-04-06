@@ -7,6 +7,9 @@ import { setupInputSchema, runSetup } from './tools/setup.js';
 import { addPaywallInputSchema, runAddPaywall } from './tools/add-paywall.js';
 import { checkStatusInputSchema, runCheckStatus } from './tools/check-status.js';
 import { troubleshootInputSchema, runTroubleshoot } from './tools/troubleshoot.js';
+import { createProductInputSchema, runCreateProduct } from './tools/create-product.js';
+import { listProductsInputSchema, runListProducts } from './tools/list-products.js';
+import { viewSubscribersInputSchema, runViewSubscribers } from './tools/view-subscribers.js';
 
 const server = new McpServer({
   name: 'onesub-mcp',
@@ -73,6 +76,57 @@ server.tool(
   },
   async (args) => {
     return runTroubleshoot(args);
+  },
+);
+
+server.tool(
+  'onesub_create_product',
+  'Create a subscription product on Apple App Store Connect and/or Google Play Console',
+  {
+    platform: createProductInputSchema.platform,
+    productId: createProductInputSchema.productId,
+    name: createProductInputSchema.name,
+    price: createProductInputSchema.price,
+    currency: createProductInputSchema.currency,
+    period: createProductInputSchema.period,
+    appleKeyId: createProductInputSchema.appleKeyId,
+    appleIssuerId: createProductInputSchema.appleIssuerId,
+    applePrivateKey: createProductInputSchema.applePrivateKey,
+    appleAppId: createProductInputSchema.appleAppId,
+    googlePackageName: createProductInputSchema.googlePackageName,
+    googleServiceAccountKey: createProductInputSchema.googleServiceAccountKey,
+  },
+  async (args) => {
+    return runCreateProduct(args);
+  },
+);
+
+server.tool(
+  'onesub_list_products',
+  'List subscription products registered on Apple App Store Connect and/or Google Play Console',
+  {
+    platform: listProductsInputSchema.platform,
+    appleKeyId: listProductsInputSchema.appleKeyId,
+    appleIssuerId: listProductsInputSchema.appleIssuerId,
+    applePrivateKey: listProductsInputSchema.applePrivateKey,
+    appleAppId: listProductsInputSchema.appleAppId,
+    googlePackageName: listProductsInputSchema.googlePackageName,
+    googleServiceAccountKey: listProductsInputSchema.googleServiceAccountKey,
+  },
+  async (args) => {
+    return runListProducts(args);
+  },
+);
+
+server.tool(
+  'onesub_view_subscribers',
+  'View current subscription status and subscriber count from the onesub server',
+  {
+    serverUrl: viewSubscribersInputSchema.serverUrl,
+    userId: viewSubscribersInputSchema.userId,
+  },
+  async (args) => {
+    return runViewSubscribers(args);
   },
 );
 
