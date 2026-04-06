@@ -67,6 +67,34 @@ interface GoogleDeveloperNotification {
 }
 
 /**
+ * Module-level token cache. Keyed by the raw serviceAccountKey string so that
+ * different service accounts (rare but possible) are cached independently.
+ */
+let cachedToken: { token: string; expiresAt: number; key: string } | null = null;
+
+/**
+ * Obtain a Google OAuth2 access token, returning a cached token if it has more
+ * than 60 seconds of remaining validity. Google tokens are valid for 3600 seconds,
+ * so this avoids a network round-trip on every API call.
+ */
+async function getCachedAccessToken(serviceAccountKey: string): Promise<string> {
+  const now = Date.now();
+  if (
+    cachedToken !== null &&
+    cachedToken.key === serviceAccountKey &&
+    cachedToken.expiresAt - now > 60_000
+  ) {
+    return cachedToken.token;
+  }
+
+  const token = await getAccessToken(serviceAccountKey);
+  // Google tokens expire in 3600 s; store with a conservative margin already
+  // accounted for in the read path (60 s buffer above).
+  cachedToken = { token, expiresAt: now + 3600_000, key: serviceAccountKey };
+  return token;
+}
+
+/**
  * Obtain a Google OAuth2 access token using a service account key (JWT assertion flow).
  * The serviceAccountKey is expected to be a JSON string of the service account credentials.
  */
@@ -186,7 +214,7 @@ export async function validateGoogleReceipt(
 
   let purchase: GoogleSubscriptionPurchase;
   try {
-    const token = await getAccessToken(config.serviceAccountKey);
+    const token = await getCachedAccessToken(config.serviceAccountKey);
     purchase = await fetchSubscriptionPurchase(config.packageName, productId, receipt, token);
   } catch (err) {
     console.error('[onesub/google] Receipt validation failed:', err);

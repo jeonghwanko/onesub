@@ -55,10 +55,10 @@ export default function RootLayout() {
   const paywallCode = buildMinimalPaywall({ productId, price });
 
   const gateCode = `// anywhere in your app — gate premium features
-import { useSubscription } from 'onesub';
+import { useOneSub } from 'onesub';
 
 export function PremiumFeature() {
-  const { isActive, isLoading, showPaywall } = useSubscription();
+  const { isActive, isLoading, subscribe } = useOneSub();
 
   if (isLoading) return <ActivityIndicator />;
 
@@ -66,7 +66,7 @@ export function PremiumFeature() {
     return (
       <View>
         <Text>This feature requires a subscription.</Text>
-        <Button title="Upgrade" onPress={showPaywall} />
+        <Button title="Upgrade" onPress={subscribe} />
       </View>
     );
   }
@@ -226,10 +226,10 @@ function buildMinimalPaywall(opts: { productId: string; price: string }): string
 
   return `import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { useSubscription } from 'onesub';
+import { useOneSub } from 'onesub';
 
 export default function PaywallScreen() {
-  const { purchase, restore, isLoading, error } = useSubscription();
+  const { subscribe, restore, isLoading } = useOneSub();
 
   return (
     <View style={styles.container}>
@@ -243,11 +243,9 @@ export default function PaywallScreen() {
         <Text style={styles.feature}>✓ No ads</Text>
       </View>
 
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-
       <TouchableOpacity
         style={styles.cta}
-        onPress={() => purchase('${productId}')}
+        onPress={subscribe}
         disabled={isLoading}
       >
         {isLoading ? (
@@ -270,7 +268,6 @@ const styles = StyleSheet.create({
   price: { fontSize: 20, color: '#6366f1', fontWeight: '600', marginBottom: 24 },
   features: { gap: 10, marginBottom: 32, alignSelf: 'stretch' },
   feature: { fontSize: 16, color: '#374151' },
-  error: { color: '#ef4444', marginBottom: 12, textAlign: 'center' },
   cta: { backgroundColor: '#6366f1', borderRadius: 12, paddingVertical: 16, paddingHorizontal: 48, marginBottom: 16 },
   ctaText: { color: '#fff', fontSize: 17, fontWeight: '700' },
   restore: { color: '#9ca3af', fontSize: 14 },

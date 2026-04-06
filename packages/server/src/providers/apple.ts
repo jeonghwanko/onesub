@@ -1,4 +1,4 @@
-import { decodeJwt } from 'jose';
+import { decodeJwt, createRemoteJWKSet, jwtVerify } from 'jose';
 import type { SubscriptionInfo, AppleNotificationPayload } from '@onesub/shared';
 
 interface AppleConfig {
@@ -7,6 +7,7 @@ interface AppleConfig {
   keyId?: string;
   issuerId?: string;
   privateKey?: string;
+  skipJwsVerification?: boolean;
 }
 
 /**
@@ -40,14 +41,26 @@ interface AppleRenewalPayload {
 }
 
 /**
- * Decode a JWS compact serialisation without verifying the signature.
- * For production, integrate with Apple's public keys via JWKS to verify.
+ * Module-level JWKS fetcher for Apple's public keys.
+ * Cached automatically by jose's createRemoteJWKSet.
  */
-function decodeJws<T>(jws: string): T {
-  // jose decodeJwt reads only the payload section — no signature verification.
-  // For production, use jose's compactVerify with Apple's JWKS endpoint:
-  // https://appleid.apple.com/auth/keys
-  return decodeJwt(jws) as T;
+const appleJWKS = createRemoteJWKSet(
+  new URL('https://appleid.apple.com/auth/keys')
+);
+
+/**
+ * Decode and verify a JWS compact serialisation using Apple's JWKS.
+ * When skipVerification is true, falls back to decodeJwt() without signature
+ * verification (useful for dev/testing environments).
+ */
+export async function decodeJws<T>(jws: string, skipVerification = false): Promise<T> {
+  if (skipVerification) {
+    // Dev/test path: decode payload only, no signature check
+    return decodeJwt(jws) as T;
+  }
+
+  const { payload } = await jwtVerify(jws, appleJWKS);
+  return payload as T;
 }
 
 /**
@@ -86,7 +99,7 @@ export async function validateAppleReceipt(
 
   try {
     // StoreKit 2: receipt is a signed JWS transaction
-    tx = decodeJws<AppleTransactionPayload>(receipt);
+    tx = await decodeJws<AppleTransactionPayload>(receipt, config.skipJwsVerification);
   } catch {
     console.warn('[onesub/apple] Failed to decode receipt as JWS. Falling back to null.');
     return null;
@@ -121,22 +134,23 @@ export async function validateAppleReceipt(
  * Decode an Apple Server Notification V2 payload.
  * Returns the derived subscription update to be merged into the store.
  */
-export function decodeAppleNotification(
-  payload: AppleNotificationPayload
-): { originalTransactionId: string; status: SubscriptionInfo['status']; willRenew: boolean; expiresAt: string } | null {
+export async function decodeAppleNotification(
+  payload: AppleNotificationPayload,
+  skipJwsVerification = false
+): Promise<{ originalTransactionId: string; status: SubscriptionInfo['status']; willRenew: boolean; expiresAt: string } | null> {
   const { signedTransactionInfo, signedRenewalInfo } = payload.data;
 
   let tx: AppleTransactionPayload;
   let renewal: AppleRenewalPayload | null = null;
 
   try {
-    tx = decodeJws<AppleTransactionPayload>(signedTransactionInfo);
+    tx = await decodeJws<AppleTransactionPayload>(signedTransactionInfo, skipJwsVerification);
   } catch {
     return null;
   }
 
   try {
-    renewal = decodeJws<AppleRenewalPayload>(signedRenewalInfo);
+    renewal = await decodeJws<AppleRenewalPayload>(signedRenewalInfo, skipJwsVerification);
   } catch {
     // renewal info is optional for some notification types
   }

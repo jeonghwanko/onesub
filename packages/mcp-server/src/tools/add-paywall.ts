@@ -59,9 +59,9 @@ export async function runAddPaywall(args: {
     '',
     '**Direct trigger via hook** (no navigation):',
     '```ts',
-    "import { useSubscription } from 'onesub';",
-    'const { showPaywall } = useSubscription();',
-    '// call showPaywall() anywhere',
+    "import { useOneSub } from 'onesub';",
+    'const { subscribe } = useOneSub();',
+    '// call subscribe() anywhere',
     '```',
     '',
     ...(style === 'gradient'
@@ -102,14 +102,14 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { useSubscription } from 'onesub';
+import { useOneSub } from 'onesub';
 
 const FEATURES = [
 ${featureData(features)}
 ];
 
 export default function PaywallScreen() {
-  const { purchase, restore, isLoading, isActive, error } = useSubscription();
+  const { subscribe, restore, isLoading, isActive } = useOneSub();
 
   if (isActive) {
     return (
@@ -139,11 +139,9 @@ export default function PaywallScreen() {
           <Text style={styles.priceSub}>Cancel anytime</Text>
         </View>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
         <TouchableOpacity
           style={[styles.cta, isLoading && styles.ctaDisabled]}
-          onPress={() => purchase()}
+          onPress={subscribe}
           disabled={isLoading}
           activeOpacity={0.85}
         >
@@ -178,7 +176,6 @@ const styles = StyleSheet.create({
   priceBox: { alignItems: 'center', marginBottom: 24 },
   price: { fontSize: 34, fontWeight: '800', color: '#111827' },
   priceSub: { fontSize: 14, color: '#9ca3af', marginTop: 2 },
-  error: { color: '#ef4444', marginBottom: 12, textAlign: 'center', fontSize: 14 },
   cta: { backgroundColor: '#6366f1', borderRadius: 14, paddingVertical: 18, paddingHorizontal: 60, marginBottom: 14, alignSelf: 'stretch', alignItems: 'center' },
   ctaDisabled: { opacity: 0.6 },
   ctaText: { color: '#fff', fontSize: 17, fontWeight: '700' },
@@ -207,7 +204,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useSubscription } from 'onesub';
+import { useOneSub } from 'onesub';
 
 // npx expo install expo-linear-gradient
 
@@ -216,7 +213,7 @@ ${featureData(features)}
 ];
 
 export default function PaywallScreen() {
-  const { purchase, restore, isLoading, isActive, error } = useSubscription();
+  const { subscribe, restore, isLoading, isActive } = useOneSub();
 
   if (isActive) {
     return (
@@ -249,11 +246,9 @@ export default function PaywallScreen() {
             <Text style={styles.priceSub}>Billed monthly · Cancel anytime</Text>
           </View>
 
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
           <TouchableOpacity
             style={[styles.cta, isLoading && styles.ctaDisabled]}
-            onPress={() => purchase()}
+            onPress={subscribe}
             disabled={isLoading}
             activeOpacity={0.9}
           >
@@ -290,7 +285,6 @@ const styles = StyleSheet.create({
   priceCard: { backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 16, padding: 20, alignItems: 'center', alignSelf: 'stretch', marginBottom: 28 },
   price: { fontSize: 36, fontWeight: '800', color: '#fff' },
   priceSub: { fontSize: 13, color: 'rgba(255,255,255,0.7)', marginTop: 4 },
-  error: { color: '#fecaca', marginBottom: 12, textAlign: 'center', fontSize: 14 },
   cta: { backgroundColor: '#fff', borderRadius: 14, paddingVertical: 18, alignSelf: 'stretch', alignItems: 'center', marginBottom: 14 },
   ctaDisabled: { opacity: 0.6 },
   ctaText: { color: '#6366f1', fontSize: 17, fontWeight: '800' },
@@ -314,14 +308,14 @@ import {
   SafeAreaView,
   ScrollView,
 } from 'react-native';
-import { useSubscription } from 'onesub';
+import { useOneSub } from 'onesub';
 
 const FEATURES = [
 ${featureData(features)}
 ];
 
 export default function PaywallScreen() {
-  const { purchase, restore, isLoading, isActive, error } = useSubscription();
+  const { subscribe, restore, isLoading, isActive } = useOneSub();
 
   if (isActive) {
     return (
@@ -356,11 +350,9 @@ export default function PaywallScreen() {
           ))}
         </View>
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
         <TouchableOpacity
           style={[styles.cta, isLoading && styles.ctaDisabled]}
-          onPress={() => purchase()}
+          onPress={subscribe}
           disabled={isLoading}
           activeOpacity={0.85}
         >
@@ -399,7 +391,6 @@ const styles = StyleSheet.create({
   featureRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, marginBottom: 10 },
   checkmark: { fontSize: 15, color: '#6366f1', fontWeight: '700', marginTop: 1 },
   featureText: { fontSize: 15, color: '#374151', flex: 1, lineHeight: 22 },
-  error: { color: '#ef4444', marginBottom: 12, textAlign: 'center', fontSize: 14 },
   cta: { backgroundColor: '#6366f1', borderRadius: 14, paddingVertical: 18, alignSelf: 'stretch', alignItems: 'center', marginBottom: 14 },
   ctaDisabled: { opacity: 0.6 },
   ctaText: { color: '#fff', fontSize: 17, fontWeight: '700' },

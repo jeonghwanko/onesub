@@ -74,6 +74,7 @@ export function createOneSubServer(config: OneSubMiddlewareConfig): ReturnType<t
 // Named re-exports for consumers who want to bring their own store
 export { InMemorySubscriptionStore } from './store.js';
 export type { SubscriptionStore } from './store.js';
+export { PostgresSubscriptionStore } from './stores/postgres.js';
 
 // Provider functions for direct (non-HTTP) usage
 export { validateAppleReceipt } from './providers/apple.js';

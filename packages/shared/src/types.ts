@@ -64,10 +64,22 @@ export interface OneSubServerConfig {
     keyId?: string;
     issuerId?: string;
     privateKey?: string;
+    /** Skip JWS signature verification (for development/testing only) */
+    skipJwsVerification?: boolean;
   };
   google?: {
     packageName: string;
     serviceAccountKey?: string;
+    /**
+     * Expected `aud` claim for incoming Pub/Sub push JWT tokens.
+     * When set, the Google webhook endpoint verifies the `Authorization: Bearer <token>`
+     * header as a Google-signed JWT whose `aud` matches this value.
+     * If omitted, no authentication is performed on the webhook (backward compatible).
+     *
+     * Set this to the push endpoint URL registered in your Pub/Sub subscription,
+     * e.g. `https://your-server.example.com/onesub/webhook/google`.
+     */
+    pushAudience?: string;
   };
   database: {
     url: string;

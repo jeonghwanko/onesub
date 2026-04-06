@@ -16,9 +16,18 @@
     "express": "^4.19.2",
     "jose": "^5.9.6"
   },
+  "peerDependencies": {
+    "pg": ">=8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^20.17.0",
+    "@types/pg": "^8.20.0",
     "typescript": "^5.7.0"
   },
   "engines": {

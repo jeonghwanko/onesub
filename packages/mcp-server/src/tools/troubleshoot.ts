@@ -235,7 +235,7 @@ function diagnoseNotActiveAfterPurchase(platform: 'ios' | 'android' | 'both'): D
     'Check whether the `onesub_check_status` tool shows the subscription as active after purchase.',
     `Verify the \`${ROUTES.VALIDATE}\` endpoint on your server received and processed the purchase receipt.`,
     'Check server logs for the validation result immediately after purchase.',
-    'Confirm the client calls `purchase()` from `useSubscription()` — this automatically sends the receipt to your server.',
+    'Confirm the client calls `subscribe()` from `useOneSub()` — this automatically sends the receipt to your server.',
   ];
 
   if (platform === 'ios' || platform === 'both') {
@@ -252,7 +252,7 @@ function diagnoseNotActiveAfterPurchase(platform: 'ios' | 'android' | 'both'): D
 
   steps.push(
     'Check the database — confirm a subscription record was written with `status = "active"`.',
-    'If the record exists but `isActive` returns false in the app, the client may be caching an old status. Force a refresh by calling the `useSubscription()` `refresh()` method.',
+    'If the record exists but `isActive` returns false in the app, the client may be caching an old status. Call `restore()` from `useOneSub()` to re-validate with the server, or remount `<OneSubProvider>` to force a fresh status check.',
   );
 
   return [
@@ -268,15 +268,15 @@ function diagnosePaywallForSubscribedUser(platform: 'ios' | 'android' | 'both'):
   const steps: string[] = [
     `Run \`onesub_check_status\` with the user's ID to confirm the server sees the subscription as active.`,
     'If the server reports active but the app shows the paywall, the client is not fetching the latest status.',
-    'Make sure `OneSubProvider` wraps your entire app — it must be an ancestor of all screens that call `useSubscription()`.',
-    'Call the `refresh()` method returned by `useSubscription()` when the app becomes active (use `AppState` listener).',
+    'Make sure `OneSubProvider` wraps your entire app — it must be an ancestor of all screens that call `useOneSub()`.',
+    'When the app becomes active (use `AppState` listener), call `restore()` from `useOneSub()` to re-validate, or remount `<OneSubProvider>` to force a fresh status check.',
     'Check that the `userId` passed to `OneSubProvider` (or to the purchase flow) matches the `userId` stored server-side.',
     'If using React Navigation, confirm the paywall screen does not check `isActive` before the provider has finished loading (`isLoading` guard).',
   ];
 
   if (platform === 'ios' || platform === 'both') {
     steps.push(
-      'iOS: After restoring purchases, call `restore()` from `useSubscription()` to re-validate with the server.',
+      'iOS: After restoring purchases, call `restore()` from `useOneSub()` to re-validate with the server.',
     );
   }
 
@@ -291,7 +291,7 @@ function diagnosePaywallForSubscribedUser(platform: 'ios' | 'android' | 'both'):
 
 function diagnoseRestoreNotWorking(platform: 'ios' | 'android' | 'both'): DiagnosisResult[] {
   const steps: string[] = [
-    'Call `restore()` from `useSubscription()` — this triggers platform restore and re-validates receipts server-side.',
+    'Call `restore()` from `useOneSub()` — this triggers platform restore and re-validates receipts server-side.',
     'The user must be signed into the **same account** that originally made the purchase.',
   ];
 

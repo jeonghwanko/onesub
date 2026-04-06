@@ -10,7 +10,13 @@
     "build": "npm run build --workspaces",
     "dev:server": "npm run dev -w @onesub/server",
     "type-check": "tsc --build",
-    "clean": "rm -rf packages/*/dist"
+    "clean": "rm -rf packages/*/dist",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.2.2",
+    "vitest": "^2.1.9"
   },
   "license": "MIT",
   "engines": {

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type {
   AppleNotificationPayload,
   GoogleNotificationPayload,
@@ -8,7 +9,7 @@ import type {
 } from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
-import { decodeAppleNotification } from '../providers/apple.js';
+import { decodeAppleNotification, decodeJws } from '../providers/apple.js';
 import {
   decodeGoogleNotification,
   validateGoogleReceipt,
@@ -16,6 +17,43 @@ import {
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
 } from '../providers/google.js';
+
+/**
+ * Google's public JWKS endpoint used to verify Pub/Sub push JWT tokens.
+ */
+const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
+
+// Lazily initialised — the JWKS fetch only occurs when the endpoint is first hit
+// and pushAudience is configured.
+let googleJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+
+function getGoogleJwks(): ReturnType<typeof createRemoteJWKSet> {
+  if (!googleJwks) {
+    googleJwks = createRemoteJWKSet(new URL(GOOGLE_JWKS_URL));
+  }
+  return googleJwks;
+}
+
+/**
+ * Verifies the `Authorization: Bearer <token>` header as a Google-signed JWT
+ * and checks that the `aud` claim matches `expectedAudience`.
+ *
+ * Returns `true` when verification succeeds, `false` otherwise.
+ */
+async function verifyGooglePushToken(req: Request, expectedAudience: string): Promise<boolean> {
+  const authHeader = req.headers['authorization'];
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+
+  const token = authHeader.slice('Bearer '.length).trim();
+  try {
+    await jwtVerify(token, getGoogleJwks(), { audience: expectedAudience });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Apple V2 notification types that indicate the subscription is now active.
@@ -70,11 +108,13 @@ export function createWebhookRouter(
       // Pre-decoded payload passed directly
       payload = body as AppleNotificationPayload;
     } else if ('signedPayload' in body && body.signedPayload) {
-      // Decode the outer JWS — for MVP we decode without signature verification.
-      // Production: verify using Apple's JWKS at https://appleid.apple.com/auth/keys
+      // Decode and verify the outer JWS envelope using Apple's JWKS.
+      // skipJwsVerification is derived from the apple config for consistency.
       try {
-        const { decodeJwt } = await import('jose');
-        payload = decodeJwt(body.signedPayload) as unknown as AppleNotificationPayload;
+        payload = await decodeJws<AppleNotificationPayload>(
+          body.signedPayload,
+          config.apple?.skipJwsVerification
+        );
       } catch (err) {
         console.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
         res.status(400).json({ error: 'Invalid signedPayload' });
@@ -87,7 +127,7 @@ export function createWebhookRouter(
       return;
     }
 
-    const decoded = decodeAppleNotification(payload);
+    const decoded = await decodeAppleNotification(payload, config.apple?.skipJwsVerification);
     if (!decoded) {
       // Could be a test notification or unsupported type — acknowledge it
       res.status(200).json({ received: true });
@@ -137,6 +177,16 @@ export function createWebhookRouter(
    * The body is a standard Pub/Sub push message with base64-encoded data.
    */
   router.post(ROUTES.WEBHOOK_GOOGLE, async (req: Request, res: Response) => {
+    // Verify Google-signed JWT when pushAudience is configured.
+    // If pushAudience is not set, authentication is skipped for backward compatibility.
+    if (config.google?.pushAudience) {
+      const authenticated = await verifyGooglePushToken(req, config.google.pushAudience);
+      if (!authenticated) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+    }
+
     const body = req.body as Partial<GoogleNotificationPayload>;
 
     if (!body.message?.data) {
