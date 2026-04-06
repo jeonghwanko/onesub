@@ -81,7 +81,7 @@ server.tool(
 
 server.tool(
   'onesub_create_product',
-  'Create a subscription product on Apple App Store Connect and/or Google Play Console',
+  'Create a subscription product on Apple App Store Connect and/or Google Play Console. Accepts either appleAppId (numeric) or appleBundleId (e.g. "gg.pryzm.carrot") for Apple — the App ID is resolved automatically from the bundle ID. Automatically sets the price and adds Korean localization for KRW products.',
   {
     platform: createProductInputSchema.platform,
     productId: createProductInputSchema.productId,
@@ -93,6 +93,7 @@ server.tool(
     appleIssuerId: createProductInputSchema.appleIssuerId,
     applePrivateKey: createProductInputSchema.applePrivateKey,
     appleAppId: createProductInputSchema.appleAppId,
+    appleBundleId: createProductInputSchema.appleBundleId,
     googlePackageName: createProductInputSchema.googlePackageName,
     googleServiceAccountKey: createProductInputSchema.googleServiceAccountKey,
   },
