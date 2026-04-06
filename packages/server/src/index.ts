@@ -75,6 +75,10 @@ export function createOneSubServer(config: OneSubMiddlewareConfig): ReturnType<t
 export { InMemorySubscriptionStore } from './store.js';
 export type { SubscriptionStore } from './store.js';
 
+// Provider functions for direct (non-HTTP) usage
+export { validateAppleReceipt } from './providers/apple.js';
+export { validateGoogleReceipt } from './providers/google.js';
+
 // Default export: the middleware factory
 export default createOneSubMiddleware;
 

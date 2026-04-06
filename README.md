@@ -1,8 +1,22 @@
-# onesub
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" />
+  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" />
+  <img src="https://img.shields.io/badge/platform-iOS%20%7C%20Android-lightgrey.svg" alt="Platform" />
+</p>
 
-**One subscription. That's it.**
+<h1 align="center">onesub</h1>
 
-Monthly subscription + paywall for mobile apps. AI-native, open-source, dead simple.
+<p align="center">
+  <strong>One subscription. That's it.</strong><br/>
+  월 구독 하나. 페이월 하나. 끝.
+</p>
+
+<p align="center">
+  AI-native monthly subscription + paywall for mobile apps.<br/>
+  Open source. Dead simple. MCP-powered.
+</p>
+
+---
 
 ```tsx
 import { OneSubProvider, useOneSub, Paywall } from 'onesub';
@@ -12,37 +26,110 @@ const { isActive, subscribe } = useOneSub();
 if (!isActive) return <Paywall config={config} onSubscribe={subscribe} />;
 ```
 
-## Why onesub?
+---
 
-| | RevenueCat | onesub |
-|---|---|---|
-| Setup | SDK + Dashboard + 10 hours | `"Add subscription"` → MCP → 30 min |
-| Concepts | Offerings, Entitlements, Packages... | `isActive: true/false` |
-| Pricing | % of revenue | Free (self-host) or $29/mo (hosted) |
-| Source | Closed | MIT Open Source |
+## Why onesub? | 왜 onesub인가?
 
-## Packages
+<table>
+<tr><th></th><th>RevenueCat</th><th>onesub</th></tr>
+<tr>
+  <td><b>Setup</b></td>
+  <td>SDK + Dashboard + 10 hours</td>
+  <td><code>"Add subscription"</code> → MCP → 30 min</td>
+</tr>
+<tr>
+  <td><b>Concepts</b></td>
+  <td>Offerings, Entitlements, Packages...</td>
+  <td><code>isActive: true / false</code></td>
+</tr>
+<tr>
+  <td><b>Pricing</b></td>
+  <td>% of revenue</td>
+  <td>Free (self-host) or $29/mo (hosted)</td>
+</tr>
+<tr>
+  <td><b>Source</b></td>
+  <td>Closed</td>
+  <td>MIT Open Source</td>
+</tr>
+</table>
 
-| Package | Description |
-|---------|-------------|
-| `onesub` | React Native SDK — `useOneSub()` hook + `<Paywall />` |
-| `@onesub/server` | Express middleware — receipt validation + webhooks |
-| `@onesub/mcp-server` | MCP tools — AI sets up your subscription |
-| `@onesub/shared` | Shared types and constants |
+> **한국어 요약**: RevenueCat은 Offering, Entitlement, Package 같은 복잡한 개념을 알아야 합니다. onesub는 `isActive: true/false` 하나면 됩니다. MCP로 AI에게 "구독 달아줘"라고 말하면 30분 안에 끝납니다.
 
-## Quick Start
+---
 
-### 1. Install
+## Architecture | 구조
+
+```
+┌─────────────────────────────────────────────────────┐
+│  Your Mobile App (React Native / Expo)              │
+│                                                     │
+│  ┌─────────────────────────────────────────────┐    │
+│  │  onesub SDK                                 │    │
+│  │  ┌──────────────┐  ┌────────────────────┐   │    │
+│  │  │ useOneSub()  │  │ <Paywall />        │   │    │
+│  │  │ isActive     │  │ Ready-to-use UI    │   │    │
+│  │  │ subscribe()  │  │ or build your own  │   │    │
+│  │  │ restore()    │  │                    │   │    │
+│  │  └──────┬───────┘  └────────────────────┘   │    │
+│  └─────────┼───────────────────────────────────┘    │
+│            │ receipt                                 │
+└────────────┼────────────────────────────────────────┘
+             ▼
+┌─────────────────────────────────────────────────────┐
+│  Your Backend (Express / any Node.js)               │
+│                                                     │
+│  app.use(createOneSubMiddleware(config))             │
+│                                                     │
+│  POST /onesub/validate    ← Receipt validation      │
+│  GET  /onesub/status      ← Subscription check      │
+│  POST /onesub/webhook/*   ← Store notifications     │
+│                                                     │
+│  ┌──────────┐  ┌──────────┐  ┌────────────────┐    │
+│  │  Apple   │  │  Google  │  │ Subscription   │    │
+│  │ StoreKit │  │ Play API │  │ Store          │    │
+│  │    2     │  │    v3    │  │ (pluggable)    │    │
+│  └──────────┘  └──────────┘  └────────────────┘    │
+└─────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────┐
+│  @onesub/mcp-server (AI Integration)                │
+│                                                     │
+│  "Add a monthly subscription at $4.99"              │
+│           ↓                                         │
+│  onesub_setup        → Full integration code        │
+│  onesub_add_paywall  → Custom paywall component     │
+│  onesub_check_status → Live subscription status     │
+│  onesub_troubleshoot → IAP issue diagnosis          │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Packages | 패키지
+
+| Package | Description | 설명 |
+|---------|-------------|------|
+| `onesub` | React Native SDK — `useOneSub()` hook + `<Paywall />` | 모바일 SDK |
+| `@onesub/server` | Express middleware — receipt validation + webhooks | 서버 미들웨어 |
+| `@onesub/mcp-server` | MCP tools — AI sets up your subscription | AI 통합 도구 |
+| `@onesub/shared` | Shared TypeScript types and constants | 공유 타입 |
+
+---
+
+## Quick Start | 빠른 시작
+
+### 1. Install | 설치
 
 ```bash
-# In your React Native app
+# Mobile app
 npm install onesub react-native-iap
 
-# In your backend
+# Backend
 npm install @onesub/server
 ```
 
-### 2. Server Setup
+### 2. Server | 서버
 
 ```ts
 import express from 'express';
@@ -59,18 +146,15 @@ app.use(createOneSubMiddleware({
     packageName: 'com.yourapp.id',
     serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
   },
-  database: {
-    url: process.env.DATABASE_URL,
-  },
+  database: { url: process.env.DATABASE_URL },
 }));
 
 app.listen(4100);
 ```
 
-### 3. App Setup
+### 3. App Root | 앱 루트
 
 ```tsx
-// App root
 import { OneSubProvider } from 'onesub';
 
 export default function App() {
@@ -88,7 +172,7 @@ export default function App() {
 }
 ```
 
-### 4. Add Paywall
+### 4. Paywall | 페이월
 
 ```tsx
 import { useOneSub, Paywall } from 'onesub';
@@ -117,9 +201,13 @@ export function PremiumScreen() {
 }
 ```
 
-## AI Setup (MCP)
+**That's it. No Offerings. No Entitlements. No dashboard.**
 
-Add to your Claude Code / Cursor MCP config:
+---
+
+## AI Setup (MCP) | AI 설정
+
+Add to your Claude Code / Cursor config:
 
 ```json
 {
@@ -132,46 +220,125 @@ Add to your Claude Code / Cursor MCP config:
 }
 ```
 
-Then just ask:
+Then just ask your AI:
 
-> "Add a monthly subscription at $4.99 to my app"
+> **English**: "Add a monthly subscription at $4.99 to my Expo app"
+>
+> **한국어**: "내 Expo 앱에 월 4,900원 구독 추가해줘"
 
-The AI will analyze your project and generate all the code.
+The MCP server provides 4 tools:
 
-## Self-Hosting
+| Tool | Description | 설명 |
+|------|-------------|------|
+| `onesub_setup` | Analyze project & generate integration code | 프로젝트 분석 + 통합 코드 생성 |
+| `onesub_add_paywall` | Generate a customized paywall screen | 맞춤 페이월 화면 생성 |
+| `onesub_check_status` | Check subscription status via API | 구독 상태 확인 |
+| `onesub_troubleshoot` | Diagnose common IAP issues | IAP 문제 진단 |
 
-onesub server is just an Express middleware. Deploy it anywhere:
+---
+
+## Self-Hosting | 셀프호스트
+
+onesub is just an Express middleware. Deploy anywhere:
 
 ```bash
-# Docker
-docker run -p 4100:4100 \
-  -e APPLE_BUNDLE_ID=com.yourapp \
-  -e GOOGLE_PACKAGE_NAME=com.yourapp \
-  onesub/server
+# Standalone
+node -e "
+  import('@onesub/server').then(({ createOneSubServer }) =>
+    createOneSubServer({ ... }).listen(4100)
+  )
+"
 
-# Or add to your existing Express app
+# Or mount in your existing Express app — one line:
 app.use(createOneSubMiddleware(config));
 ```
 
-## Custom Subscription Store
+---
 
-Default is in-memory. Bring your own:
+## Custom Store | 커스텀 저장소
+
+Default is in-memory. Plug in your own database:
+
+> 기본값은 인메모리입니다. PostgreSQL, Redis 등 원하는 저장소를 연결하세요.
 
 ```ts
 import { SubscriptionStore, createOneSubMiddleware } from '@onesub/server';
 
-class PostgresStore implements SubscriptionStore {
-  async save(sub) { /* INSERT INTO subscriptions ... */ }
-  async getByUserId(userId) { /* SELECT ... WHERE user_id = ... */ }
-  async getByTransactionId(txId) { /* SELECT ... WHERE tx_id = ... */ }
+class PrismaStore implements SubscriptionStore {
+  async save(sub) {
+    await prisma.subscription.upsert({
+      where: { originalTransactionId: sub.originalTransactionId },
+      update: sub,
+      create: sub,
+    });
+  }
+  async getByUserId(userId) {
+    return prisma.subscription.findFirst({
+      where: { userId, status: 'active' },
+    });
+  }
+  async getByTransactionId(txId) {
+    return prisma.subscription.findFirst({
+      where: { originalTransactionId: txId },
+    });
+  }
 }
 
 app.use(createOneSubMiddleware({
   ...config,
-  store: new PostgresStore(),
+  store: new PrismaStore(),
 }));
 ```
 
-## License
+---
 
-MIT
+## Roadmap | 로드맵
+
+- [x] React Native SDK (`useOneSub` + `<Paywall />`)
+- [x] Express server middleware (receipt validation + webhooks)
+- [x] MCP server (AI-powered setup)
+- [ ] Flutter SDK
+- [ ] Hosted service (no server needed)
+- [ ] A/B testing for paywalls
+- [ ] Analytics dashboard
+- [ ] Stripe integration for web
+
+---
+
+## Philosophy | 철학
+
+```
+RevenueCat:  Offering → Entitlement → Package → Product → StoreProduct → ...
+onesub:      isActive? → true / false
+```
+
+90% of indie apps need **one monthly subscription and a paywall**. That's exactly what onesub does. Nothing more.
+
+> 인디 앱의 90%는 **월 구독 하나와 페이월 하나**면 충분합니다.
+> onesub는 정확히 그것만 합니다. 그 이상 없습니다.
+
+---
+
+## Contributing | 기여
+
+PRs welcome! See [CLAUDE.md](CLAUDE.md) for project structure and conventions.
+
+```bash
+git clone https://github.com/jeonghwanko/onesub.git
+cd onesub
+npm install
+npm run build
+```
+
+---
+
+## License | 라이선스
+
+[MIT](LICENSE) - Use it however you want.
+
+---
+
+<p align="center">
+  <strong>onesub</strong> — because subscriptions shouldn't be complicated.<br/>
+  구독이 복잡할 이유는 없습니다.
+</p>
