@@ -1,14 +1,15 @@
 import express, { Router } from 'express';
 import type { OneSubServerConfig } from '@onesub/shared';
 import { DEFAULT_PORT } from '@onesub/shared';
-import { InMemorySubscriptionStore } from './store.js';
-import type { SubscriptionStore } from './store.js';
+import { InMemorySubscriptionStore, InMemoryPurchaseStore } from './store.js';
+import type { SubscriptionStore, PurchaseStore } from './store.js';
 import { createValidateRouter } from './routes/validate.js';
 import { createStatusRouter } from './routes/status.js';
 import { createWebhookRouter } from './routes/webhook.js';
+import { createPurchaseRouter } from './routes/purchase.js';
 
 /**
- * Extended config with optional pluggable store.
+ * Extended config with optional pluggable stores.
  */
 export interface OneSubMiddlewareConfig extends OneSubServerConfig {
   /**
@@ -16,6 +17,12 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
    * For production, provide a PostgreSQL or Redis backed implementation.
    */
   store?: SubscriptionStore;
+  /**
+   * Custom purchase store for consumables and non-consumables.
+   * Defaults to InMemoryPurchaseStore.
+   * For production, provide a PostgreSQL backed implementation.
+   */
+  purchaseStore?: PurchaseStore;
 }
 
 /**
@@ -37,6 +44,7 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
  */
 export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   const store: SubscriptionStore = config.store ?? new InMemorySubscriptionStore();
+  const purchaseStore: PurchaseStore = config.purchaseStore ?? new InMemoryPurchaseStore();
 
   const router = Router();
 
@@ -46,6 +54,7 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   router.use(createValidateRouter(config, store));
   router.use(createStatusRouter(store));
   router.use(createWebhookRouter(config, store));
+  router.use(createPurchaseRouter(config, purchaseStore));
 
   return router;
 }
@@ -72,9 +81,9 @@ export function createOneSubServer(config: OneSubMiddlewareConfig): ReturnType<t
 }
 
 // Named re-exports for consumers who want to bring their own store
-export { InMemorySubscriptionStore } from './store.js';
-export type { SubscriptionStore } from './store.js';
-export { PostgresSubscriptionStore } from './stores/postgres.js';
+export { InMemorySubscriptionStore, InMemoryPurchaseStore } from './store.js';
+export type { SubscriptionStore, PurchaseStore } from './store.js';
+export { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postgres.js';
 
 // Provider functions for direct (non-HTTP) usage
 export { validateAppleReceipt } from './providers/apple.js';

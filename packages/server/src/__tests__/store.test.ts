@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { InMemorySubscriptionStore } from '../store.js';
-import type { SubscriptionInfo } from '@onesub/shared';
+import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
+import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
 
 const makeSub = (overrides?: Partial<SubscriptionInfo>): SubscriptionInfo => ({
   userId: 'user_123',
@@ -84,5 +84,72 @@ describe('InMemorySubscriptionStore', () => {
     expect(await store.getByUserId('user_2')).toEqual(sub2);
     expect(await store.getByTransactionId('txn_1')).toEqual(sub1);
     expect(await store.getByTransactionId('txn_2')).toEqual(sub2);
+  });
+});
+
+// ── InMemoryPurchaseStore ────────────────────────────────────────────────────
+
+const makePurchase = (overrides?: Partial<PurchaseInfo>): PurchaseInfo => ({
+  userId: 'user_1',
+  productId: 'credits_10',
+  platform: 'apple',
+  type: 'consumable',
+  transactionId: 'txn_p1',
+  purchasedAt: '2026-01-01T00:00:00.000Z',
+  quantity: 1,
+  ...overrides,
+});
+
+describe('InMemoryPurchaseStore', () => {
+  let purchaseStore: InMemoryPurchaseStore;
+
+  beforeEach(() => {
+    purchaseStore = new InMemoryPurchaseStore();
+  });
+
+  it('savePurchase + getPurchasesByUserId returns purchases', async () => {
+    const p = makePurchase();
+    await purchaseStore.savePurchase(p);
+
+    const results = await purchaseStore.getPurchasesByUserId('user_1');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual(p);
+  });
+
+  it('getPurchaseByTransactionId returns the correct purchase', async () => {
+    const p = makePurchase();
+    await purchaseStore.savePurchase(p);
+
+    expect(await purchaseStore.getPurchaseByTransactionId('txn_p1')).toEqual(p);
+    expect(await purchaseStore.getPurchaseByTransactionId('unknown')).toBeNull();
+  });
+
+  it('hasPurchased returns true for existing purchase', async () => {
+    await purchaseStore.savePurchase(makePurchase({ type: 'non_consumable', productId: 'premium_unlock' }));
+
+    expect(await purchaseStore.hasPurchased('user_1', 'premium_unlock')).toBe(true);
+    expect(await purchaseStore.hasPurchased('user_1', 'other_product')).toBe(false);
+    expect(await purchaseStore.hasPurchased('user_2', 'premium_unlock')).toBe(false);
+  });
+
+  it('stores multiple consumable purchases for same user+product', async () => {
+    await purchaseStore.savePurchase(makePurchase({ transactionId: 'txn_1' }));
+    await purchaseStore.savePurchase(makePurchase({ transactionId: 'txn_2' }));
+    await purchaseStore.savePurchase(makePurchase({ transactionId: 'txn_3' }));
+
+    const results = await purchaseStore.getPurchasesByUserId('user_1');
+    expect(results).toHaveLength(3);
+  });
+
+  it('getPurchasesByUserId returns empty for unknown user', async () => {
+    expect(await purchaseStore.getPurchasesByUserId('unknown')).toEqual([]);
+  });
+
+  it('stores purchases for different users independently', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' }));
+    await purchaseStore.savePurchase(makePurchase({ userId: 'b', transactionId: 't2' }));
+
+    expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
+    expect(await purchaseStore.getPurchasesByUserId('b')).toHaveLength(1);
   });
 });

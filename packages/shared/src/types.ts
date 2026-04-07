@@ -87,6 +87,41 @@ export interface OneSubServerConfig {
   webhookSecret?: string;
 }
 
+/** Purchase type */
+export type PurchaseType = 'consumable' | 'non_consumable' | 'subscription';
+
+/** One-time purchase info (consumable or non-consumable) */
+export interface PurchaseInfo {
+  userId: string;
+  productId: string;
+  platform: Platform;
+  type: PurchaseType;
+  transactionId: string;
+  purchasedAt: string;
+  quantity: number; // 1 for non-consumable, 1+ for consumable
+}
+
+/** Purchase validation request */
+export interface ValidatePurchaseRequest {
+  platform: Platform;
+  receipt: string;
+  userId: string;
+  productId: string;
+  type: PurchaseType;
+}
+
+/** Purchase validation response */
+export interface ValidatePurchaseResponse {
+  valid: boolean;
+  purchase: PurchaseInfo | null;
+  error?: string;
+}
+
+/** Purchase status response */
+export interface PurchaseStatusResponse {
+  purchases: PurchaseInfo[];
+}
+
 /** SDK config (client-side) */
 export interface OneSubConfig {
   serverUrl: string;
