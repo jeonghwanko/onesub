@@ -1,4 +1,10 @@
-import type { StatusResponse, ValidateReceiptRequest, ValidateReceiptResponse } from '@onesub/shared';
+import type {
+  StatusResponse,
+  ValidateReceiptRequest,
+  ValidateReceiptResponse,
+  ValidatePurchaseRequest,
+  ValidatePurchaseResponse,
+} from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 
 /**
@@ -26,7 +32,7 @@ export async function checkStatus(
 }
 
 /**
- * Validates a purchase receipt with the onesub server.
+ * Validates a subscription receipt with the onesub server.
  * The server handles Apple/Google verification and stores the subscription.
  */
 export async function validateReceipt(
@@ -48,5 +54,31 @@ export async function validateReceipt(
   }
 
   const data = (await response.json()) as ValidateReceiptResponse;
+  return data;
+}
+
+/**
+ * Validates a consumable or non-consumable product purchase with the onesub server.
+ * The server verifies the Apple/Google receipt and records the purchase.
+ */
+export async function validatePurchase(
+  serverUrl: string,
+  request: ValidatePurchaseRequest,
+): Promise<ValidatePurchaseResponse> {
+  const url = `${serverUrl.replace(/\/$/, '')}${ROUTES.VALIDATE_PURCHASE}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    throw new Error(`[onesub] Purchase validation failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as ValidatePurchaseResponse;
   return data;
 }

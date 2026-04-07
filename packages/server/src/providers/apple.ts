@@ -4,6 +4,9 @@ import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 
 type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
+/** Maximum age for consumable receipts (72 hours). Older receipts may indicate replay attacks. */
+const MAX_CONSUMABLE_RECEIPT_AGE_MS = 72 * 60 * 60 * 1000;
+
 /**
  * Decoded Apple signed transaction (JWS payload).
  * Mirrors the fields from App Store Server API / StoreKit 2.
@@ -110,9 +113,15 @@ export async function validateAppleReceipt(
     return null;
   }
 
-  // Validate bundle ID if provided
-  if (tx.bundleId && tx.bundleId !== config.bundleId) {
+  // Validate bundle ID — missing or mismatched both rejected
+  if (!tx.bundleId || tx.bundleId !== config.bundleId) {
     console.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    return null;
+  }
+
+  // Reject Sandbox receipts in production
+  if (process.env['NODE_ENV'] === 'production' && tx.environment !== 'Production') {
+    console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
     return null;
   }
 
@@ -128,6 +137,98 @@ export async function validateAppleReceipt(
     originalTransactionId: tx.originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
+  };
+}
+
+/**
+ * Result of validating an Apple consumable or non-consumable receipt.
+ */
+export interface AppleProductResult {
+  /** Per-transaction unique ID (transactionId, not originalTransactionId) */
+  transactionId: string;
+  productId: string;
+  purchasedAt: string;
+}
+
+/**
+ * Validate an Apple StoreKit 2 JWS signedTransaction for a consumable or
+ * non-consumable product.
+ *
+ * Differences from validateAppleReceipt (subscriptions):
+ * - Checks tx.type is 'Consumable' or 'NonConsumable' (not a subscription)
+ * - Uses tx.transactionId (per-purchase unique) instead of originalTransactionId
+ * - Enforces a 72-hour receipt age limit to block replay attacks
+ * - Does NOT check expiresDate (one-time purchases don't expire)
+ */
+export async function validateAppleConsumableReceipt(
+  signedTransaction: string,
+  config: AppleConfig,
+  expectedProductId?: string,
+): Promise<AppleProductResult | null> {
+  let tx: AppleTransactionPayload;
+
+  try {
+    tx = await decodeJws<AppleTransactionPayload>(signedTransaction, config.skipJwsVerification);
+  } catch {
+    console.warn('[onesub/apple] Failed to decode consumable JWS');
+    return null;
+  }
+
+  // bundleId must be present and match
+  if (!tx.bundleId || tx.bundleId !== config.bundleId) {
+    console.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    return null;
+  }
+
+  // Must be a one-time purchase type (not a subscription)
+  if (tx.type !== 'Consumable' && tx.type !== 'NonConsumable') {
+    console.warn('[onesub/apple] Invalid purchase type for product validation:', tx.type);
+    return null;
+  }
+
+  // Reject Sandbox receipts in production
+  if (process.env['NODE_ENV'] === 'production' && tx.environment !== 'Production') {
+    console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
+    return null;
+  }
+
+  if (!tx.productId) {
+    console.warn('[onesub/apple] No productId in transaction');
+    return null;
+  }
+
+  if (expectedProductId && tx.productId !== expectedProductId) {
+    console.warn('[onesub/apple] Product ID mismatch:', tx.productId, '!==', expectedProductId);
+    return null;
+  }
+
+  // Reject refunded purchases
+  if (tx.revocationDate) {
+    console.warn('[onesub/apple] Purchase was revoked/refunded');
+    return null;
+  }
+
+  // Reject receipts older than 72 hours (replay attack prevention)
+  if (tx.purchaseDate && Date.now() - tx.purchaseDate > MAX_CONSUMABLE_RECEIPT_AGE_MS) {
+    console.warn('[onesub/apple] Consumable receipt too old (>72h)');
+    return null;
+  }
+
+  // For consumables, transactionId is per-purchase unique.
+  // originalTransactionId is shared across re-purchases, so it must not be used
+  // as the deduplication key for consumables.
+  const transactionId = tx.transactionId ?? tx.originalTransactionId;
+  if (!transactionId) {
+    console.warn('[onesub/apple] No transactionId in consumable transaction');
+    return null;
+  }
+
+  return {
+    transactionId,
+    productId: tx.productId,
+    purchasedAt: tx.purchaseDate
+      ? new Date(tx.purchaseDate).toISOString()
+      : new Date().toISOString(),
   };
 }
 

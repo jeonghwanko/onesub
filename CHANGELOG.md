@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.0 / sdk@0.2.0 — 2026-04-08
+
+### @onesub/server@0.3.0
+
+**Provider-level product validators:**
+- `validateAppleConsumableReceipt(jws, config, expectedProductId?)` — validates Apple JWS for `Consumable` and `NonConsumable` types
+  - Uses `transactionId` (not `originalTransactionId`) as dedup key — prevents replay across re-purchases
+  - Rejects `Auto-Renewable Subscription` and `Non-Renewing Subscription` types
+  - Enforces 72-hour receipt age limit
+  - Blocks revoked/refunded transactions
+- `validateGoogleProductReceipt(token, productId, config, type?)` — validates via `purchases.products` API (not `purchases.subscriptions`)
+  - `consumptionState === 1` blocks consumable replay (already-consumed token)
+  - Non-consumables allow `consumptionState === 1` (normal after acknowledgement)
+  - Enforces 72-hour receipt age limit
+  - Uses `orderId` as `transactionId` (per-purchase unique, unlike `purchaseToken`)
+- 24 new provider unit tests (69 total)
+
+### @onesub/sdk@0.2.0
+
+**`purchaseProduct()` — one-time product purchase:**
+- New `purchaseProduct(productId, type)` method on `useOneSub()` context
+  - `type: 'consumable' | 'non_consumable'`
+  - Returns `PurchaseInfo` on success, `null` on user cancel, throws on validation failure
+  - `finishTransaction` always called in `finally` (Android 3-day auto-refund prevention)
+  - `isBusyRef` lock prevents concurrent calls
+- New `validatePurchase()` client function in `api.ts`
+- New exports: `PurchaseType`, `PurchaseInfo`, `ValidatePurchaseRequest`, `ValidatePurchaseResponse`, `PurchaseStatusResponse`
+- Fixed `restore()`: `singlePurchase` declared before `try` block, `finishTransaction` in `finally`
+- Added `endConnection()` in `useEffect` cleanup
+
+---
+
 ## v0.2.0 — 2026-04-07
 
 ### @onesub/shared + @onesub/server

@@ -165,8 +165,18 @@ import { OneSubProvider, useOneSub } from '@onesub/sdk';
   <App />
 </OneSubProvider>
 
-// In any component
+// Subscriptions
 const { isActive, subscribe, restore } = useOneSub();
+
+// One-time products (consumable / non-consumable)
+const { purchaseProduct } = useOneSub();
+
+// Purchase a consumable (e.g. coins)
+const purchase = await purchaseProduct('credits_100', 'consumable');
+// purchase is null if user cancelled, PurchaseInfo on success
+
+// Purchase a non-consumable (e.g. premium unlock)
+const purchase = await purchaseProduct('premium_unlock', 'non_consumable');
 ```
 
 The SDK is optional. You can use `@onesub/server` with any client — React Native, Flutter, or plain HTTP calls.

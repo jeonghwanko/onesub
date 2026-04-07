@@ -9,8 +9,8 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, PURCHASE_TYPE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
-import { validateAppleReceipt } from '../providers/apple.js';
-import { validateGoogleReceipt } from '../providers/google.js';
+import { validateAppleConsumableReceipt } from '../providers/apple.js';
+import { validateGoogleProductReceipt } from '../providers/google.js';
 
 const validatePurchaseSchema = z.object({
   platform: z.enum(['apple', 'google']),
@@ -37,6 +37,13 @@ export function createPurchaseRouter(
    * Validate a receipt for a consumable or non-consumable purchase.
    * - Non-consumables: rejected if the user already owns the product.
    * - Consumables: always recorded (multiple purchases allowed).
+   *
+   * Uses platform-specific product validators (purchases.products API) instead
+   * of the subscription validator. Key differences:
+   * - Apple: validates tx.type === 'Consumable'|'NonConsumable', uses transactionId
+   *   (not originalTransactionId) as the dedup key, enforces 72h receipt age
+   * - Google: checks consumptionState for consumables (replay prevention),
+   *   enforces 72h receipt age, uses orderId as the dedup key
    */
   router.post(ROUTES.VALIDATE_PURCHASE, async (req: Request, res: Response) => {
     let body: z.infer<typeof validatePurchaseSchema>;
@@ -59,7 +66,7 @@ export function createPurchaseRouter(
     const { platform, receipt, userId, productId, type } = body;
 
     try {
-      // Non-consumable duplicate check
+      // Non-consumable duplicate check (before receipt validation to fail fast)
       if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
         const alreadyOwned = await purchaseStore.hasPurchased(userId, productId);
         if (alreadyOwned) {
@@ -73,9 +80,10 @@ export function createPurchaseRouter(
         }
       }
 
-      // Validate receipt via the appropriate provider.
-      // Both providers return a SubscriptionInfo-shaped object; we extract only
-      // the fields we need for PurchaseInfo (transactionId, purchasedAt).
+      // Validate receipt via the appropriate platform-specific product validator.
+      // Note: these are separate from the subscription validators — they call
+      // purchases.products (not purchases.subscriptions) and apply product-specific
+      // security checks (type validation, consumptionState, receipt age).
       let transactionId: string | null = null;
       let purchasedAt: string = new Date().toISOString();
 
@@ -89,10 +97,10 @@ export function createPurchaseRouter(
           res.status(500).json(response);
           return;
         }
-        const sub = await validateAppleReceipt(receipt, config.apple);
-        if (sub) {
-          transactionId = sub.originalTransactionId;
-          purchasedAt = sub.purchasedAt;
+        const result = await validateAppleConsumableReceipt(receipt, config.apple, productId);
+        if (result) {
+          transactionId = result.transactionId;
+          purchasedAt = result.purchasedAt;
         }
       } else {
         if (!config.google) {
@@ -104,10 +112,15 @@ export function createPurchaseRouter(
           res.status(500).json(response);
           return;
         }
-        const sub = await validateGoogleReceipt(receipt, productId, config.google);
-        if (sub) {
-          transactionId = sub.originalTransactionId;
-          purchasedAt = sub.purchasedAt;
+        const result = await validateGoogleProductReceipt(
+          receipt,
+          productId,
+          config.google,
+          type === PURCHASE_TYPE.CONSUMABLE ? 'consumable' : 'non_consumable',
+        );
+        if (result) {
+          transactionId = result.transactionId;
+          purchasedAt = result.purchasedAt;
         }
       }
 
@@ -121,7 +134,7 @@ export function createPurchaseRouter(
         return;
       }
 
-      // Check for duplicate transaction (idempotency)
+      // Idempotency check — same transaction submitted twice returns the existing record
       const existing = await purchaseStore.getPurchaseByTransactionId(transactionId);
       if (existing) {
         const response: ValidatePurchaseResponse = {

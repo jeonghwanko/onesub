@@ -14,7 +14,7 @@ export { PaywallModal } from './PaywallModal.js';
 export type { PaywallModalProps } from './PaywallModal.js';
 
 // API utilities (for advanced / custom UI usage)
-export { checkStatus, validateReceipt } from './api.js';
+export { checkStatus, validateReceipt, validatePurchase } from './api.js';
 
 // Re-export shared types for consumer convenience — no need to depend on @onesub/shared separately
 export type {
@@ -26,4 +26,9 @@ export type {
   Platform,
   ValidateReceiptRequest,
   ValidateReceiptResponse,
+  PurchaseType,
+  PurchaseInfo,
+  ValidatePurchaseRequest,
+  ValidatePurchaseResponse,
+  PurchaseStatusResponse,
 } from '@onesub/shared';

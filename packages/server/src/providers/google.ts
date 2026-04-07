@@ -65,6 +65,21 @@ interface GoogleDeveloperNotification {
 }
 
 /**
+ * Google Play Developer API v3 — ProductPurchase resource (consumable / non-consumable).
+ * https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.products
+ */
+interface GoogleProductPurchase {
+  purchaseTimeMillis?: string;
+  purchaseState?: number;       // 0 = Purchased, 1 = Canceled, 2 = Pending
+  consumptionState?: number;    // 0 = Not consumed, 1 = Consumed
+  orderId?: string;
+  [key: string]: unknown;
+}
+
+/** Maximum age for product receipts (72 hours). */
+const MAX_PRODUCT_RECEIPT_AGE_MS = 72 * 60 * 60 * 1000;
+
+/**
  * Module-level token cache. Keyed by the raw serviceAccountKey string so that
  * different service accounts (rare but possible) are cached independently.
  */
@@ -181,6 +196,33 @@ async function fetchSubscriptionPurchase(
 }
 
 /**
+ * Fetch a one-time product purchase from the Google Play Developer API.
+ * Uses purchases.products instead of purchases.subscriptions.
+ */
+async function fetchProductPurchase(
+  packageName: string,
+  productId: string,
+  purchaseToken: string,
+  accessToken: string,
+): Promise<GoogleProductPurchase> {
+  const url =
+    `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/` +
+    `${encodeURIComponent(packageName)}/purchases/products/` +
+    `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}`;
+
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`[onesub/google] Play Products API error ${resp.status}: ${body}`);
+  }
+
+  return resp.json() as Promise<GoogleProductPurchase>;
+}
+
+/**
  * Derive a SubscriptionStatus from a Google Play purchase resource.
  */
 function deriveStatus(purchase: GoogleSubscriptionPurchase): SubscriptionInfo['status'] {
@@ -236,6 +278,80 @@ export async function validateGoogleReceipt(
     originalTransactionId: purchase.orderId ?? receipt.slice(0, 64),
     purchasedAt: new Date(startMs).toISOString(),
     willRenew: purchase.autoRenewing ?? false,
+  };
+}
+
+/**
+ * Result of validating a Google Play product (consumable / non-consumable) receipt.
+ */
+export interface GoogleProductResult {
+  /** orderId — unique per Google Play transaction, safe deduplication key */
+  transactionId: string;
+  purchasedAt: string;
+}
+
+/**
+ * Validate a Google Play purchase token for a one-time product (consumable or
+ * non-consumable). Uses purchases.products, not purchases.subscriptions.
+ *
+ * Security checks applied beyond basic API verification:
+ * - purchaseState must be 0 (completed)
+ * - consumptionState checked for consumables: already-consumed tokens indicate replay
+ * - Receipt age limited to 72 hours
+ * - orderId used as transactionId (per-purchase unique, unlike purchaseToken)
+ */
+export async function validateGoogleProductReceipt(
+  purchaseToken: string,
+  productId: string,
+  config: GoogleConfig,
+  type: 'consumable' | 'non_consumable' = 'non_consumable',
+): Promise<GoogleProductResult | null> {
+  if (!config.serviceAccountKey) {
+    console.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
+    return null;
+  }
+
+  let purchase: GoogleProductPurchase;
+  try {
+    const token = await getCachedAccessToken(config.serviceAccountKey);
+    purchase = await fetchProductPurchase(config.packageName, productId, purchaseToken, token);
+  } catch (err) {
+    console.error('[onesub/google] Product receipt validation failed:', err);
+    return null;
+  }
+
+  // purchaseState 0 = completed (1 = canceled, 2 = pending)
+  if (purchase.purchaseState !== 0) {
+    console.warn('[onesub/google] Purchase not completed, state:', purchase.purchaseState);
+    return null;
+  }
+
+  // For consumables: consumptionState 1 means already consumed by a previous request.
+  // This is the primary replay-attack signal for consumables on Android.
+  if (type === 'consumable' && purchase.consumptionState === 1) {
+    console.warn('[onesub/google] Consumable already consumed — possible replay attack');
+    return null;
+  }
+
+  // Reject receipts older than 72 hours
+  if (purchase.purchaseTimeMillis) {
+    const purchaseTime = parseInt(purchase.purchaseTimeMillis, 10);
+    if (Date.now() - purchaseTime > MAX_PRODUCT_RECEIPT_AGE_MS) {
+      console.warn('[onesub/google] Product receipt too old (>72h)');
+      return null;
+    }
+  }
+
+  if (!purchase.orderId) {
+    console.warn('[onesub/google] No orderId in product purchase');
+    return null;
+  }
+
+  return {
+    transactionId: purchase.orderId,
+    purchasedAt: purchase.purchaseTimeMillis
+      ? new Date(parseInt(purchase.purchaseTimeMillis, 10)).toISOString()
+      : new Date().toISOString(),
   };
 }
 
