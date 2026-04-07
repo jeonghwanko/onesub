@@ -1,6 +1,10 @@
 <p align="center">
+  <a href="https://www.npmjs.com/package/@onesub/server"><img src="https://img.shields.io/npm/v/@onesub/server.svg?label=%40onesub%2Fserver" alt="@onesub/server" /></a>
+  <a href="https://www.npmjs.com/package/@onesub/sdk"><img src="https://img.shields.io/npm/v/@onesub/sdk.svg?label=%40onesub%2Fsdk" alt="@onesub/sdk" /></a>
+  <a href="https://www.npmjs.com/package/@onesub/mcp-server"><img src="https://img.shields.io/npm/v/@onesub/mcp-server.svg?label=%40onesub%2Fmcp-server" alt="@onesub/mcp-server" /></a>
+  <br/>
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" />
-  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" />
+  <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg" alt="Node >= 20" />
   <img src="https://img.shields.io/badge/platform-iOS%20%7C%20Android-lightgrey.svg" alt="Platform" />
 </p>
 
@@ -154,12 +158,12 @@ For Claude Code / Cursor users — AI helps set up your subscription:
 
 ## Packages
 
-| Package | What | Required? |
-|---------|------|-----------|
-| `@onesub/server` | Express middleware — the core | **Yes** |
-| `@onesub/sdk` | React Native SDK (hook + paywall) | Optional |
-| `@onesub/mcp-server` | AI setup tools | Optional |
-| `@onesub/shared` | Shared types | Auto-installed |
+| Package | Version | What | Install |
+|---------|---------|------|---------|
+| [`@onesub/server`](https://www.npmjs.com/package/@onesub/server) | ![npm](https://img.shields.io/npm/v/@onesub/server.svg) | Express middleware — receipt validation + webhooks | `npm i @onesub/server` |
+| [`@onesub/sdk`](https://www.npmjs.com/package/@onesub/sdk) | ![npm](https://img.shields.io/npm/v/@onesub/sdk.svg) | React Native SDK — `useOneSub()` + `<Paywall />` | `npm i @onesub/sdk` |
+| [`@onesub/mcp-server`](https://www.npmjs.com/package/@onesub/mcp-server) | ![npm](https://img.shields.io/npm/v/@onesub/mcp-server.svg) | MCP tools — AI creates products + paywalls | `npx @onesub/mcp-server` |
+| [`@onesub/shared`](https://www.npmjs.com/package/@onesub/shared) | ![npm](https://img.shields.io/npm/v/@onesub/shared.svg) | Shared TypeScript types | Auto-installed |
 
 ---
 
