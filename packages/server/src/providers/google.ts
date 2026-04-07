@@ -223,6 +223,49 @@ async function fetchProductPurchase(
 }
 
 /**
+ * Consume a one-time product purchase via the Google Play Developer API.
+ * Must be called for consumables after the entitlement is granted to the user.
+ * Google auto-refunds unconsumed purchases after 3 days.
+ *
+ * This function does not throw — callers should log failures and monitor,
+ * as the entitlement has already been granted.
+ */
+export async function consumeGoogleProductReceipt(
+  purchaseToken: string,
+  productId: string,
+  config: GoogleConfig,
+): Promise<void> {
+  if (!config.serviceAccountKey) return;
+
+  let accessToken: string;
+  try {
+    accessToken = await getCachedAccessToken(config.serviceAccountKey);
+  } catch (err) {
+    console.warn('[onesub/google] Could not get access token for consume:', err);
+    return;
+  }
+
+  const url =
+    `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/` +
+    `${encodeURIComponent(config.packageName)}/purchases/products/` +
+    `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:consume`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      console.warn(`[onesub/google] Consume API error ${resp.status}: ${body} — auto-refund risk`);
+    }
+  } catch (err) {
+    console.warn('[onesub/google] Consume network error — auto-refund risk:', err);
+  }
+}
+
+/**
  * Derive a SubscriptionStatus from a Google Play purchase resource.
  */
 function deriveStatus(purchase: GoogleSubscriptionPurchase): SubscriptionInfo['status'] {

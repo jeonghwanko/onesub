@@ -1,5 +1,16 @@
 # Changelog
 
+## server@0.3.1 — 2026-04-08
+
+### @onesub/server@0.3.1
+
+**Google consumable auto-refund prevention:**
+- Added `consumeGoogleProductReceipt(purchaseToken, productId, config)` — explicitly consumes a Google Play purchase via `purchases.products/{productId}/tokens/{token}:consume`
+- Must be called after entitlement is granted; Google auto-refunds unconsumed purchases after 3 days
+- `POST /onesub/purchase/validate` now calls this automatically for Google consumables (fire-and-forget, after DB save succeeds)
+- Shared token cache (`getCachedAccessToken`) reused — no extra OAuth round-trip
+- Failures are logged with auto-refund risk warning but do not affect the response
+
 ## v0.3.0 / sdk@0.2.0 — 2026-04-08
 
 ### @onesub/server@0.3.0

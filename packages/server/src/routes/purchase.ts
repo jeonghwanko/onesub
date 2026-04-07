@@ -10,7 +10,7 @@ import type {
 import { ROUTES, PURCHASE_TYPE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
-import { validateGoogleProductReceipt } from '../providers/google.js';
+import { validateGoogleProductReceipt, consumeGoogleProductReceipt } from '../providers/google.js';
 
 const validatePurchaseSchema = z.object({
   platform: z.enum(['apple', 'google']),
@@ -156,6 +156,13 @@ export function createPurchaseRouter(
       };
 
       await purchaseStore.savePurchase(purchase);
+
+      // For Google consumables: acknowledge the purchase after the entitlement is saved.
+      // Must happen after savePurchase — if called before, a DB failure would leave the
+      // receipt consumed but the entitlement ungranted with no retry path.
+      if (platform === 'google' && type === PURCHASE_TYPE.CONSUMABLE && config.google) {
+        void consumeGoogleProductReceipt(receipt, productId, config.google);
+      }
 
       const response: ValidatePurchaseResponse = {
         valid: true,
