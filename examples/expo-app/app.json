@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "onesub-example",
+    "slug": "onesub-example",
+    "version": "1.0.0",
+    "scheme": "onesub-example",
+    "ios": {
+      "bundleIdentifier": "com.example.onesub"
+    },
+    "android": {
+      "package": "com.example.onesub"
+    },
+    "plugins": ["expo-router"]
+  }
+}

@@ -182,6 +182,28 @@ For Claude Code / Cursor users — AI helps set up your subscription:
 
 ---
 
+## Examples
+
+Working examples to get you started in minutes:
+
+| Example | What | Run |
+|---------|------|-----|
+| [`examples/server`](examples/server) | Express server with receipt validation | `npm start` |
+| [`examples/expo-app`](examples/expo-app) | Expo Router app with paywall | `npx expo start` |
+
+```bash
+# 1. Start the server
+cd examples/server
+cp .env.example .env   # add your Apple/Google credentials
+npm install && npm start
+
+# 2. Start the app (in another terminal)
+cd examples/expo-app
+npm install && npx expo start
+```
+
+---
+
 ## Custom Store
 
 Built-in PostgreSQL store, or bring your own:
