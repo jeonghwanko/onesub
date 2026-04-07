@@ -2,7 +2,7 @@
 
 ## Overview
 
-Server-side receipt validation middleware for react-native-iap. Monthly subscription + paywall. That's it.
+The complete server side for react-native-iap. Subscriptions, consumables, non-consumables — all handled.
 
 ## Monorepo Structure
 

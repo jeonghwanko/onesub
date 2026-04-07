@@ -30,7 +30,8 @@ You use `react-native-iap` to handle purchases. But then you need a server to:
 - Verify Google Play receipts (Play Developer API v3)
 - Handle webhooks (renewals, cancellations, refunds)
 - Track subscription state in a database
-- Expose a "is this user subscribed?" endpoint
+- Track one-time purchases (consumables + non-consumables)
+- Expose "is this user subscribed?" and "what did this user buy?" endpoints
 
 **That's 2-3 weeks of work.** Or one line:
 
@@ -43,20 +44,19 @@ app.use(createOneSubMiddleware(config));
 ## How It Works
 
 ```
-react-native-iap (client)          @onesub/server (your backend)
-┌──────────────────────┐           ┌─────────────────────────────┐
-│ requestSubscription() │──receipt──▶ POST /onesub/validate       │
-│ getAvailablePurchases │           │   → Apple JWKS verify       │
-│ finishTransaction()   │           │   → Google Play API v3      │
-└──────────────────────┘           │   → Save to DB              │
-                                   │                             │
-        Your App                   │ GET /onesub/status          │
-┌──────────────────────┐           │   → { active: true/false }  │
-│ fetch('/onesub/status')──────────▶                             │
-│ if (active) show premium         │ POST /onesub/webhook/apple  │
-└──────────────────────┘           │ POST /onesub/webhook/google │
-                                   │   → Auto-handle renewals    │
-                                   └─────────────────────────────┘
+react-native-iap (client)            @onesub/server (your backend)
+                                      ┌─────────────────────────────────┐
+Subscriptions:                        │                                 │
+  requestSubscription() ──receipt───▶ │ POST /onesub/validate           │
+  fetch('/onesub/status') ──────────▶ │ GET  /onesub/status             │
+                                      │                                 │
+One-time purchases:                   │                                 │
+  requestPurchase() ────receipt───▶   │ POST /onesub/purchase/validate  │
+  fetch('/onesub/purchase/status') ──▶│ GET  /onesub/purchase/status    │
+                                      │                                 │
+Webhooks (auto):                      │ POST /onesub/webhook/apple      │
+                                      │ POST /onesub/webhook/google     │
+                                      └─────────────────────────────────┘
 ```
 
 ---
@@ -102,12 +102,41 @@ const { active } = await res.json();
 
 ## What You Get
 
+### Subscriptions (auto-renewable)
+
 | Endpoint | What it does |
 |----------|-------------|
-| `POST /onesub/validate` | Verify Apple/Google receipt, save subscription |
+| `POST /onesub/validate` | Verify receipt, save subscription |
 | `GET /onesub/status?userId=` | Check if user has active subscription |
 | `POST /onesub/webhook/apple` | Handle App Store Server Notifications V2 |
 | `POST /onesub/webhook/google` | Handle Google Real-Time Developer Notifications |
+
+### One-time Purchases (consumable + non-consumable)
+
+| Endpoint | What it does |
+|----------|-------------|
+| `POST /onesub/purchase/validate` | Verify receipt, save purchase |
+| `GET /onesub/purchase/status?userId=` | List user's purchases |
+
+**Consumables** (coins, credits): Can be purchased multiple times. Each purchase is tracked.
+
+**Non-consumables** (unlock premium, remove ads): Purchased once. Duplicate purchases are rejected with `409 NON_CONSUMABLE_ALREADY_OWNED`.
+
+```ts
+// Validate a consumable purchase
+const res = await fetch('https://api.yourapp.com/onesub/purchase/validate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    platform: 'apple',
+    receipt: transactionReceipt,
+    userId: 'user123',
+    productId: 'credits_100',
+    type: 'consumable',    // or 'non_consumable'
+  }),
+});
+const { valid, purchase } = await res.json();
+```
 
 ## What's Under the Hood
 

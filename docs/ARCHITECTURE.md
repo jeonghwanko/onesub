@@ -29,13 +29,21 @@ No circular dependencies. SDK and server are independent of each other.
 createOneSubMiddleware(config)
   └── Express Router
       ├── express.json({ limit: '50kb' })
-      ├── POST /onesub/validate    → zod validation → provider.validate → store.save
-      ├── GET  /onesub/status      → store.getByUserId → { active, subscription }
-      ├── POST /onesub/webhook/apple  → JWS verify → decode → store.save
-      └── POST /onesub/webhook/google → JWT verify → decode → store.save
+      │
+      │── Subscriptions:
+      ├── POST /onesub/validate           → zod → provider.validate → subscriptionStore.save
+      ├── GET  /onesub/status             → subscriptionStore.getByUserId → { active }
+      ├── POST /onesub/webhook/apple      → JWS verify → decode → subscriptionStore.save
+      ├── POST /onesub/webhook/google     → JWT verify → decode → subscriptionStore.save
+      │
+      │── One-time Purchases:
+      ├── POST /onesub/purchase/validate  → zod → provider.validate → purchaseStore.save
+      └── GET  /onesub/purchase/status    → purchaseStore.getPurchasesByUserId → { purchases }
 ```
 
-## Subscription Store Interface
+## Store Interfaces
+
+### SubscriptionStore (auto-renewable subscriptions)
 
 ```ts
 interface SubscriptionStore {
@@ -45,17 +53,41 @@ interface SubscriptionStore {
 }
 ```
 
+### PurchaseStore (consumable + non-consumable)
+
+```ts
+interface PurchaseStore {
+  savePurchase(purchase: PurchaseInfo): Promise<void>;
+  getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
+  getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
+  hasPurchased(userId: string, productId: string): Promise<boolean>;
+}
+```
+
 Implementations:
-- `InMemorySubscriptionStore` — development/testing only
-- `PostgresSubscriptionStore` — production (raw pg, UPSERT, auto-schema)
+- `InMemorySubscriptionStore` / `InMemoryPurchaseStore` — development/testing only
+- `PostgresSubscriptionStore` / `PostgresPurchaseStore` — production (raw pg, UPSERT, auto-schema)
+
+### Non-consumable Duplicate Prevention
+
+PostgreSQL enforces a partial unique index:
+```sql
+CREATE UNIQUE INDEX idx_onesub_purchases_non_consumable
+  ON onesub_purchases (user_id, product_id)
+  WHERE type = 'non_consumable';
+```
+Application-level `hasPurchased()` check is a fast path; the DB constraint is the atomic guarantee.
 
 ## MCP Tool Design
 
-All 4 tools return `{ content: [{ type: 'text', text: string }] }`:
+All 7 tools return `{ content: [{ type: 'text', text: string }] }`:
 - `onesub_setup` — generates integration code matching actual SDK API (`useOneSub`)
 - `onesub_add_paywall` — generates paywall component (3 styles)
 - `onesub_check_status` — live API call to server
 - `onesub_troubleshoot` — pattern-matching diagnostics
+- `onesub_create_product` — create products on App Store Connect / Google Play via API
+- `onesub_list_products` — list registered products from stores
+- `onesub_view_subscribers` — query subscriber status
 
 MCP output is regression-tested: tests assert generated code contains `useOneSub` (not `useSubscription`).
 

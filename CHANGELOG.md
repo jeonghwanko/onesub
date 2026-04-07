@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.0 — 2026-04-07
+
+### @onesub/shared + @onesub/server
+
+**Consumable + Non-consumable IAP support:**
+- New types: `PurchaseType`, `PurchaseInfo`, `ValidatePurchaseRequest`, `ValidatePurchaseResponse`
+- New routes: `POST /onesub/purchase/validate`, `GET /onesub/purchase/status`
+- New stores: `InMemoryPurchaseStore`, `PostgresPurchaseStore`
+- Non-consumable duplicate prevention: PostgreSQL partial unique index on `(user_id, product_id)` for `non_consumable` rows
+- Transaction ID idempotency: replay returns existing record
+- `subscription` type rejected at purchase endpoint to prevent split state
+- 6 new tests (45 total)
+
+onesub now covers the complete react-native-iap server side: subscriptions, consumables, and non-consumables.
+
+---
+
 ## v0.3.0 — 2026-04-07
 
 ### @onesub/mcp-server
