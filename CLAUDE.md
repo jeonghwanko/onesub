@@ -1,78 +1,84 @@
-# onesub — AI 작업 가이드
+# onesub — AI Guide
 
-## 프로젝트 개요
+## Overview
 
-월 구독 + 페이월. 그게 끝. MCP 기반 AI-네이티브 모바일 구독 서비스.
+Server-side receipt validation middleware for react-native-iap. Monthly subscription + paywall. That's it.
 
-## 모노레포 구조
+## Monorepo Structure
 
 ```
 onesub/
-├── packages/shared/       # @onesub/shared — 공유 타입/상수
-├── packages/server/       # @onesub/server — Express 미들웨어 (영수증 검증 + Webhook)
-├── packages/sdk/          # onesub — React Native SDK (useOneSub + Paywall)
-└── packages/mcp-server/   # @onesub/mcp-server — MCP 도구 (AI 통합)
+├── packages/shared/       # @onesub/shared — shared types & constants
+├── packages/server/       # @onesub/server — Express middleware (receipt validation + webhooks)
+├── packages/sdk/          # @onesub/sdk — React Native SDK (useOneSub + Paywall)
+└── packages/mcp-server/   # @onesub/mcp-server — MCP tools (AI integration)
 ```
 
-## 기술 스택
+## Tech Stack
 
-- **언어**: TypeScript 5.7, ESM (NodeNext)
-- **서버**: Express.js 미들웨어 패턴
+- **Language**: TypeScript 5.7, ESM (NodeNext)
+- **Server**: Express.js middleware pattern
 - **SDK**: React Native + react-native-iap
 - **MCP**: @modelcontextprotocol/sdk (stdio transport)
-- **영수증 검증**: Apple StoreKit 2 JWS + Google Play Developer API v3
+- **Receipt Validation**: Apple StoreKit 2 JWS (JWKS verified) + Google Play Developer API v3
 
-## 핵심 철학
+## Core Philosophy
 
-1. **단순함**: 월 구독 하나 + 페이월 하나. 그 이상 없음
-2. **오픈소스**: MIT 라이센스, 셀프호스트 가능
-3. **AI 퍼스트**: MCP 도구로 "구독 달아줘" 한 마디면 끝
-4. **플러그형**: Express 미들웨어로 기존 서버에 `app.use()` 한 줄
+1. **Simplicity**: One monthly subscription + one paywall. Nothing more.
+2. **Open Source**: MIT license, self-hostable
+3. **Pluggable**: Express middleware — one line: `app.use(createOneSubMiddleware(config))`
+4. **AI-native**: MCP tools for product creation, paywall generation, troubleshooting
 
-## 개발 명령어
+## Dev Commands
 
 ```bash
-npm install              # 전체 의존성
-npm run build            # 전체 빌드
-npm run type-check       # 타입 체크
+npm install              # install all dependencies
+npm run build            # build all packages
+npm run type-check       # TypeScript check
+npm test                 # run vitest (39 tests)
 ```
 
-## 패키지별 역할
+## Package Roles
 
 ### @onesub/shared
-공유 타입과 상수. 다른 패키지에서 import.
+Shared types and constants. Imported by all other packages.
 
 ### @onesub/server
-Express 미들웨어. 두 가지 사용법:
+Express middleware. Two usage modes:
 ```ts
-// 1. 기존 서버에 마운트
+// 1. Mount on existing server
 app.use(createOneSubMiddleware(config));
 
-// 2. 독립 실행
+// 2. Standalone server
 createOneSubServer(config).listen(4100);
 ```
 
-### onesub (SDK)
-React Native 앱에서 사용:
+### @onesub/sdk
+React Native SDK:
 ```tsx
 <OneSubProvider config={config} userId={userId}>
   <App />
 </OneSubProvider>
 
-// 컴포넌트에서
+// In any component
 const { isActive, subscribe } = useOneSub();
 ```
 
 ### @onesub/mcp-server
-AI 도구 4개:
-- `onesub_setup` — 프로젝트 분석 + 통합 코드 생성
-- `onesub_add_paywall` — 페이월 화면 생성
-- `onesub_check_status` — 구독 상태 확인
-- `onesub_troubleshoot` — IAP 문제 진단
+7 MCP tools:
+- `onesub_setup` — analyze project + generate integration code
+- `onesub_add_paywall` — generate paywall component
+- `onesub_check_status` — check subscription status
+- `onesub_troubleshoot` — diagnose IAP issues
+- `onesub_create_product` — create products on App Store Connect / Google Play
+- `onesub_list_products` — list registered products
+- `onesub_view_subscribers` — query subscriber status
 
-## 코딩 규칙
+## Coding Rules
 
-- `.js` 확장자 필수 (ESM imports)
-- shared 타입은 `@onesub/shared`에서만 정의
-- 서버 저장소는 `SubscriptionStore` 인터페이스 (기본: in-memory, 교체 가능)
-- SDK는 react-native-iap를 optional peer dep으로 사용
+- `.js` extension required in all ESM imports
+- Shared types defined only in `@onesub/shared`
+- Server store uses `SubscriptionStore` interface (default: in-memory, pluggable)
+- SDK uses react-native-iap as optional peer dependency
+- Status strings use `SUBSCRIPTION_STATUS` constants (no string literals)
+- Apple/Google config types derived from `OneSubServerConfig` in shared (no local duplicates)
