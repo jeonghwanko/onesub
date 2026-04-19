@@ -83,6 +83,62 @@ function buildRequestPurchaseArgs(
 }
 
 // ---------------------------------------------------------------------------
+// Helper — await a purchase event for a given productId.
+// v15 requestPurchase uses an event-based model: the purchase arrives via
+// purchaseUpdatedListener, not as the return value. We wrap the listeners in
+// a Promise that resolves on the matching event (or rejects on error/cancel).
+// ---------------------------------------------------------------------------
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function awaitPurchaseEvent(productId: string, timeoutMs = 120_000): Promise<any> {
+  if (!RNIap) {
+    return Promise.reject(new Error('[onesub] react-native-iap not available'));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let updatedSub: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let errorSub: any = null;
+
+    const cleanup = () => {
+      try { updatedSub?.remove?.(); } catch { /* ignore */ }
+      try { errorSub?.remove?.(); } catch { /* ignore */ }
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('[onesub] Purchase timed out'));
+    }, timeoutMs);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    updatedSub = RNIap.purchaseUpdatedListener((purchase: any) => {
+      if (settled) return;
+      if (!purchase) return;
+      if (purchase.productId && purchase.productId !== productId) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve(purchase);
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    errorSub = RNIap.purchaseErrorListener((err: any) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      const wrapped: Error & { code?: string } = new Error(
+        err?.message ?? '[onesub] Purchase error',
+      );
+      if (err?.code) wrapped.code = err.code;
+      reject(wrapped);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Helper — extract the unified purchase token from a v15 Purchase object
 // ---------------------------------------------------------------------------
 function extractReceiptToken(purchase: unknown): string {
@@ -173,10 +229,10 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         throw new Error(`[onesub] Subscription product not found: ${productId}`);
       }
 
-      // v15: platform-scoped requestPurchase with type: 'subs'
-      const result = await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
-
-      singlePurchase = Array.isArray(result) ? (result[0] ?? null) : result;
+      // v15: event-based purchase — listen before kicking off the request
+      const eventPromise = awaitPurchaseEvent(productId);
+      await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
+      singlePurchase = await eventPromise;
       if (!singlePurchase) {
         throw new Error('[onesub] No purchase data returned from the store.');
       }
@@ -291,12 +347,14 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
           throw new Error(`[onesub] Product not found in store: ${productId}`);
         }
 
-        // v15: platform-scoped requestPurchase with type: 'in-app'
-        const result = await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
-
-        purchase = Array.isArray(result) ? (result[0] ?? null) : result;
+        // v15: requestPurchase is event-based — purchase arrives via
+        // purchaseUpdatedListener. We race the listener promise against the
+        // kickoff call (which resolves before the event fires).
+        const eventPromise = awaitPurchaseEvent(productId);
+        await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
+        purchase = await eventPromise;
         if (!purchase) {
-          return null; // user cancelled or no-op
+          return null;
         }
 
         const receipt = extractReceiptToken(purchase);
