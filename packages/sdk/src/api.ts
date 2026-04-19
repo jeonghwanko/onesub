@@ -4,6 +4,7 @@ import type {
   ValidateReceiptResponse,
   ValidatePurchaseRequest,
   ValidatePurchaseResponse,
+  PurchaseStatusResponse,
 } from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 
@@ -80,5 +81,34 @@ export async function validatePurchase(
   }
 
   const data = (await response.json()) as ValidatePurchaseResponse;
+  return data;
+}
+
+/**
+ * Checks the purchase status for a given user from the onesub server.
+ * Optionally filter by productId.
+ */
+export async function checkPurchaseStatus(
+  serverUrl: string,
+  userId: string,
+  productId?: string,
+): Promise<PurchaseStatusResponse> {
+  let url = `${serverUrl.replace(/\/$/, '')}${ROUTES.PURCHASE_STATUS}?userId=${encodeURIComponent(userId)}`;
+  if (productId) {
+    url += `&productId=${encodeURIComponent(productId)}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`[onesub] Purchase status check failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as PurchaseStatusResponse;
   return data;
 }

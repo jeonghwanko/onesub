@@ -1,4 +1,4 @@
-import type { SubscriptionInfo } from '@onesub/shared';
+import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
 import { useOneSubContext } from './OneSubProvider.js';
 
 export interface UseOneSubReturn {
@@ -8,10 +8,15 @@ export interface UseOneSubReturn {
   isLoading: boolean;
   /** Full subscription details from the server, or null */
   subscription: SubscriptionInfo | null;
-  /** Start a purchase flow via the native store UI */
+  /** Start a subscription purchase flow via the native store UI */
   subscribe: () => Promise<void>;
   /** Restore previous purchases (calls the native store and re-validates) */
   restore: () => Promise<void>;
+  /**
+   * Purchase a consumable or non-consumable product.
+   * Returns the recorded PurchaseInfo on success, or null if the user cancelled.
+   */
+  purchaseProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
 }
 
 /**
