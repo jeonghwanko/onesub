@@ -186,8 +186,8 @@ describe('validateAppleConsumableReceipt', () => {
     expect(result?.transactionId).toBe('orig_only');
   });
 
-  it('accepts NonConsumable type', async () => {
-    const jws = makeJws(validApplePayload({ type: 'NonConsumable', productId: 'premium_unlock' }));
+  it('accepts Non-Consumable type', async () => {
+    const jws = makeJws(validApplePayload({ type: 'Non-Consumable', productId: 'premium_unlock' }));
     const result = await validateAppleConsumableReceipt(jws, APPLE_CONFIG);
     expect(result).not.toBeNull();
   });

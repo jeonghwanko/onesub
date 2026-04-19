@@ -40,7 +40,7 @@ export function createPurchaseRouter(
    *
    * Uses platform-specific product validators (purchases.products API) instead
    * of the subscription validator. Key differences:
-   * - Apple: validates tx.type === 'Consumable'|'NonConsumable', uses transactionId
+   * - Apple: validates tx.type === 'Consumable'|'Non-Consumable', uses transactionId
    *   (not originalTransactionId) as the dedup key, enforces 72h receipt age
    * - Google: checks consumptionState for consumables (replay prevention),
    *   enforces 72h receipt age, uses orderId as the dedup key

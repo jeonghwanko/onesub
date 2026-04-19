@@ -155,7 +155,7 @@ export interface AppleProductResult {
  * non-consumable product.
  *
  * Differences from validateAppleReceipt (subscriptions):
- * - Checks tx.type is 'Consumable' or 'NonConsumable' (not a subscription)
+ * - Checks tx.type is 'Consumable' or 'Non-Consumable' (not a subscription)
  * - Uses tx.transactionId (per-purchase unique) instead of originalTransactionId
  * - Enforces a 72-hour receipt age limit to block replay attacks
  * - Does NOT check expiresDate (one-time purchases don't expire)
@@ -181,7 +181,7 @@ export async function validateAppleConsumableReceipt(
   }
 
   // Must be a one-time purchase type (not a subscription)
-  if (tx.type !== 'Consumable' && tx.type !== 'NonConsumable') {
+  if (tx.type !== 'Consumable' && tx.type !== 'Non-Consumable') {
     console.warn('[onesub/apple] Invalid purchase type for product validation:', tx.type);
     return null;
   }
