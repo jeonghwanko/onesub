@@ -33,7 +33,10 @@ export interface OneSubContextValue {
   subscription: SubscriptionInfo | null;
   subscribe: () => Promise<void>;
   restore: () => Promise<void>;
-  purchaseProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
+  purchaseProduct: (
+    productId: string,
+    type: 'consumable' | 'non_consumable',
+  ) => Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null>;
   /**
    * Restore a one-time purchase (non-consumable) from the store's history.
    * - Queries the native store for existing purchases
@@ -42,7 +45,10 @@ export interface OneSubContextValue {
    * Returns the recorded PurchaseInfo on success, or null if the store has no
    * record of the product (i.e. the user never purchased).
    */
-  restoreProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
+  restoreProduct: (
+    productId: string,
+    type: 'consumable' | 'non_consumable',
+  ) => Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null>;
 }
 
 const OneSubContext = createContext<OneSubContextValue | null>(null);
@@ -419,7 +425,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         });
 
         if (validationResult.valid && validationResult.purchase) {
-          return validationResult.purchase;
+          return { ...validationResult.purchase, action: validationResult.action } as PurchaseInfo & { action?: 'new' | 'restored' };
         }
 
         throw new Error(validationResult.error ?? '[onesub] Purchase validation failed.');
@@ -488,7 +494,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         });
 
         if (validationResult.valid && validationResult.purchase) {
-          return validationResult.purchase;
+          return { ...validationResult.purchase, action: validationResult.action } as PurchaseInfo & { action?: 'new' | 'restored' };
         }
 
         // Non-consumable already owned on the server side is still a success

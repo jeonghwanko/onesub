@@ -121,6 +121,13 @@ export interface ValidatePurchaseResponse {
   valid: boolean;
   purchase: PurchaseInfo | null;
   error?: string;
+  /**
+   * Present on `valid: true` only:
+   * - 'new'      — freshly inserted (first time this transactionId seen)
+   * - 'restored' — transactionId already existed (idempotent or reassigned)
+   *                use this to show "복원됨" instead of "구매 완료".
+   */
+  action?: 'new' | 'restored';
 }
 
 /** Purchase status response */

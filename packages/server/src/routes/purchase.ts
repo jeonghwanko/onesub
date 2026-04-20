@@ -134,12 +134,36 @@ export function createPurchaseRouter(
         return;
       }
 
-      // Idempotency check — same transaction submitted twice returns the existing record
+      // Check if this transactionId has been seen before.
+      // - Same userId → idempotent restore (e.g. network retry)
+      // - Different userId + non_consumable → reassign (device reinstall)
+      // - Different userId + consumable → reject (receipts can't be reused)
+      // - No existing row → fresh purchase, INSERT below
       const existing = await purchaseStore.getPurchaseByTransactionId(transactionId);
+      let action: 'new' | 'restored' = 'new';
+
       if (existing) {
+        action = 'restored';
+        if (existing.userId !== userId) {
+          if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
+            await purchaseStore.reassignPurchase(transactionId, userId);
+            console.info(
+              `[onesub/purchase] reassigned transaction ${transactionId} from ${existing.userId} to ${userId}`,
+            );
+          } else {
+            const response: ValidatePurchaseResponse = {
+              valid: false,
+              purchase: null,
+              error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
+            };
+            res.status(409).json(response);
+            return;
+          }
+        }
         const response: ValidatePurchaseResponse = {
           valid: true,
-          purchase: existing,
+          purchase: { ...existing, userId },
+          action,
         };
         res.status(200).json(response);
         return;
@@ -155,33 +179,7 @@ export function createPurchaseRouter(
         quantity: 1,
       };
 
-      try {
-        await purchaseStore.savePurchase(purchase);
-      } catch (err) {
-        const code = (err as { code?: string } | undefined)?.code;
-        if (code === 'TRANSACTION_BELONGS_TO_OTHER_USER') {
-          // The JWS was verified against Apple's Root CA above (in
-          // validateAppleConsumableReceipt), so the caller genuinely owns the
-          // underlying Apple account. Safe to reassign — covers the common
-          // "device reinstall generated a new deviceId" case.
-          if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-            await purchaseStore.reassignPurchase(transactionId!, userId);
-            console.info(
-              `[onesub/purchase] reassigned transaction ${transactionId} to user ${userId}`,
-            );
-          } else {
-            const response: ValidatePurchaseResponse = {
-              valid: false,
-              purchase: null,
-              error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
-            };
-            res.status(409).json(response);
-            return;
-          }
-        } else {
-          throw err;
-        }
-      }
+      await purchaseStore.savePurchase(purchase);
 
       // For Google consumables: acknowledge the purchase after the entitlement is saved.
       // Must happen after savePurchase — if called before, a DB failure would leave the
@@ -193,6 +191,7 @@ export function createPurchaseRouter(
       const response: ValidatePurchaseResponse = {
         valid: true,
         purchase,
+        action,
       };
       res.status(200).json(response);
     } catch (err) {
