@@ -34,6 +34,15 @@ export interface OneSubContextValue {
   subscribe: () => Promise<void>;
   restore: () => Promise<void>;
   purchaseProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
+  /**
+   * Restore a one-time purchase (non-consumable) from the store's history.
+   * - Queries the native store for existing purchases
+   * - If found, sends the receipt to the server for validation
+   * - Server inserts into onesub_purchases if not already recorded
+   * Returns the recorded PurchaseInfo on success, or null if the store has no
+   * record of the product (i.e. the user never purchased).
+   */
+  restoreProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
 }
 
 const OneSubContext = createContext<OneSubContextValue | null>(null);
@@ -397,6 +406,67 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     [config, userId],
   );
 
+  // -------------------------------------------------------------------------
+  // restoreProduct() — restore a one-time purchase (non-consumable)
+  // -------------------------------------------------------------------------
+  const restoreProduct = useCallback(
+    async (productId: string, type: 'consumable' | 'non_consumable'): Promise<PurchaseInfo | null> => {
+      if (isBusyRef.current) return null;
+      if (!RNIap) {
+        throw new Error(
+          '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
+        );
+      }
+
+      isBusyRef.current = true;
+      setIsLoading(true);
+
+      try {
+        const platform = getCurrentPlatform();
+        await RNIap.initConnection();
+
+        const purchases = await RNIap.getAvailablePurchases();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const match = (purchases as any[]).find((p) => p?.productId === productId);
+        if (!match) {
+          return null; // user never purchased this product in the store
+        }
+
+        const receipt = extractReceiptToken(match);
+        if (!receipt) {
+          throw new Error('[onesub] Matched purchase has no receipt data.');
+        }
+
+        const purchaseType: PurchaseType =
+          type === 'consumable' ? PURCHASE_TYPE.CONSUMABLE : PURCHASE_TYPE.NON_CONSUMABLE;
+
+        const validationResult = await validatePurchase(config.serverUrl, {
+          platform: platform === 'ios' ? 'apple' : 'google',
+          receipt,
+          userId,
+          productId,
+          type: purchaseType,
+        });
+
+        if (validationResult.valid && validationResult.purchase) {
+          return validationResult.purchase;
+        }
+
+        // Non-consumable already owned on the server side is still a success
+        // from the user's perspective — they do own it. Surface it as such.
+        if (validationResult.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
+          return { productId, userId, platform: platform === 'ios' ? 'apple' : 'google', type: purchaseType } as PurchaseInfo;
+        }
+
+        throw new Error(validationResult.error ?? '[onesub] Restore validation failed.');
+      } finally {
+        setIsLoading(false);
+        isBusyRef.current = false;
+      }
+    },
+    [config, userId],
+  );
+
   const value: OneSubContextValue = {
     isActive,
     isLoading,
@@ -404,6 +474,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     subscribe,
     restore,
     purchaseProduct,
+    restoreProduct,
   };
 
   return <OneSubContext.Provider value={value}>{children}</OneSubContext.Provider>;
