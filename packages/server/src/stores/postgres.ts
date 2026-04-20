@@ -260,6 +260,15 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rows[0]?.exists === true;
   }
 
+  async deletePurchases(userId: string, productId: string): Promise<number> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `DELETE FROM onesub_purchases WHERE user_id = $1 AND product_id = $2`,
+      [userId, productId]
+    );
+    return result.rowCount ?? 0;
+  }
+
   /** Gracefully close the underlying connection pool. */
   async close(): Promise<void> {
     if (this.poolPromise) {

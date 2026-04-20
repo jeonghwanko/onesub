@@ -85,6 +85,12 @@ export interface OneSubServerConfig {
     url: string;
   };
   webhookSecret?: string;
+  /**
+   * Shared secret required for admin endpoints (purchase reset / manual grant).
+   * If set, admin routes are enabled and require the `X-Admin-Secret` header
+   * to match. If unset, admin routes return 404.
+   */
+  adminSecret?: string;
 }
 
 /** Purchase type */
@@ -130,6 +136,13 @@ export interface OneSubConfig {
   appleProductId?: string;
   /** Google product ID (defaults to productId) */
   googleProductId?: string;
+  /**
+   * Mock mode — when true, purchase/subscribe/restore return synthetic
+   * success responses without calling react-native-iap or the server.
+   * Useful for local UI development in Expo Go or simulators without
+   * configured store credentials. NEVER enable in production builds.
+   */
+  mockMode?: boolean;
 }
 
 /** Paywall config */

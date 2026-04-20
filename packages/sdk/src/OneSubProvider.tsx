@@ -176,6 +176,30 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
 
   const isBusyRef = useRef(false);
+  const mockMode = config.mockMode === true;
+
+  if (mockMode && typeof console !== 'undefined') {
+    // One-shot warning per provider mount so it's obvious in logs.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useEffect(() => {
+      console.warn(
+        '[onesub] mockMode is enabled — all purchases/restores return synthetic ' +
+          'success without calling the store or server. Disable before production.',
+      );
+    }, []);
+  }
+
+  function mockPurchaseInfo(productId: string, type: 'consumable' | 'non_consumable'): PurchaseInfo {
+    return {
+      transactionId: `mock_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
+      userId,
+      productId,
+      platform: 'apple',
+      type: type === 'consumable' ? PURCHASE_TYPE.CONSUMABLE : PURCHASE_TYPE.NON_CONSUMABLE,
+      quantity: 1,
+      purchasedAt: new Date().toISOString(),
+    } as PurchaseInfo;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -214,6 +238,11 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   // -------------------------------------------------------------------------
   const subscribe = useCallback(async () => {
     if (isBusyRef.current) return;
+    if (mockMode) {
+      setIsActive(true);
+      setSubscription({ userId, productId: getProductId(config, 'ios') } as SubscriptionInfo);
+      return;
+    }
     if (!RNIap) {
       throw new Error(
         '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
@@ -280,6 +309,10 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   // -------------------------------------------------------------------------
   const restore = useCallback(async () => {
     if (isBusyRef.current) return;
+    if (mockMode) {
+      setIsActive(true);
+      return;
+    }
     if (!RNIap) {
       throw new Error(
         '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
@@ -334,6 +367,9 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   const purchaseProduct = useCallback(
     async (productId: string, type: 'consumable' | 'non_consumable'): Promise<PurchaseInfo | null> => {
       if (isBusyRef.current) return null;
+      if (mockMode) {
+        return mockPurchaseInfo(productId, type);
+      }
       if (!RNIap) {
         throw new Error(
           '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
@@ -412,6 +448,9 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   const restoreProduct = useCallback(
     async (productId: string, type: 'consumable' | 'non_consumable'): Promise<PurchaseInfo | null> => {
       if (isBusyRef.current) return null;
+      if (mockMode) {
+        return mockPurchaseInfo(productId, type);
+      }
       if (!RNIap) {
         throw new Error(
           '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',

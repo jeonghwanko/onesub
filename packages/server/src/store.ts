@@ -42,6 +42,12 @@ export interface PurchaseStore {
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
   /** For non-consumables: check if a user has already purchased a product. */
   hasPurchased(userId: string, productId: string): Promise<boolean>;
+  /**
+   * Admin: delete all purchases matching userId + productId.
+   * Used by the admin reset endpoint to allow re-testing non-consumables.
+   * Returns the number of rows deleted.
+   */
+  deletePurchases(userId: string, productId: string): Promise<number>;
 }
 
 /**
@@ -71,5 +77,16 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     const purchases = this.byUserId.get(userId);
     if (!purchases) return false;
     return purchases.some((p) => p.productId === productId);
+  }
+
+  async deletePurchases(userId: string, productId: string): Promise<number> {
+    const list = this.byUserId.get(userId) ?? [];
+    const kept = list.filter((p) => p.productId !== productId);
+    const deleted = list.length - kept.length;
+    this.byUserId.set(userId, kept);
+    for (const p of list) {
+      if (p.productId === productId) this.byTransactionId.delete(p.transactionId);
+    }
+    return deleted;
   }
 }

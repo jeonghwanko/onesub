@@ -7,6 +7,7 @@ import { createValidateRouter } from './routes/validate.js';
 import { createStatusRouter } from './routes/status.js';
 import { createWebhookRouter } from './routes/webhook.js';
 import { createPurchaseRouter } from './routes/purchase.js';
+import { createAdminRouter } from './routes/admin.js';
 
 /**
  * Extended config with optional pluggable stores.
@@ -55,6 +56,10 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   router.use(createStatusRouter(store));
   router.use(createWebhookRouter(config, store));
   router.use(createPurchaseRouter(config, purchaseStore));
+
+  // Admin routes — only mounted when config.adminSecret is set
+  const adminRouter = createAdminRouter(config, purchaseStore);
+  if (adminRouter) router.use(adminRouter);
 
   return router;
 }
