@@ -119,10 +119,15 @@ export async function validateAppleReceipt(
   let tx: AppleTransactionPayload;
 
   try {
-    // StoreKit 2: receipt is a signed JWS transaction
     tx = await decodeJws<AppleTransactionPayload>(receipt, config.skipJwsVerification);
-  } catch {
-    console.warn('[onesub/apple] Failed to decode receipt as JWS. Falling back to null.');
+  } catch (err) {
+    const preview = receipt.slice(0, 60);
+    const parts = receipt.split('.').length;
+    console.warn(
+      '[onesub/apple] Failed to decode receipt as JWS:',
+      (err as Error)?.message ?? err,
+      `| preview: "${preview}..." (len=${receipt.length}, parts=${parts})`,
+    );
     return null;
   }
 
@@ -192,8 +197,15 @@ export async function validateAppleConsumableReceipt(
 
   try {
     tx = await decodeJws<AppleTransactionPayload>(signedTransaction, config.skipJwsVerification);
-  } catch {
-    console.warn('[onesub/apple] Failed to decode consumable JWS');
+  } catch (err) {
+    const preview = signedTransaction.slice(0, 60);
+    const parts = signedTransaction.split('.').length;
+    const looksLikeJws = parts === 3;
+    console.warn(
+      '[onesub/apple] Failed to decode consumable JWS:',
+      (err as Error)?.message ?? err,
+      `| receipt preview: "${preview}..." (len=${signedTransaction.length}, parts=${parts}, looksLikeJws=${looksLikeJws})`,
+    );
     return null;
   }
 
