@@ -7,7 +7,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build -w @onesub/shared && npm run build -w @onesub/server && npm run build -w @jeonghwanko/onesub-sdk && npm run build -w @onesub/mcp-server",
     "dev:server": "npm run dev -w @onesub/server",
     "type-check": "tsc --build",
     "clean": "rm -rf packages/*/dist",
