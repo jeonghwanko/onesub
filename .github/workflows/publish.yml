@@ -1,0 +1,60 @@
+name: Publish
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'packages/server/package.json'
+      - 'packages/sdk/package.json'
+      - 'packages/shared/package.json'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # needed to diff against previous commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish changed packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -e
+          for pkg in shared server sdk; do
+            pkg_path="packages/$pkg"
+            [ -f "$pkg_path/package.json" ] || continue
+
+            # Skip if package.json unchanged in this push
+            if git diff HEAD~1 HEAD --name-only | grep -q "^$pkg_path/package.json$"; then
+              current=$(node -p "require('./$pkg_path/package.json').version")
+              previous=$(git show HEAD~1:"$pkg_path/package.json" 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version" 2>/dev/null || echo "")
+
+              if [ "$current" != "$previous" ]; then
+                name=$(node -p "require('./$pkg_path/package.json').name")
+                echo "📦 Publishing $name@$current (was: $previous)"
+                cd "$pkg_path"
+                npm publish --access public
+                cd -
+              else
+                echo "⏭️  $pkg_path: package.json changed but version unchanged — skipping"
+              fi
+            else
+              echo "⏭️  $pkg_path: unchanged"
+            fi
+          done
