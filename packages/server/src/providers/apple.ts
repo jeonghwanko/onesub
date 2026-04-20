@@ -1,6 +1,8 @@
 import { decodeJwt, decodeProtectedHeader, importX509, jwtVerify } from 'jose';
+import { X509Certificate } from 'node:crypto';
 import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 
 type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
@@ -37,30 +39,78 @@ interface AppleRenewalPayload {
   [key: string]: unknown;
 }
 
+function derBase64ToPem(der: string): string {
+  return (
+    '-----BEGIN CERTIFICATE-----\n' +
+    (der.match(/.{1,64}/g) ?? []).join('\n') +
+    '\n-----END CERTIFICATE-----'
+  );
+}
+
+const APPLE_ROOT_CERTS = APPLE_ROOT_CA_PEMS.map((pem) => new X509Certificate(pem));
+
+/**
+ * Validate that the x5c chain from the JWS terminates at one of Apple's
+ * bundled root CAs. Each cert in the chain must be signed by the next (or
+ * the bundled root), and all certs must currently be within their validity
+ * window.
+ *
+ * Returns the leaf certificate PEM on success. Throws on any failure.
+ */
+function verifyAppleCertChain(x5c: string[]): string {
+  if (x5c.length === 0) {
+    throw new Error('[onesub/apple] empty x5c');
+  }
+
+  const chain = x5c.map((der) => new X509Certificate(derBase64ToPem(der)));
+  const now = new Date();
+
+  // Validity window + leaf→intermediate→... signature chain
+  for (let i = 0; i < chain.length; i++) {
+    const cert = chain[i];
+    if (new Date(cert.validFrom) > now || new Date(cert.validTo) < now) {
+      throw new Error(`[onesub/apple] cert[${i}] outside validity window`);
+    }
+    if (i + 1 < chain.length) {
+      if (!cert.checkIssued(chain[i + 1]) || !cert.verify(chain[i + 1].publicKey)) {
+        throw new Error(`[onesub/apple] cert[${i}] not signed by cert[${i + 1}]`);
+      }
+    }
+  }
+
+  // Final cert in chain (typically intermediate) must be signed by an Apple root.
+  // Accept either (a) explicit signature match or (b) the cert itself being one
+  // of our bundled Apple roots (happens when Apple embeds the full chain).
+  const top = chain[chain.length - 1];
+  const topDer = top.raw.toString('base64');
+  const trustsRoot = APPLE_ROOT_CERTS.some((root) => {
+    if (root.raw.toString('base64') === topDer) return true;
+    if (!top.checkIssued(root)) return false;
+    try { return top.verify(root.publicKey); } catch { return false; }
+  });
+  if (!trustsRoot) {
+    throw new Error('[onesub/apple] cert chain does not terminate at a trusted Apple root');
+  }
+
+  return chain[0].toString();
+}
+
 /**
  * Decode and verify a StoreKit 2 signed transaction JWS.
  *
- * Apple signs StoreKit 2 JWS with an ECDSA key; the signing certificate chain
- * is embedded in the JWS header as `x5c` (PEM-encoded DER). We extract the
- * leaf certificate and verify the signature with its public key.
+ * 1. Extract the x5c certificate chain from the JWS header.
+ * 2. Validate the chain terminates at a bundled Apple Root CA (G3).
+ * 3. Use the leaf certificate's public key to verify the JWS signature.
  *
- * NOTE: This implementation verifies the signature but does NOT validate the
- * full certificate chain against Apple Root CA. For strict chain validation
- * use Apple's official `@apple/app-store-server-library`. For most apps,
- * verifying the JWS was actually signed by the cert in x5c is sufficient,
- * combined with the bundleId / productId / environment checks performed by
- * the callers of this function.
- *
- * When skipVerification is true, falls back to decodeJwt() without signature
- * verification (useful for dev/testing environments).
+ * skipVerification=true skips all of the above and just decodes the payload
+ * (dev/test only).
  */
 export async function decodeJws<T>(jws: string, skipVerification = false): Promise<T> {
   if (skipVerification) {
     if (process.env['NODE_ENV'] === 'production') {
       console.warn(
         '[onesub/apple] WARNING: skipJwsVerification is enabled in production. ' +
-          'JWS signatures are NOT being verified. This is a security risk. ' +
-          'Disable skipJwsVerification before going live.'
+          'JWS signatures are NOT being verified. This is a security risk.',
       );
     }
     return decodeJwt(jws) as T;
@@ -72,11 +122,7 @@ export async function decodeJws<T>(jws: string, skipVerification = false): Promi
     throw new Error('[onesub/apple] JWS header missing x5c certificate chain');
   }
 
-  // Leaf certificate is the first entry in x5c.
-  const leafPem =
-    '-----BEGIN CERTIFICATE-----\n' +
-    (x5c[0].match(/.{1,64}/g) ?? []).join('\n') +
-    '\n-----END CERTIFICATE-----';
+  const leafPem = verifyAppleCertChain(x5c);
   const alg = header.alg ?? 'ES256';
   const key = await importX509(leafPem, alg);
 
