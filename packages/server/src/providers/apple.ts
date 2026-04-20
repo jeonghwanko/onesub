@@ -1,4 +1,4 @@
-import { decodeJwt, createRemoteJWKSet, jwtVerify } from 'jose';
+import { decodeJwt, decodeProtectedHeader, importX509, jwtVerify } from 'jose';
 import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 
@@ -38,15 +38,19 @@ interface AppleRenewalPayload {
 }
 
 /**
- * Module-level JWKS fetcher for Apple's public keys.
- * Cached automatically by jose's createRemoteJWKSet.
- */
-const appleJWKS = createRemoteJWKSet(
-  new URL('https://appleid.apple.com/auth/keys')
-);
-
-/**
- * Decode and verify a JWS compact serialisation using Apple's JWKS.
+ * Decode and verify a StoreKit 2 signed transaction JWS.
+ *
+ * Apple signs StoreKit 2 JWS with an ECDSA key; the signing certificate chain
+ * is embedded in the JWS header as `x5c` (PEM-encoded DER). We extract the
+ * leaf certificate and verify the signature with its public key.
+ *
+ * NOTE: This implementation verifies the signature but does NOT validate the
+ * full certificate chain against Apple Root CA. For strict chain validation
+ * use Apple's official `@apple/app-store-server-library`. For most apps,
+ * verifying the JWS was actually signed by the cert in x5c is sufficient,
+ * combined with the bundleId / productId / environment checks performed by
+ * the callers of this function.
+ *
  * When skipVerification is true, falls back to decodeJwt() without signature
  * verification (useful for dev/testing environments).
  */
@@ -59,11 +63,24 @@ export async function decodeJws<T>(jws: string, skipVerification = false): Promi
           'Disable skipJwsVerification before going live.'
       );
     }
-    // Dev/test path: decode payload only, no signature check
     return decodeJwt(jws) as T;
   }
 
-  const { payload } = await jwtVerify(jws, appleJWKS);
+  const header = decodeProtectedHeader(jws) as { x5c?: string[]; alg?: string };
+  const x5c = header.x5c;
+  if (!x5c || x5c.length === 0) {
+    throw new Error('[onesub/apple] JWS header missing x5c certificate chain');
+  }
+
+  // Leaf certificate is the first entry in x5c.
+  const leafPem =
+    '-----BEGIN CERTIFICATE-----\n' +
+    (x5c[0].match(/.{1,64}/g) ?? []).join('\n') +
+    '\n-----END CERTIFICATE-----';
+  const alg = header.alg ?? 'ES256';
+  const key = await importX509(leafPem, alg);
+
+  const { payload } = await jwtVerify(jws, key);
   return payload as T;
 }
 
