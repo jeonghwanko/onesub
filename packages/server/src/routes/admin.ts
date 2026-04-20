@@ -50,6 +50,35 @@ export function createAdminRouter(
     res.json({ ok: true, deleted });
   });
 
+  // POST /onesub/purchase/admin/transfer — reassign transactionId to a new userId
+  // (legitimate device/account migration)
+  const transferSchema = z.object({
+    transactionId: z.string().min(1).max(256),
+    newUserId: z.string().min(1).max(256),
+  });
+  router.post('/onesub/purchase/admin/transfer', async (req: Request, res: Response) => {
+    let body;
+    try {
+      body = transferSchema.parse(req.body);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: err.issues.map((e: { message: string }) => e.message).join(', ') });
+        return;
+      }
+      throw err;
+    }
+    const existing = await purchaseStore.getPurchaseByTransactionId(body.transactionId);
+    if (!existing) {
+      res.status(404).json({ error: 'TRANSACTION_NOT_FOUND' });
+      return;
+    }
+    // Delete the old row, then save under new userId
+    await purchaseStore.deletePurchases(existing.userId, existing.productId);
+    const migrated: PurchaseInfo = { ...existing, userId: body.newUserId };
+    await purchaseStore.savePurchase(migrated);
+    res.json({ ok: true, purchase: migrated });
+  });
+
   // POST /onesub/purchase/admin/grant
   const grantSchema = z.object({
     userId: z.string().min(1).max(256),

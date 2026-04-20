@@ -152,4 +152,29 @@ describe('InMemoryPurchaseStore', () => {
     expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
     expect(await purchaseStore.getPurchasesByUserId('b')).toHaveLength(1);
   });
+
+  it('savePurchase is idempotent for same transactionId + same userId', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' }));
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' }));
+    expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
+  });
+
+  it('savePurchase rejects same transactionId from a different userId', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' }));
+    await expect(
+      purchaseStore.savePurchase(makePurchase({ userId: 'b', transactionId: 't1' })),
+    ).rejects.toMatchObject({ code: 'TRANSACTION_BELONGS_TO_OTHER_USER' });
+    // Original owner unchanged
+    expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
+    expect(await purchaseStore.getPurchasesByUserId('b')).toHaveLength(0);
+  });
+
+  it('deletePurchases removes matching rows', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1', productId: 'pass' }));
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't2', productId: 'pass' }));
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't3', productId: 'other' }));
+    const deleted = await purchaseStore.deletePurchases('a', 'pass');
+    expect(deleted).toBe(2);
+    expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
+  });
 });

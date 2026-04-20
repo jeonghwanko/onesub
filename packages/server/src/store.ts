@@ -59,6 +59,15 @@ export class InMemoryPurchaseStore implements PurchaseStore {
   private readonly byUserId = new Map<string, PurchaseInfo[]>();
 
   async savePurchase(purchase: PurchaseInfo): Promise<void> {
+    const existing = this.byTransactionId.get(purchase.transactionId);
+    if (existing) {
+      if (existing.userId !== purchase.userId) {
+        const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
+        err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
+        throw err;
+      }
+      return; // same user — idempotent
+    }
     this.byTransactionId.set(purchase.transactionId, purchase);
     const list = this.byUserId.get(purchase.userId) ?? [];
     list.push(purchase);

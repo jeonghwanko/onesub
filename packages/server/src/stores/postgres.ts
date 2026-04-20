@@ -208,11 +208,33 @@ export class PostgresPurchaseStore implements PurchaseStore {
 
   async savePurchase(purchase: PurchaseInfo): Promise<void> {
     const pool = await this.getPool();
+    // transactionId is PRIMARY KEY. If the same transactionId already belongs
+    // to a different userId we refuse the save — the second call is either a
+    // fraudulent receipt-reuse attempt or a legitimate device migration that
+    // should go through an explicit admin transfer instead. Returning silently
+    // (the old ON CONFLICT DO NOTHING behavior) leaves the server reporting
+    // valid:true while the DB has no row for the current user, which lets the
+    // caller keep re-"buying" forever.
+    const existing = await pool.query<{ user_id: string }>(
+      `SELECT user_id FROM onesub_purchases WHERE transaction_id = $1`,
+      [purchase.transactionId],
+    );
+
+    if (existing.rows.length > 0) {
+      const owner = existing.rows[0].user_id;
+      if (owner !== purchase.userId) {
+        const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
+        err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
+        throw err;
+      }
+      // same user — idempotent no-op
+      return;
+    }
+
     await pool.query(
       `INSERT INTO onesub_purchases
          (transaction_id, user_id, product_id, platform, type, quantity, purchased_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (transaction_id) DO NOTHING`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         purchase.transactionId,
         purchase.userId,
@@ -221,7 +243,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
         purchase.type,
         purchase.quantity,
         purchase.purchasedAt,
-      ]
+      ],
     );
   }
 

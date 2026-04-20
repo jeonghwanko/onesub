@@ -155,7 +155,21 @@ export function createPurchaseRouter(
         quantity: 1,
       };
 
-      await purchaseStore.savePurchase(purchase);
+      try {
+        await purchaseStore.savePurchase(purchase);
+      } catch (err) {
+        const code = (err as { code?: string } | undefined)?.code;
+        if (code === 'TRANSACTION_BELONGS_TO_OTHER_USER') {
+          const response: ValidatePurchaseResponse = {
+            valid: false,
+            purchase: null,
+            error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
+          };
+          res.status(409).json(response);
+          return;
+        }
+        throw err;
+      }
 
       // For Google consumables: acknowledge the purchase after the entitlement is saved.
       // Must happen after savePurchase — if called before, a DB failure would leave the
