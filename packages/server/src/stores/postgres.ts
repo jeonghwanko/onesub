@@ -282,6 +282,15 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rows[0]?.exists === true;
   }
 
+  async reassignPurchase(transactionId: string, newUserId: string): Promise<boolean> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `UPDATE onesub_purchases SET user_id = $2 WHERE transaction_id = $1`,
+      [transactionId, newUserId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async deletePurchases(userId: string, productId: string): Promise<number> {
     const pool = await this.getPool();
     const result = await pool.query(

@@ -48,6 +48,15 @@ export interface PurchaseStore {
    * Returns the number of rows deleted.
    */
   deletePurchases(userId: string, productId: string): Promise<number>;
+  /**
+   * Reassign a transaction's owner to a new userId.
+   * Used when the validate route encounters TRANSACTION_BELONGS_TO_OTHER_USER
+   * for a genuinely-signed JWS — the Apple receipt proves the caller owns the
+   * original Apple account, so it's safe to transfer ownership (device
+   * reinstall, account migration).
+   * Returns true if a row was updated, false if the transactionId was not found.
+   */
+  reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>;
 }
 
 /**
@@ -86,6 +95,24 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     const purchases = this.byUserId.get(userId);
     if (!purchases) return false;
     return purchases.some((p) => p.productId === productId);
+  }
+
+  async reassignPurchase(transactionId: string, newUserId: string): Promise<boolean> {
+    const existing = this.byTransactionId.get(transactionId);
+    if (!existing) return false;
+    const oldUserId = existing.userId;
+    if (oldUserId === newUserId) return true;
+    const updated = { ...existing, userId: newUserId };
+    this.byTransactionId.set(transactionId, updated);
+    // remove from old userId index
+    const oldList = (this.byUserId.get(oldUserId) ?? []).filter((p) => p.transactionId !== transactionId);
+    if (oldList.length) this.byUserId.set(oldUserId, oldList);
+    else this.byUserId.delete(oldUserId);
+    // add to new userId index
+    const newList = this.byUserId.get(newUserId) ?? [];
+    newList.push(updated);
+    this.byUserId.set(newUserId, newList);
+    return true;
   }
 
   async deletePurchases(userId: string, productId: string): Promise<number> {

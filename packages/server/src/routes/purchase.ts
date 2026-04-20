@@ -160,15 +160,27 @@ export function createPurchaseRouter(
       } catch (err) {
         const code = (err as { code?: string } | undefined)?.code;
         if (code === 'TRANSACTION_BELONGS_TO_OTHER_USER') {
-          const response: ValidatePurchaseResponse = {
-            valid: false,
-            purchase: null,
-            error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
-          };
-          res.status(409).json(response);
-          return;
+          // The JWS was verified against Apple's Root CA above (in
+          // validateAppleConsumableReceipt), so the caller genuinely owns the
+          // underlying Apple account. Safe to reassign — covers the common
+          // "device reinstall generated a new deviceId" case.
+          if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
+            await purchaseStore.reassignPurchase(transactionId!, userId);
+            console.info(
+              `[onesub/purchase] reassigned transaction ${transactionId} to user ${userId}`,
+            );
+          } else {
+            const response: ValidatePurchaseResponse = {
+              valid: false,
+              purchase: null,
+              error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
+            };
+            res.status(409).json(response);
+            return;
+          }
+        } else {
+          throw err;
         }
-        throw err;
       }
 
       // For Google consumables: acknowledge the purchase after the entitlement is saved.

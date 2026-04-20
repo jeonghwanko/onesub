@@ -169,6 +169,22 @@ describe('InMemoryPurchaseStore', () => {
     expect(await purchaseStore.getPurchasesByUserId('b')).toHaveLength(0);
   });
 
+  it('reassignPurchase transfers ownership to a new userId', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' }));
+    expect(await purchaseStore.reassignPurchase('t1', 'b')).toBe(true);
+    expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(0);
+    expect(await purchaseStore.getPurchasesByUserId('b')).toHaveLength(1);
+    // now saving as 'b' is idempotent, 'a' is rejected
+    await purchaseStore.savePurchase(makePurchase({ userId: 'b', transactionId: 't1' }));
+    await expect(
+      purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1' })),
+    ).rejects.toMatchObject({ code: 'TRANSACTION_BELONGS_TO_OTHER_USER' });
+  });
+
+  it('reassignPurchase returns false for unknown transaction', async () => {
+    expect(await purchaseStore.reassignPurchase('nope', 'a')).toBe(false);
+  });
+
   it('deletePurchases removes matching rows', async () => {
     await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1', productId: 'pass' }));
     await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't2', productId: 'pass' }));
