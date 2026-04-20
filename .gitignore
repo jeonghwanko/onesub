@@ -6,3 +6,4 @@ dist/
 !.env.example
 .DS_Store
 *.log
+packages/sdk/onesub-sdk-*.tgz
