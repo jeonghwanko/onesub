@@ -17,6 +17,12 @@ export interface UseOneSubReturn {
    * Returns the recorded PurchaseInfo on success, or null if the user cancelled.
    */
   purchaseProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
+  /**
+   * Restore a one-time purchase from the native store's history.
+   * Returns the recorded PurchaseInfo on success, or null if the store has
+   * no record of the product.
+   */
+  restoreProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<PurchaseInfo | null>;
 }
 
 /**
