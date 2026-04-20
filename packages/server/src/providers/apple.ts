@@ -119,8 +119,14 @@ export async function validateAppleReceipt(
     return null;
   }
 
-  // Reject Sandbox receipts in production
-  if (process.env['NODE_ENV'] === 'production' && tx.environment !== 'Production') {
+  // Reject Sandbox receipts in production unless explicitly allowed.
+  // Set ONESUB_ALLOW_SANDBOX=true to permit TestFlight sandbox receipts on
+  // production servers (useful during QA before App Store release).
+  if (
+    process.env['NODE_ENV'] === 'production' &&
+    tx.environment !== 'Production' &&
+    process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
+  ) {
     console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
     return null;
   }
@@ -186,8 +192,14 @@ export async function validateAppleConsumableReceipt(
     return null;
   }
 
-  // Reject Sandbox receipts in production
-  if (process.env['NODE_ENV'] === 'production' && tx.environment !== 'Production') {
+  // Reject Sandbox receipts in production unless explicitly allowed.
+  // Set ONESUB_ALLOW_SANDBOX=true to permit TestFlight sandbox receipts on
+  // production servers (useful during QA before App Store release).
+  if (
+    process.env['NODE_ENV'] === 'production' &&
+    tx.environment !== 'Production' &&
+    process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
+  ) {
     console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
     return null;
   }
