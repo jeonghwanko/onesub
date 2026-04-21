@@ -99,12 +99,32 @@ function buildRequestPurchaseArgs(
 
 // ---------------------------------------------------------------------------
 // Helper — await a purchase event for a given productId.
+//
 // v15 requestPurchase uses an event-based model: the purchase arrives via
 // purchaseUpdatedListener, not as the return value. We wrap the listeners in
 // a Promise that resolves on the matching event (or rejects on error/cancel).
+//
+// StoreKit queue guard — if a previous session left an unfinished transaction
+// in the StoreKit queue (TestFlight tests, crashes, force-quits), `initConnection`
+// causes the OS to re-deliver it the moment we attach a purchaseUpdatedListener,
+// *without showing the confirmation sheet*. Without a guard, we would treat
+// that stale transaction as the result of the current requestPurchase call and
+// complete the flow silently — the user never authenticates, but the app
+// says "purchase succeeded / restored".
+//
+// Guard: each event carries a `transactionDate` (ms epoch). We pass in
+// `startedAt = Date.now()` captured right before calling requestPurchase, and
+// drop any event whose transactionDate is clearly older (>10s before startedAt).
+// Stale events are finished silently so they stop re-firing.
 // ---------------------------------------------------------------------------
+const STALE_EVENT_SLACK_MS = 10_000;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function awaitPurchaseEvent(productId: string, timeoutMs = 120_000): Promise<any> {
+function awaitPurchaseEvent(
+  productId: string,
+  startedAt: number,
+  timeoutMs = 120_000,
+): Promise<any> {
   if (!RNIap) {
     return Promise.reject(new Error('[onesub] react-native-iap not available'));
   }
@@ -132,6 +152,16 @@ function awaitPurchaseEvent(productId: string, timeoutMs = 120_000): Promise<any
       if (settled) return;
       if (!purchase) return;
       if (purchase.productId && purchase.productId !== productId) return;
+
+      // Drop & finish stale transactions (pending in StoreKit queue from a
+      // prior session). A fresh purchase fires >= startedAt; anything older
+      // than startedAt - SLACK is a re-delivery from the queue.
+      const txDate = Number(purchase.transactionDate);
+      if (Number.isFinite(txDate) && txDate > 0 && txDate < startedAt - STALE_EVENT_SLACK_MS) {
+        RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => { /* ignore */ });
+        return; // keep awaiting the fresh event
+      }
+
       settled = true;
       clearTimeout(timer);
       cleanup();
@@ -273,8 +303,11 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         throw new Error(`[onesub] Subscription product not found: ${productId}`);
       }
 
-      // v15: event-based purchase — listen before kicking off the request
-      const eventPromise = awaitPurchaseEvent(productId);
+      // v15: event-based purchase — listen before kicking off the request.
+      // `startedAt` filters out StoreKit-queue re-deliveries from prior sessions
+      // (see awaitPurchaseEvent for the rationale).
+      const startedAt = Date.now();
+      const eventPromise = awaitPurchaseEvent(productId, startedAt);
       await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
       singlePurchase = await eventPromise;
       if (!singlePurchase) {
@@ -401,7 +434,10 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         // v15: requestPurchase is event-based — purchase arrives via
         // purchaseUpdatedListener. We race the listener promise against the
         // kickoff call (which resolves before the event fires).
-        const eventPromise = awaitPurchaseEvent(productId);
+        // `startedAt` filters out StoreKit-queue re-deliveries from prior
+        // sessions (see awaitPurchaseEvent for the rationale).
+        const startedAt = Date.now();
+        const eventPromise = awaitPurchaseEvent(productId, startedAt);
         await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
         purchase = await eventPromise;
         if (!purchase) {
