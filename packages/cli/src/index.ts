@@ -54,13 +54,13 @@ async function isEmpty(dir: string): Promise<boolean> {
   return entries.length === 0;
 }
 
-async function copyTemplate(relPath: string, destDir: string): Promise<void> {
+async function copyTemplate(relPath: string, destDir: string, destName?: string): Promise<void> {
   const src = join(TEMPLATES_DIR, relPath);
-  const dst = join(destDir, relPath);
+  const dst = join(destDir, destName ?? relPath);
   await mkdir(dirname(dst), { recursive: true });
   const content = await readFile(src, 'utf8');
   await writeFile(dst, content, 'utf8');
-  console.log(`  ${relPath}`);
+  console.log(`  ${destName ?? relPath}`);
 }
 
 async function init(target: string): Promise<void> {
@@ -74,18 +74,21 @@ async function init(target: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   console.log(`\nScaffolding onesub server into ${dir}\n`);
 
-  const files = [
-    'package.json',
-    'server.ts',
-    'tsconfig.json',
-    '.env.example',
-    'docker-compose.yml',
-    'README.md',
-    '.gitignore',
+  // npm publish excludes files named `.gitignore` / `.env.example` from the
+  // tarball in some configurations, so dotfiles are stored under a `_` prefix
+  // in the package and renamed on scaffold.
+  const files: Array<{ src: string; dst?: string }> = [
+    { src: 'package.json' },
+    { src: 'server.ts' },
+    { src: 'tsconfig.json' },
+    { src: '.env.example' },
+    { src: 'docker-compose.yml' },
+    { src: 'README.md' },
+    { src: '_gitignore', dst: '.gitignore' },
   ];
 
   for (const f of files) {
-    await copyTemplate(f, dir);
+    await copyTemplate(f.src, dir, f.dst);
   }
 
   console.log(`
