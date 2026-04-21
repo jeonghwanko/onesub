@@ -103,32 +103,10 @@ function buildRequestPurchaseArgs(
 // v15 requestPurchase uses an event-based model: the purchase arrives via
 // purchaseUpdatedListener, not as the return value. We wrap the listeners in
 // a Promise that resolves on the matching event (or rejects on error/cancel).
-//
-// StoreKit queue guard — if a previous session left an unfinished transaction
-// in the StoreKit queue (TestFlight tests, crashes, force-quits), `initConnection`
-// causes the OS to re-deliver it the moment we attach a purchaseUpdatedListener,
-// *without showing the confirmation sheet*. Without a guard, we would treat
-// that stale transaction as the result of the current requestPurchase call and
-// complete the flow silently — the user never authenticates, but the app
-// says "purchase succeeded / restored".
-//
-// Guard: caller snapshots the `transactionId`s of any pending purchases BEFORE
-// calling requestPurchase and passes them as `preExistingIds`. The listener
-// then ignores any event whose transactionId is in that set (stale redelivery)
-// and waits for a genuinely new transactionId. Stale events are finished
-// silently so they stop re-firing on subsequent attempts.
-//
-// transactionId-based filtering is more reliable than transactionDate: it
-// works regardless of clock skew, date-format quirks (seconds vs ms), or
-// sandbox date anomalies.
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function awaitPurchaseEvent(
-  productId: string,
-  preExistingIds: Set<string>,
-  timeoutMs = 120_000,
-): Promise<any> {
+function awaitPurchaseEvent(productId: string, timeoutMs = 120_000): Promise<any> {
   if (!RNIap) {
     return Promise.reject(new Error('[onesub] react-native-iap not available'));
   }
@@ -156,22 +134,6 @@ function awaitPurchaseEvent(
       if (settled) return;
       if (!purchase) return;
       if (purchase.productId && purchase.productId !== productId) return;
-
-      // If this transactionId already existed before we kicked off requestPurchase,
-      // it's a queue redelivery — not the user's current intent. Finish it silently
-      // (so it doesn't keep re-firing) and keep waiting for the fresh transaction.
-      const txId: string | undefined =
-        typeof purchase.transactionId === 'string' && purchase.transactionId.length > 0
-          ? purchase.transactionId
-          : typeof purchase.originalTransactionId === 'string' && purchase.originalTransactionId.length > 0
-            ? purchase.originalTransactionId
-            : undefined;
-
-      if (txId && preExistingIds.has(txId)) {
-        RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => { /* ignore */ });
-        return; // keep awaiting the fresh event
-      }
-
       settled = true;
       clearTimeout(timer);
       cleanup();
@@ -193,25 +155,40 @@ function awaitPurchaseEvent(
   });
 }
 
-// Snapshot existing pending transaction IDs so awaitPurchaseEvent can tell a
-// stale queue redelivery apart from the fresh transaction the user is about
-// to authorize. Best-effort — failures here just fall back to "no guard".
-async function snapshotPendingTransactionIds(productId: string): Promise<Set<string>> {
-  const ids = new Set<string>();
+// ---------------------------------------------------------------------------
+// StoreKit queue flush.
+//
+// If a previous session left an unfinished transaction for `productId` in the
+// StoreKit queue (TestFlight tests, crashes, force-quits), `initConnection`
+// causes the OS to re-deliver it to purchaseUpdatedListener the moment we
+// attach — *without* showing the confirmation sheet. That stale redelivery
+// would be mistaken for the fresh transaction the user is about to authorize,
+// so the purchase "succeeds" silently as a "restore" (from server 0.6.2+ auto-
+// restore) without user authentication.
+//
+// The safest remedy is to flush pending transactions for this productId
+// *before* calling requestPurchase. With an empty queue, the only event that
+// can fire is the one StoreKit creates after the user confirms in the sheet.
+//
+// Best-effort — if the platform/store can't enumerate pending purchases we
+// proceed anyway (the original silent-redelivery path may still surface, but
+// the user is no worse off than before the guard existed).
+// ---------------------------------------------------------------------------
+async function flushPendingForProduct(productId: string): Promise<void> {
   try {
     const pending = await RNIap.getAvailablePurchases();
-    if (Array.isArray(pending)) {
-      for (const p of pending) {
-        if (!p || p.productId !== productId) continue;
-        if (typeof p.transactionId === 'string' && p.transactionId.length > 0) ids.add(p.transactionId);
-        if (typeof p.originalTransactionId === 'string' && p.originalTransactionId.length > 0)
-          ids.add(p.originalTransactionId);
+    if (!Array.isArray(pending)) return;
+    for (const p of pending) {
+      if (!p || p.productId !== productId) continue;
+      try {
+        await RNIap.finishTransaction({ purchase: p, isConsumable: false });
+      } catch {
+        /* ignore — per-tx cleanup is best-effort */
       }
     }
   } catch {
-    /* best-effort — if the store can't list pending, proceed without a guard */
+    /* ignore — snapshot unavailable; fall through to normal flow */
   }
-  return ids;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,13 +311,13 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         throw new Error(`[onesub] Subscription product not found: ${productId}`);
       }
 
-      // v15: event-based purchase — listen before kicking off the request.
-      // Snapshot any pending transactionIds first so a queue redelivery from
-      // a prior session can't be mistaken for this fresh purchase (the OS
-      // re-fires pending transactions the moment purchaseUpdatedListener
-      // attaches, without showing the confirmation sheet).
-      const preExistingIds = await snapshotPendingTransactionIds(productId);
-      const eventPromise = awaitPurchaseEvent(productId, preExistingIds);
+      // v15: event-based purchase — flush any stale pending transactions for
+      // this productId first, then listen, then kick off the request. Flushing
+      // keeps the StoreKit queue from silently re-delivering a prior session's
+      // transaction to purchaseUpdatedListener without showing the confirmation
+      // sheet (see flushPendingForProduct for the full rationale).
+      await flushPendingForProduct(productId);
+      const eventPromise = awaitPurchaseEvent(productId);
       await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
       singlePurchase = await eventPromise;
       if (!singlePurchase) {
@@ -464,12 +441,12 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
           throw new Error(`[onesub] Product not found in store: ${productId}`);
         }
 
-        // v15: requestPurchase is event-based — purchase arrives via
-        // purchaseUpdatedListener. Snapshot pending transactionIds first so a
-        // queue redelivery from a prior session can't be mistaken for this
-        // fresh purchase (see awaitPurchaseEvent for the rationale).
-        const preExistingIds = await snapshotPendingTransactionIds(productId);
-        const eventPromise = awaitPurchaseEvent(productId, preExistingIds);
+        // Flush any stale pending transactions for this productId before
+        // attaching the listener + requesting a fresh purchase. Otherwise
+        // StoreKit silently re-delivers the pending transaction and bypasses
+        // the confirmation sheet (see flushPendingForProduct).
+        await flushPendingForProduct(productId);
+        const eventPromise = awaitPurchaseEvent(productId);
         await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
         purchase = await eventPromise;
         if (!purchase) {
