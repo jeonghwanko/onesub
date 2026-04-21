@@ -17,6 +17,7 @@ import {
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
 } from '../providers/google.js';
+import { log } from '../logger.js';
 
 /**
  * Google's public JWKS endpoint used to verify Pub/Sub push JWT tokens.
@@ -82,6 +83,27 @@ const APPLE_EXPIRED_TYPES = new Set([
   'GRACE_PERIOD_EXPIRED',
 ]);
 
+/**
+ * Retry / durability semantics.
+ *
+ * Both Apple (App Store Server Notifications V2) and Google (Pub/Sub RTDN)
+ * retry on any non-2xx response:
+ *   - Apple: up to 5 retries over ~3 days, exponential backoff.
+ *   - Google: per-Pub/Sub-subscription retry policy (default: retries until
+ *     the message is ack'd or the retention window expires, up to 7 days).
+ *
+ * This router uses that built-in retry instead of a local dead-letter queue:
+ *
+ *   4xx — the payload is unusable (missing signedPayload, bad signature,
+ *         package mismatch). Return 4xx so the sender does NOT retry, since
+ *         the same request would fail again.
+ *   5xx — a transient failure on our side (DB down, network to Play API).
+ *         Return 5xx so Apple / Google retry the notification for us.
+ *   2xx — processed, or intentionally ignored (e.g. test notification).
+ *
+ * If you need an explicit DLQ, wrap `store.save()` with your own error
+ * handler before passing the store to `createOneSubMiddleware()`.
+ */
 export function createWebhookRouter(
   config: OneSubServerConfig,
   store: SubscriptionStore
@@ -113,7 +135,7 @@ export function createWebhookRouter(
         config.apple?.skipJwsVerification
       );
     } catch (err) {
-      console.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
+      log.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
       res.status(400).json({ error: 'Invalid signedPayload' });
       return;
     }
@@ -148,7 +170,7 @@ export function createWebhookRouter(
       } else {
         // We have no record of this transaction — log and acknowledge.
         // This can happen for purchases made before the server started.
-        console.warn(
+        log.warn(
           '[onesub/webhook/apple] Received notification for unknown transaction:',
           originalTransactionId
         );
@@ -156,7 +178,7 @@ export function createWebhookRouter(
 
       res.status(200).json({ received: true });
     } catch (err) {
-      console.error('[onesub/webhook/apple] Store update error:', err);
+      log.error('[onesub/webhook/apple] Store update error:', err);
       res.status(500).json({ error: 'Failed to update subscription' });
     }
   });
@@ -197,7 +219,7 @@ export function createWebhookRouter(
 
     // Validate the package name matches our config
     if (config.google?.packageName && packageName !== config.google.packageName) {
-      console.warn(
+      log.warn(
         '[onesub/webhook/google] Package name mismatch:',
         packageName,
         '!==',
@@ -250,7 +272,7 @@ export function createWebhookRouter(
             await store.save(fresh);
           }
         } else {
-          console.warn(
+          log.warn(
             '[onesub/webhook/google] Unknown purchase token and no serviceAccountKey to re-fetch:',
             purchaseToken
           );
@@ -259,7 +281,7 @@ export function createWebhookRouter(
 
       res.status(200).json({ received: true });
     } catch (err) {
-      console.error('[onesub/webhook/google] Error handling notification:', err);
+      log.error('[onesub/webhook/google] Error handling notification:', err);
       res.status(500).json({ error: 'Failed to process notification' });
     }
   });

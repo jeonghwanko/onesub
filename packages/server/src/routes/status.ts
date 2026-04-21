@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import type { StatusResponse } from '@onesub/shared';
 import { ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
+import { log } from '../logger.js';
 
 export function createStatusRouter(store: SubscriptionStore): Router {
   const router = Router();
@@ -41,7 +42,7 @@ export function createStatusRouter(store: SubscriptionStore): Router {
       const response: StatusResponse = { active, subscription: sub };
       res.status(200).json(response);
     } catch (err) {
-      console.error('[onesub/status] Store error:', err);
+      log.error('[onesub/status] Store error:', err);
       res.status(500).json({ active: false, subscription: null, error: 'Internal server error' });
     }
   });

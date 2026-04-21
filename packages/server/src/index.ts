@@ -8,6 +8,7 @@ import { createStatusRouter } from './routes/status.js';
 import { createWebhookRouter } from './routes/webhook.js';
 import { createPurchaseRouter } from './routes/purchase.js';
 import { createAdminRouter } from './routes/admin.js';
+import { setLogger } from './logger.js';
 
 /**
  * Extended config with optional pluggable stores.
@@ -44,6 +45,8 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
  *   POST /onesub/webhook/google
  */
 export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
+  setLogger(config.logger);
+
   const store: SubscriptionStore = config.store ?? new InMemorySubscriptionStore();
   const purchaseStore: PurchaseStore = config.purchaseStore ?? new InMemoryPurchaseStore();
 
@@ -93,6 +96,10 @@ export { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postg
 // Provider functions for direct (non-HTTP) usage
 export { validateAppleReceipt } from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
+
+// Logger plumbing — expose so non-middleware callers (direct provider use)
+// can still redirect logs.
+export { setLogger, log } from './logger.js';
 
 // Default export: the middleware factory
 export default createOneSubMiddleware;

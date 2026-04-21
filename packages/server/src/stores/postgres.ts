@@ -1,5 +1,6 @@
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
 import type { SubscriptionStore, PurchaseStore } from '../store.js';
+import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 
 /**
  * PostgreSQL-backed subscription store.
@@ -45,22 +46,9 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
    */
   async initSchema(): Promise<void> {
     const pool = await this.getPool();
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS onesub_subscriptions (
-        original_transaction_id TEXT        PRIMARY KEY,
-        user_id                 TEXT        NOT NULL,
-        product_id              TEXT        NOT NULL,
-        platform                TEXT        NOT NULL,
-        status                  TEXT        NOT NULL,
-        expires_at              TIMESTAMPTZ NOT NULL,
-        purchased_at            TIMESTAMPTZ NOT NULL,
-        will_renew              BOOLEAN     NOT NULL,
-        updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_user_id
-        ON onesub_subscriptions (user_id, updated_at DESC);
-    `);
+    // DDL mirrored in packages/server/sql/schema.sql — kept in sync by
+    // schema parity test. Edit both (or only the .sql file and regenerate).
+    await pool.query(SUBSCRIPTIONS_SCHEMA_SQL);
   }
 
   /**
@@ -182,28 +170,9 @@ export class PostgresPurchaseStore implements PurchaseStore {
    */
   async initSchema(): Promise<void> {
     const pool = await this.getPool();
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS onesub_purchases (
-        transaction_id  TEXT        PRIMARY KEY,
-        user_id         TEXT        NOT NULL,
-        product_id      TEXT        NOT NULL,
-        platform        TEXT        NOT NULL,
-        type            TEXT        NOT NULL,
-        quantity        INTEGER     NOT NULL DEFAULT 1,
-        purchased_at    TIMESTAMPTZ NOT NULL,
-        created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_onesub_purchases_user_id
-        ON onesub_purchases (user_id, purchased_at DESC);
-
-      CREATE INDEX IF NOT EXISTS idx_onesub_purchases_user_product
-        ON onesub_purchases (user_id, product_id);
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_onesub_purchases_non_consumable
-        ON onesub_purchases (user_id, product_id)
-        WHERE type = 'non_consumable';
-    `);
+    // DDL mirrored in packages/server/sql/schema.sql — kept in sync by
+    // schema parity test.
+    await pool.query(PURCHASES_SCHEMA_SQL);
   }
 
   async savePurchase(purchase: PurchaseInfo): Promise<void> {

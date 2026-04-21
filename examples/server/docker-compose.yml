@@ -1,0 +1,56 @@
+services:
+  # Postgres — bootstraps the onesub schema on first boot.
+  #
+  # The schema file is mounted into /docker-entrypoint-initdb.d/ which Postgres
+  # automatically executes the first time the data volume is empty. Re-runs on
+  # an existing volume are a no-op (all DDL is `IF NOT EXISTS`), but Postgres
+  # won't execute the init scripts again unless you `docker compose down -v`
+  # to drop the volume.
+  db:
+    image: postgres:16-alpine
+    container_name: onesub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: onesub
+      POSTGRES_PASSWORD: onesub
+      POSTGRES_DB: onesub
+    ports:
+      - '5432:5432'
+    volumes:
+      - onesub-pgdata:/var/lib/postgresql/data
+      - ../../packages/server/sql/schema.sql:/docker-entrypoint-initdb.d/10-onesub-schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U onesub -d onesub']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # onesub example server.
+  #
+  # Uses the local workspace packages via bind mount so edits in
+  # packages/server/src are picked up on `npm start`. For a production image
+  # you would build from the published @onesub/server npm package instead.
+  server:
+    image: node:20-alpine
+    container_name: onesub-server
+    depends_on:
+      db:
+        condition: service_healthy
+    working_dir: /workspace/examples/server
+    command: sh -c "npm install --no-audit --no-fund && npm start"
+    environment:
+      NODE_ENV: development
+      PORT: '4100'
+      DATABASE_URL: postgresql://onesub:onesub@db:5432/onesub
+      # Credentials — copy from .env or override in your shell.
+      APPLE_BUNDLE_ID: ${APPLE_BUNDLE_ID:-}
+      APPLE_SHARED_SECRET: ${APPLE_SHARED_SECRET:-}
+      GOOGLE_PACKAGE_NAME: ${GOOGLE_PACKAGE_NAME:-}
+      GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY:-}
+    ports:
+      - '4100:4100'
+    volumes:
+      - ../../:/workspace
+
+volumes:
+  onesub-pgdata:

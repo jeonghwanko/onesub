@@ -1,0 +1,47 @@
+{
+  "name": "@onesub/cli",
+  "version": "0.1.0",
+  "description": "CLI scaffolding for onesub — `npx onesub init` bootstraps a server + Expo app.",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "onesub": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "onesub",
+    "cli",
+    "init",
+    "scaffolding",
+    "react-native-iap",
+    "in-app-purchase"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeonghwanko/onesub.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/jeonghwanko/onesub",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@onesub/shared": "0.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

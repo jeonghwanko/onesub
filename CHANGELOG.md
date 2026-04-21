@@ -1,5 +1,68 @@
 # Changelog
 
+## server@0.6.2 / sdk@0.4.1 / shared@0.3.1 — 2026-04-20
+
+**`action` field on `POST /onesub/purchase/validate`:**
+- `ValidatePurchaseResponse.action?: 'new' | 'restored'` (present on `valid: true`)
+  - `'new'` — freshly inserted (first time this `transactionId` was seen)
+  - `'restored'` — `transactionId` already existed (idempotent replay or reassigned from a prior owner)
+- SDK: `purchaseProduct()` / `restoreProduct()` return `(PurchaseInfo & { action? }) | null` — apps can branch UX on "구매 완료" vs "복원 완료".
+- Fixes ordering bug where the idempotency short-circuit ran before the reassign path, causing `0.6.1`'s auto-reassign to never fire on reinstalled devices.
+
+## server@0.6.1 — 2026-04-20
+
+**Non-Consumable JWS auto-reassignment:**
+- Device reinstall (new deviceId, same Apple ID, same receipt) no longer trips `TRANSACTION_BELONGS_TO_OTHER_USER` for non-consumables — the validate route auto-reassigns ownership via `PurchaseStore.reassignPurchase(transactionId, newUserId)`.
+- Safe because `0.6.0` already verifies the JWS chain up to Apple's root CA — a valid JWS proves the caller owns the original Apple account.
+- Consumables still return `409` (receipt reuse has no legitimate semantics there).
+- New `PurchaseStore.reassignPurchase()` method (InMemory + Postgres).
+
+## server@0.6.0 — 2026-04-20 — BREAKING
+
+**Apple Root CA G3 chain verification:**
+- Previously only the leaf cert in the JWS `x5c` header was used to verify the signature — a self-signed cert could mint a passing JWS.
+- Now the full `x5c` chain is verified: each cert signed by the next, all within their validity window, and the final cert issued by a bundled Apple root CA.
+- `packages/server/src/providers/apple-root-ca.ts` embeds Apple Root CA G3 PEM (valid until 2039-04-30). Add G4 there when Apple publishes it.
+- Implemented with `node:crypto.X509Certificate` — zero new dependencies.
+- **Breaking** for anyone who was relying on non-Apple-issued test JWS.
+
+## server@0.5.0 — 2026-04-20 — BREAKING
+
+**Transaction ownership enforcement (security):**
+- Old `savePurchase` used `ON CONFLICT (transaction_id) DO NOTHING`, so the same Apple/Google `transactionId` submitted under a different `userId` silently no-op'd while the server still responded `valid: true` — letting an attacker reuse one receipt across many accounts.
+- New behavior: same `transactionId` + different `userId` → throws `TRANSACTION_BELONGS_TO_OTHER_USER`. Same user → idempotent no-op.
+- `POST /onesub/purchase/validate` maps this to `HTTP 409`.
+- New admin endpoint `POST /onesub/purchase/admin/transfer` for legitimate device/account migrations.
+- Applied to both `InMemoryPurchaseStore` and `PostgresPurchaseStore`.
+
+## server@0.4.0 / sdk@0.4.0 / shared@0.3.0 — 2026-04-20
+
+**Admin routes (server, `config.adminSecret` required):**
+- Mounted only when `config.adminSecret` is set; all requests must send matching `X-Admin-Secret` header (else `401`).
+- `DELETE /onesub/purchase/admin/:userId/:productId` — wipe a non-consumable record so the user can re-test the purchase flow.
+- `POST /onesub/purchase/admin/grant` — manually insert a purchase record, bypassing store verification.
+- New `PurchaseStore.deletePurchases(userId, productId)` method.
+
+**SDK mock mode (`config.mockMode: true`):**
+- `subscribe()` / `restore()` / `purchaseProduct()` / `restoreProduct()` return synthetic success without touching `react-native-iap` or the onesub server.
+- Intended for Expo Go / simulator UI-flow testing. Logs a one-shot warning; never enable in production.
+
+## server@0.3.4 — 2026-04-15
+
+**StoreKit 2 JWS signature verification:**
+- Verifies the JWS signature using the public key from the `x5c` leaf certificate (was previously decoded-only in some paths).
+
+## server@0.3.3 — 2026-04-10
+
+**`ONESUB_ALLOW_SANDBOX` env flag:**
+- Set `ONESUB_ALLOW_SANDBOX=true` on a production `NODE_ENV` server to also accept TestFlight sandbox receipts — useful for running QA on the same server before App Store release.
+
+## sdk@0.3.0 – 0.3.4 — 2026-04-09 – 2026-04-14
+
+- `0.3.0` — react-native-iap **v15** compatibility.
+- `0.3.1` — v15 event-based purchase pattern (`requestPurchase` no longer returns the purchase; subscribe via `purchaseUpdatedListener`).
+- `0.3.2` / `0.3.3` — `restoreProduct(productId, type)`: restore a one-time non-consumable from the store's purchase history (returns `null` if the store has no record).
+
 ## server@0.3.1 — 2026-04-08
 
 ### @onesub/server@0.3.1

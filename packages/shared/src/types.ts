@@ -56,6 +56,19 @@ export interface GoogleNotificationPayload {
   subscription: string;
 }
 
+/**
+ * Structured logger interface — compatible with the common shape of
+ * `pino`, `winston`, `bunyan`, and `console`. Pass your own implementation
+ * via `OneSubServerConfig.logger` to redirect onesub's runtime logs.
+ *
+ * Default: `console` (when `logger` is omitted).
+ */
+export interface OneSubLogger {
+  info: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+}
+
 /** Server config */
 export interface OneSubServerConfig {
   apple?: {
@@ -91,6 +104,12 @@ export interface OneSubServerConfig {
    * to match. If unset, admin routes return 404.
    */
   adminSecret?: string;
+  /**
+   * Structured logger to receive onesub's runtime logs. If omitted, logs go
+   * to `console.info/warn/error`. Any object that implements `OneSubLogger`
+   * (`pino`, `winston`, `bunyan`, `console`) works.
+   */
+  logger?: OneSubLogger;
 }
 
 /** Purchase type */

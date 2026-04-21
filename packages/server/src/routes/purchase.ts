@@ -11,6 +11,7 @@ import { ROUTES, PURCHASE_TYPE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
 import { validateGoogleProductReceipt, consumeGoogleProductReceipt } from '../providers/google.js';
+import { log } from '../logger.js';
 
 const validatePurchaseSchema = z.object({
   platform: z.enum(['apple', 'google']),
@@ -147,7 +148,7 @@ export function createPurchaseRouter(
         if (existing.userId !== userId) {
           if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
             await purchaseStore.reassignPurchase(transactionId, userId);
-            console.info(
+            log.info(
               `[onesub/purchase] reassigned transaction ${transactionId} from ${existing.userId} to ${userId}`,
             );
           } else {
@@ -195,7 +196,7 @@ export function createPurchaseRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      console.error('[onesub/purchase/validate] Unexpected error:', err);
+      log.error('[onesub/purchase/validate] Unexpected error:', err);
       const response: ValidatePurchaseResponse = {
         valid: false,
         purchase: null,
@@ -238,7 +239,7 @@ export function createPurchaseRouter(
       const response: PurchaseStatusResponse = { purchases };
       res.status(200).json(response);
     } catch (err) {
-      console.error('[onesub/purchase/status] Store error:', err);
+      log.error('[onesub/purchase/status] Store error:', err);
       res.status(500).json({ purchases: [], error: 'Internal server error' });
     }
   });

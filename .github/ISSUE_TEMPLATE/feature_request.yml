@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest a new capability or improvement.
+labels: ['enhancement']
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you solving?
+      description: Describe the use case, not the solution. "I want onesub to X" is less useful than "when my app does Y, I can't Z".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution (optional)
+      description: How would you like it to work? API sketch welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you've tried, or other libraries that solve this.

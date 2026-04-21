@@ -6,6 +6,7 @@ import { ROUTES } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceipt } from '../providers/google.js';
+import { log } from '../logger.js';
 
 const validateSchema = z.object({
   platform: z.enum(['apple', 'google']),
@@ -90,7 +91,7 @@ export function createValidateRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      console.error('[onesub/validate] Unexpected error:', err);
+      log.error('[onesub/validate] Unexpected error:', err);
       const response: ValidateReceiptResponse = {
         valid: false,
         subscription: null,

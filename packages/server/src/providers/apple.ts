@@ -3,6 +3,7 @@ import { X509Certificate } from 'node:crypto';
 import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
+import { log } from '../logger.js';
 
 type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
@@ -108,7 +109,7 @@ function verifyAppleCertChain(x5c: string[]): string {
 export async function decodeJws<T>(jws: string, skipVerification = false): Promise<T> {
   if (skipVerification) {
     if (process.env['NODE_ENV'] === 'production') {
-      console.warn(
+      log.warn(
         '[onesub/apple] WARNING: skipJwsVerification is enabled in production. ' +
           'JWS signatures are NOT being verified. This is a security risk.',
       );
@@ -169,7 +170,7 @@ export async function validateAppleReceipt(
   } catch (err) {
     const preview = receipt.slice(0, 60);
     const parts = receipt.split('.').length;
-    console.warn(
+    log.warn(
       '[onesub/apple] Failed to decode receipt as JWS:',
       (err as Error)?.message ?? err,
       `| preview: "${preview}..." (len=${receipt.length}, parts=${parts})`,
@@ -183,7 +184,7 @@ export async function validateAppleReceipt(
 
   // Validate bundle ID — missing or mismatched both rejected
   if (!tx.bundleId || tx.bundleId !== config.bundleId) {
-    console.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    log.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
     return null;
   }
 
@@ -195,7 +196,7 @@ export async function validateAppleReceipt(
     tx.environment !== 'Production' &&
     process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
   ) {
-    console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
+    log.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
     return null;
   }
 
@@ -247,7 +248,7 @@ export async function validateAppleConsumableReceipt(
     const preview = signedTransaction.slice(0, 60);
     const parts = signedTransaction.split('.').length;
     const looksLikeJws = parts === 3;
-    console.warn(
+    log.warn(
       '[onesub/apple] Failed to decode consumable JWS:',
       (err as Error)?.message ?? err,
       `| receipt preview: "${preview}..." (len=${signedTransaction.length}, parts=${parts}, looksLikeJws=${looksLikeJws})`,
@@ -257,13 +258,13 @@ export async function validateAppleConsumableReceipt(
 
   // bundleId must be present and match
   if (!tx.bundleId || tx.bundleId !== config.bundleId) {
-    console.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    log.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
     return null;
   }
 
   // Must be a one-time purchase type (not a subscription)
   if (tx.type !== 'Consumable' && tx.type !== 'Non-Consumable') {
-    console.warn('[onesub/apple] Invalid purchase type for product validation:', tx.type);
+    log.warn('[onesub/apple] Invalid purchase type for product validation:', tx.type);
     return null;
   }
 
@@ -275,29 +276,29 @@ export async function validateAppleConsumableReceipt(
     tx.environment !== 'Production' &&
     process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
   ) {
-    console.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
+    log.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
     return null;
   }
 
   if (!tx.productId) {
-    console.warn('[onesub/apple] No productId in transaction');
+    log.warn('[onesub/apple] No productId in transaction');
     return null;
   }
 
   if (expectedProductId && tx.productId !== expectedProductId) {
-    console.warn('[onesub/apple] Product ID mismatch:', tx.productId, '!==', expectedProductId);
+    log.warn('[onesub/apple] Product ID mismatch:', tx.productId, '!==', expectedProductId);
     return null;
   }
 
   // Reject refunded purchases
   if (tx.revocationDate) {
-    console.warn('[onesub/apple] Purchase was revoked/refunded');
+    log.warn('[onesub/apple] Purchase was revoked/refunded');
     return null;
   }
 
   // Reject receipts older than 72 hours (replay attack prevention)
   if (tx.purchaseDate && Date.now() - tx.purchaseDate > MAX_CONSUMABLE_RECEIPT_AGE_MS) {
-    console.warn('[onesub/apple] Consumable receipt too old (>72h)');
+    log.warn('[onesub/apple] Consumable receipt too old (>72h)');
     return null;
   }
 
@@ -306,7 +307,7 @@ export async function validateAppleConsumableReceipt(
   // as the deduplication key for consumables.
   const transactionId = tx.transactionId ?? tx.originalTransactionId;
   if (!transactionId) {
-    console.warn('[onesub/apple] No transactionId in consumable transaction');
+    log.warn('[onesub/apple] No transactionId in consumable transaction');
     return null;
   }
 

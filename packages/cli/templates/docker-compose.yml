@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: onesub
+      POSTGRES_PASSWORD: onesub
+      POSTGRES_DB: onesub
+    ports:
+      - '5432:5432'
+    volumes:
+      - onesub-pgdata:/var/lib/postgresql/data
+      # Canonical schema shipped with @onesub/server at node_modules/@onesub/server/sql/schema.sql
+      - ./node_modules/@onesub/server/sql/schema.sql:/docker-entrypoint-initdb.d/10-onesub-schema.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U onesub -d onesub']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    image: node:20-alpine
+    depends_on:
+      db:
+        condition: service_healthy
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev"
+    environment:
+      PORT: '4100'
+      DATABASE_URL: postgresql://onesub:onesub@db:5432/onesub
+      APPLE_BUNDLE_ID: ${APPLE_BUNDLE_ID:-}
+      APPLE_SHARED_SECRET: ${APPLE_SHARED_SECRET:-}
+      GOOGLE_PACKAGE_NAME: ${GOOGLE_PACKAGE_NAME:-}
+      GOOGLE_SERVICE_ACCOUNT_KEY: ${GOOGLE_SERVICE_ACCOUNT_KEY:-}
+    ports:
+      - '4100:4100'
+    volumes:
+      - .:/app
+
+volumes:
+  onesub-pgdata:

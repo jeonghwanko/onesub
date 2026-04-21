@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # npm dependencies — weekly, grouped so we don't drown in PRs.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+      production-dependencies:
+        dependency-type: production
+        update-types: [patch]
+    ignore:
+      # react-native-iap is a peer dep with a known-compatible major (v15).
+      # Upgrade manually and test the SDK event flow — never auto-bump.
+      - dependency-name: react-native-iap
+
+  # GitHub Actions workflow pins — weekly.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3

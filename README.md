@@ -115,8 +115,18 @@ const { active } = await res.json();
 
 | Endpoint | What it does |
 |----------|-------------|
-| `POST /onesub/purchase/validate` | Verify receipt, save purchase |
+| `POST /onesub/purchase/validate` | Verify receipt, save purchase. Response includes `action: 'new' \| 'restored'` so the client can distinguish a first-time purchase from an idempotent replay or reinstall-triggered reassignment. |
 | `GET /onesub/purchase/status?userId=` | List user's purchases |
+
+### Admin (opt-in — requires `config.adminSecret`)
+
+Mounted only when `config.adminSecret` is set. All requests must include the `X-Admin-Secret` header.
+
+| Endpoint | What it does |
+|----------|-------------|
+| `DELETE /onesub/purchase/admin/:userId/:productId` | Wipe a non-consumable so the user can re-test the purchase flow |
+| `POST /onesub/purchase/admin/grant` | Manually insert a purchase record (bypasses store verification) |
+| `POST /onesub/purchase/admin/transfer` | Reassign a `transactionId` to a new `userId` (legitimate device/account migration) |
 
 **Consumables** (coins, credits): Can be purchased multiple times. Each purchase is tracked.
 
@@ -169,15 +179,25 @@ import { OneSubProvider, useOneSub } from '@onesub/sdk';
 const { isActive, subscribe, restore } = useOneSub();
 
 // One-time products (consumable / non-consumable)
-const { purchaseProduct } = useOneSub();
+const { purchaseProduct, restoreProduct } = useOneSub();
 
 // Purchase a consumable (e.g. coins)
 const purchase = await purchaseProduct('credits_100', 'consumable');
-// purchase is null if user cancelled, PurchaseInfo on success
+// purchase is null if user cancelled, PurchaseInfo (+ action) on success
 
 // Purchase a non-consumable (e.g. premium unlock)
 const purchase = await purchaseProduct('premium_unlock', 'non_consumable');
+if (purchase?.action === 'restored') {
+  // already owned — show "복원 완료" instead of "구매 완료"
+}
+
+// Restore a non-consumable from the store's purchase history
+const restored = await restoreProduct('premium_unlock', 'non_consumable');
 ```
+
+**Mock mode** — set `config.mockMode: true` to return synthetic success from `subscribe` / `restore` / `purchaseProduct` / `restoreProduct` without calling `react-native-iap` or the onesub server. Useful for running UI flows in Expo Go / the simulator. Never enable in production.
+
+**Peer dependency:** SDK requires `react-native-iap` **v15+** (event-based purchase flow).
 
 The SDK is optional. You can use `@onesub/server` with any client — React Native, Flutter, or plain HTTP calls.
 
@@ -202,6 +222,7 @@ For Claude Code / Cursor users — AI helps set up your subscription:
 | [`@onesub/server`](https://www.npmjs.com/package/@onesub/server) | ![npm](https://img.shields.io/npm/v/@onesub/server.svg) | Express middleware — receipt validation + webhooks | `npm i @onesub/server` |
 | [`@onesub/sdk`](https://www.npmjs.com/package/@onesub/sdk) | ![npm](https://img.shields.io/npm/v/@onesub/sdk.svg) | React Native SDK — `useOneSub()` + `<Paywall />` | `npm i @onesub/sdk` |
 | [`@onesub/mcp-server`](https://www.npmjs.com/package/@onesub/mcp-server) | ![npm](https://img.shields.io/npm/v/@onesub/mcp-server.svg) | MCP tools — AI creates products + paywalls | `npx @onesub/mcp-server` |
+| [`@onesub/cli`](https://www.npmjs.com/package/@onesub/cli) | ![npm](https://img.shields.io/npm/v/@onesub/cli.svg) | Scaffolds a starter server project | `npx @onesub/cli init` |
 | [`@onesub/shared`](https://www.npmjs.com/package/@onesub/shared) | ![npm](https://img.shields.io/npm/v/@onesub/shared.svg) | Shared TypeScript types | Auto-installed |
 
 ---
@@ -236,6 +257,9 @@ cd examples/server
 cp .env.example .env   # add your Apple/Google credentials
 npm install && npm start
 
+# ── or, full stack (server + Postgres) in one command ──
+docker compose up      # http://localhost:4100
+
 # 2. Start the app (in another terminal)
 cd examples/expo-app
 npm install && npx expo start
@@ -259,6 +283,11 @@ class RedisStore implements SubscriptionStore {
 app.use(createOneSubMiddleware({ ...config, store: new RedisStore() }));
 ```
 
+The canonical Postgres schema is shipped with the package at
+[`packages/server/sql/schema.sql`](packages/server/sql/schema.sql). Apply it
+with `psql -f` if you manage migrations externally, or let `store.initSchema()`
+run it for you on startup.
+
 ---
 
 ## Roadmap
@@ -270,7 +299,7 @@ app.use(createOneSubMiddleware({ ...config, store: new RedisStore() }));
 - [x] React Native SDK + paywall components
 - [x] MCP server for AI-assisted setup
 - [x] Security hardening (zod validation, body limits, signature verification)
-- [ ] CLI scaffolding (`npx onesub init`)
+- [x] CLI scaffolding (`npx @onesub/cli init`)
 - [ ] Analytics dashboard
 - [ ] Hosted service (no server needed)
 

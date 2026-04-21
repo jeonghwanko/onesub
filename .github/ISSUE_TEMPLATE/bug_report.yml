@@ -1,0 +1,86 @@
+name: Bug report
+description: Receipt validation fails, webhook not firing, SDK crash, etc.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please **do not** paste raw Apple JWS or Google purchase tokens — they're sensitive. A prefix (first 40 chars) is usually enough to debug.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Which package?
+      multiple: true
+      options:
+        - '@onesub/server'
+        - '@onesub/sdk'
+        - '@onesub/mcp-server'
+        - '@onesub/shared'
+        - examples/server
+        - examples/expo-app
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `npm ls @onesub/server @onesub/sdk` in your app.
+      placeholder: '@onesub/server@0.6.2, @onesub/sdk@0.4.1'
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - iOS (StoreKit 2 / sandbox)
+        - iOS (StoreKit 2 / production)
+        - iOS (TestFlight)
+        - Android (Google Play sandbox)
+        - Android (Google Play production)
+        - N/A (server-only issue)
+    validations:
+      required: true
+  - type: dropdown
+    id: product-type
+    attributes:
+      label: Product type
+      options:
+        - Subscription (auto-renewable)
+        - Consumable
+        - Non-consumable
+        - N/A
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, what did you see instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps to reproduce. Include the exact endpoint you called and request/response bodies (redacted).
+      render: bash
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server logs
+      description: Any `[onesub/...]` console output around the failure.
+      render: text
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: |
+        - Node: 20.x
+        - OS: macOS 14 / Ubuntu 22.04
+        - DB: Postgres 16 / in-memory
+        - react-native-iap: 15.x (if SDK)
+        - NODE_ENV: production
+        - ONESUB_ALLOW_SANDBOX: true/false

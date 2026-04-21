@@ -1,5 +1,6 @@
 import type { SubscriptionInfo, GoogleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { log } from '../logger.js';
 
 type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
 
@@ -241,7 +242,7 @@ export async function consumeGoogleProductReceipt(
   try {
     accessToken = await getCachedAccessToken(config.serviceAccountKey);
   } catch (err) {
-    console.warn('[onesub/google] Could not get access token for consume:', err);
+    log.warn('[onesub/google] Could not get access token for consume:', err);
     return;
   }
 
@@ -258,10 +259,10 @@ export async function consumeGoogleProductReceipt(
 
     if (!resp.ok) {
       const body = await resp.text();
-      console.warn(`[onesub/google] Consume API error ${resp.status}: ${body} — auto-refund risk`);
+      log.warn(`[onesub/google] Consume API error ${resp.status}: ${body} — auto-refund risk`);
     }
   } catch (err) {
-    console.warn('[onesub/google] Consume network error — auto-refund risk:', err);
+    log.warn('[onesub/google] Consume network error — auto-refund risk:', err);
   }
 }
 
@@ -295,7 +296,7 @@ export async function validateGoogleReceipt(
   config: GoogleConfig
 ): Promise<SubscriptionInfo | null> {
   if (!config.serviceAccountKey) {
-    console.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API');
+    log.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API');
     return null;
   }
 
@@ -304,7 +305,7 @@ export async function validateGoogleReceipt(
     const token = await getCachedAccessToken(config.serviceAccountKey);
     purchase = await fetchSubscriptionPurchase(config.packageName, productId, receipt, token);
   } catch (err) {
-    console.error('[onesub/google] Receipt validation failed:', err);
+    log.error('[onesub/google] Receipt validation failed:', err);
     return null;
   }
 
@@ -350,7 +351,7 @@ export async function validateGoogleProductReceipt(
   type: 'consumable' | 'non_consumable' = 'non_consumable',
 ): Promise<GoogleProductResult | null> {
   if (!config.serviceAccountKey) {
-    console.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
+    log.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
     return null;
   }
 
@@ -359,20 +360,20 @@ export async function validateGoogleProductReceipt(
     const token = await getCachedAccessToken(config.serviceAccountKey);
     purchase = await fetchProductPurchase(config.packageName, productId, purchaseToken, token);
   } catch (err) {
-    console.error('[onesub/google] Product receipt validation failed:', err);
+    log.error('[onesub/google] Product receipt validation failed:', err);
     return null;
   }
 
   // purchaseState 0 = completed (1 = canceled, 2 = pending)
   if (purchase.purchaseState !== 0) {
-    console.warn('[onesub/google] Purchase not completed, state:', purchase.purchaseState);
+    log.warn('[onesub/google] Purchase not completed, state:', purchase.purchaseState);
     return null;
   }
 
   // For consumables: consumptionState 1 means already consumed by a previous request.
   // This is the primary replay-attack signal for consumables on Android.
   if (type === 'consumable' && purchase.consumptionState === 1) {
-    console.warn('[onesub/google] Consumable already consumed — possible replay attack');
+    log.warn('[onesub/google] Consumable already consumed — possible replay attack');
     return null;
   }
 
@@ -380,13 +381,13 @@ export async function validateGoogleProductReceipt(
   if (purchase.purchaseTimeMillis) {
     const purchaseTime = parseInt(purchase.purchaseTimeMillis, 10);
     if (Date.now() - purchaseTime > MAX_PRODUCT_RECEIPT_AGE_MS) {
-      console.warn('[onesub/google] Product receipt too old (>72h)');
+      log.warn('[onesub/google] Product receipt too old (>72h)');
       return null;
     }
   }
 
   if (!purchase.orderId) {
-    console.warn('[onesub/google] No orderId in product purchase');
+    log.warn('[onesub/google] No orderId in product purchase');
     return null;
   }
 
