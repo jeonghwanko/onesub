@@ -155,6 +155,16 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
   const isBusyRef = useRef(false);
   const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
+  // Drain window: during the first ~2.5s after mount, StoreKit may still be
+  // flushing queued `Transaction.updates` redeliveries. Any listener event
+  // during this window is treated as an orphan replay regardless of whether
+  // a user-initiated in-flight entry exists — otherwise the race "user taps
+  // Subscribe → replay arrives → matched as their fresh purchase" reintroduces
+  // the silent-restore bug. subscribe()/purchaseProduct() await this flag
+  // before registering their in-flight slot.
+  const drainCompleteRef = useRef(false);
+  const drainWaitersRef = useRef<Array<() => void>>([]);
+  const DRAIN_WINDOW_MS = 2500;
   const mockMode = config.mockMode === true;
 
   if (mockMode && typeof console !== 'undefined') {
@@ -223,14 +233,24 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
           setSubscription(sub);
         },
         isCancelled: () => cancelled,
+        allowInFlightMatching: () => drainCompleteRef.current,
       });
     }
 
     async function setupIap(): Promise<void> {
-      if (!RNIap || mockMode) return;
+      if (!RNIap || mockMode) {
+        // No IAP to drain — release the purchase gate immediately.
+        drainCompleteRef.current = true;
+        drainWaitersRef.current.forEach((w) => w());
+        drainWaitersRef.current = [];
+        return;
+      }
       try {
         await RNIap.initConnection();
       } catch {
+        drainCompleteRef.current = true;
+        drainWaitersRef.current.forEach((w) => w());
+        drainWaitersRef.current = [];
         return;
       }
       if (cancelled) return;
@@ -254,6 +274,16 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
           inFlightRef.current.delete(pid);
         }
       });
+
+      // Release the drain gate after the window closes. Any queued replays
+      // have been processed silently by now; in-flight matching becomes
+      // active so user-initiated subscribe()/purchaseProduct() can resolve.
+      setTimeout(() => {
+        if (cancelled) return;
+        drainCompleteRef.current = true;
+        drainWaitersRef.current.forEach((w) => w());
+        drainWaitersRef.current = [];
+      }, DRAIN_WINDOW_MS);
     }
 
     void loadStatus();
@@ -276,6 +306,15 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.serverUrl, userId]);
+
+  // Block purchase/subscribe until the mount drain window closes. Returns
+  // immediately if already complete, otherwise queues the caller.
+  function awaitDrainComplete(): Promise<void> {
+    if (drainCompleteRef.current) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      drainWaitersRef.current.push(resolve);
+    });
+  }
 
   function registerInFlight<T>(
     productId: string,
@@ -307,6 +346,10 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     try {
       const platform = getCurrentPlatform();
       const productId = getProductId(config, platform);
+
+      // Wait until the mount drain window closes. During drain StoreKit may
+      // still be flushing queued replays, and in-flight matching is disabled.
+      await awaitDrainComplete();
 
       // v15: fetchProducts replaces getSubscriptions
       const subs = await RNIap.fetchProducts({ skus: [productId], type: 'subs' });
@@ -416,6 +459,9 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
       try {
         const platform = getCurrentPlatform();
+
+        // Same drain-window gate as subscribe() — see there for rationale.
+        await awaitDrainComplete();
 
         const products = await RNIap.fetchProducts({ skus: [productId], type: 'in-app' });
         if (!products || !products.length) {

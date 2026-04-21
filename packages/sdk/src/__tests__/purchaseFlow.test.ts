@@ -366,6 +366,110 @@ describe('registerInFlight', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Regression: drain-window race
+// User taps Subscribe RIGHT AFTER mount, so their in-flight entry is already
+// registered when StoreKit's queued `Transaction.updates` replay finally fires.
+// Without the drain gate, listener resolves their in-flight with the stale
+// transaction → "sheet didn't show, immediately restored" bug.
+//
+// With `allowInFlightMatching: () => false` during drain, the replay is
+// routed to the orphan-silent path even though an in-flight entry exists,
+// and the user's promise stays pending — ready to receive the fresh event
+// once the StoreKit sheet is confirmed.
+// ---------------------------------------------------------------------------
+describe('regression: mount drain window suppresses in-flight matching', () => {
+  it('during drain, replay event does NOT resolve the matching in-flight entry', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let resolved: unknown = null;
+    let rejected: Error | null = null;
+
+    // User tapped Subscribe DURING the mount drain window
+    inFlight.set('pro_monthly', {
+      kind: 'subscription',
+      resolve: (v) => { resolved = v; },
+      reject: (e) => { rejected = e; },
+    });
+
+    const finishTransaction = vi.fn().mockResolvedValue(undefined);
+    const onSubscriptionActivated = vi.fn();
+    const validateReceipt = vi.fn().mockResolvedValue({
+      valid: true,
+      subscription: { userId: 'user_1', productId: 'pro_monthly' },
+      action: 'restored',
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction },
+      api: { validateReceipt, validatePurchase: vi.fn() },
+      onSubscriptionActivated,
+      allowInFlightMatching: () => false, // drain active
+    });
+
+    // StoreKit delivers the queued replay for the same productId
+    await handlePurchaseEvent(
+      makePurchase({ productId: 'pro_monthly', productType: 'subs', transactionId: 'stale_tx' }),
+      deps,
+    );
+
+    // The replay was processed silently (finished, state updated) but the
+    // user's promise is STILL pending — they will see the StoreKit sheet
+    // once drain closes and requestPurchase is called.
+    expect(resolved).toBeNull();
+    expect(rejected).toBeNull();
+    expect(inFlight.has('pro_monthly')).toBe(true); // entry preserved
+    expect(finishTransaction).toHaveBeenCalledOnce(); // replay still finished
+    expect(onSubscriptionActivated).toHaveBeenCalledOnce();
+  });
+
+  it('after drain closes, a fresh event resolves the preserved in-flight entry', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let resolved: unknown = null;
+    inFlight.set('pro_monthly', {
+      kind: 'subscription',
+      resolve: (v) => { resolved = v; },
+      reject: () => {},
+    });
+
+    const finishTransaction = vi.fn().mockResolvedValue(undefined);
+    const validateReceipt = vi.fn().mockResolvedValue({
+      valid: true,
+      subscription: { userId: 'user_1', productId: 'pro_monthly' },
+      action: 'new',
+    });
+
+    // Flip the gate mid-test: first a replay (during drain), then the fresh
+    // event after drain.
+    let drainOpen = false;
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction },
+      api: { validateReceipt, validatePurchase: vi.fn() },
+      allowInFlightMatching: () => drainOpen,
+    });
+
+    // Replay during drain — should be silent, in-flight preserved
+    await handlePurchaseEvent(
+      makePurchase({ productId: 'pro_monthly', productType: 'subs', transactionId: 'stale' }),
+      deps,
+    );
+    expect(resolved).toBeNull();
+    expect(inFlight.has('pro_monthly')).toBe(true);
+
+    // Drain closes, user's requestPurchase succeeds, fresh event arrives
+    drainOpen = true;
+    await handlePurchaseEvent(
+      makePurchase({ productId: 'pro_monthly', productType: 'subs', transactionId: 'fresh' }),
+      deps,
+    );
+
+    expect(resolved).toMatchObject({ valid: true, action: 'new' });
+    expect(inFlight.has('pro_monthly')).toBe(false);
+    expect(finishTransaction).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // End-to-end scenario: TestFlight stale pending replay + user taps Subscribe
 // ---------------------------------------------------------------------------
 describe('scenario: TestFlight replay at mount then user taps Subscribe', () => {

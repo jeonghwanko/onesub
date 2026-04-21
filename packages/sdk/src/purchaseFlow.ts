@@ -39,6 +39,21 @@ export interface PurchaseFlowDeps {
   };
   onSubscriptionActivated?: (subscription: SubscriptionInfo) => void;
   isCancelled?: () => boolean;
+  /**
+   * When false, this event is treated as an orphan replay no matter what —
+   * in-flight matching is suppressed. Used during the mount drain window to
+   * prevent a queued StoreKit redelivery from resolving a user-initiated
+   * promise that happens to target the same productId.
+   *
+   * Rationale: StoreKit's `Transaction.updates` may deliver pending
+   * transactions asynchronously in the first few hundred milliseconds after
+   * listener attach. If the user taps Subscribe during that window, the
+   * in-flight entry is already registered and would match the replay — the
+   * classic "no sheet, immediately restored" bug.
+   *
+   * Default (undefined) is treated as true (matching enabled).
+   */
+  allowInFlightMatching?: () => boolean;
 }
 
 export function extractReceiptToken(purchase: unknown): string {
@@ -89,7 +104,12 @@ export function isSubscriptionEvent(
 export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps): Promise<void> {
   if (!purchase || !purchase.productId) return;
   const productId: string = purchase.productId;
-  const inFlight = deps.inFlight.get(productId);
+  // Respect the caller's drain-window gate: during the first few hundred ms
+  // after listener attach, StoreKit may still be flushing queued replays.
+  // Pretend there's no in-flight match so those replays are silently drained
+  // even when they happen to target the same productId the user just tapped.
+  const matchingAllowed = deps.allowInFlightMatching ? deps.allowInFlightMatching() : true;
+  const inFlight = matchingAllowed ? deps.inFlight.get(productId) : undefined;
 
   const receiptToken = extractReceiptToken(purchase);
   if (!receiptToken) {
@@ -157,7 +177,10 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
   } catch (err) {
     inFlight?.reject(err instanceof Error ? err : new Error(String(err)));
   } finally {
-    deps.inFlight.delete(productId);
+    // Only clear the in-flight slot when we actually consumed it. If matching
+    // was suppressed (drain window) we must leave the user's entry intact so
+    // a subsequent fresh event can still resolve it.
+    if (inFlight) deps.inFlight.delete(productId);
   }
 }
 
