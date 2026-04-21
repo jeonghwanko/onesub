@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@onesub/shared": "0.1.0",
+    "@onesub/shared": "0.3.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {
