@@ -6,6 +6,12 @@ Express middleware for Apple StoreKit 2 + Google Play Billing receipt validation
 npm install @onesub/server
 ```
 
+## Requirements
+
+- Node.js **>= 20**
+- Express **5.x** (as of `@onesub/server@0.6.4`) — see [Migration](../../docs/MIGRATION.md) if upgrading from `0.6.3`
+- PostgreSQL **12+** (optional, for production stores)
+
 ## Quick start
 
 ```ts

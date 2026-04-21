@@ -6,8 +6,9 @@
 @onesub/shared (leaf — no dependencies on other onesub packages)
     ↑
     ├── @onesub/server (depends on shared)
-    ├── onesub (SDK, depends on shared)
-    └── @onesub/mcp-server (depends on shared)
+    ├── @jeonghwanko/onesub-sdk (depends on shared)
+    ├── @onesub/mcp-server (depends on shared)
+    └── @onesub/cli (depends on shared; generates server-project templates)
 ```
 
 No circular dependencies. SDK and server are independent of each other.
@@ -38,8 +39,15 @@ createOneSubMiddleware(config)
       │
       │── One-time Purchases:
       ├── POST /onesub/purchase/validate  → zod → provider.validate → purchaseStore.save
-      └── GET  /onesub/purchase/status    → purchaseStore.getPurchasesByUserId → { purchases }
+      ├── GET  /onesub/purchase/status    → purchaseStore.getPurchasesByUserId → { purchases }
+      │
+      └── Admin (only if config.adminSecret is set; requires X-Admin-Secret header):
+          ├── DELETE /onesub/purchase/admin/:userId/:productId   → purchaseStore.deletePurchases
+          ├── POST   /onesub/purchase/admin/grant                → purchaseStore.savePurchase
+          └── POST   /onesub/purchase/admin/transfer             → purchaseStore.reassignPurchase
 ```
+
+All runtime logging goes through `config.logger` (OneSubLogger interface; defaults to `console`). Providers and routes import `log` from the internal `logger.ts` singleton instead of calling `console.*` directly.
 
 ## Store Interfaces
 
@@ -61,6 +69,8 @@ interface PurchaseStore {
   getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
   hasPurchased(userId: string, productId: string): Promise<boolean>;
+  reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>; // 0.6.1+
+  deletePurchases(userId: string, productId: string): Promise<number>;          // 0.4.0+
 }
 ```
 

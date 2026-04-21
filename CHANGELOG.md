@@ -1,5 +1,16 @@
 # Changelog
 
+> 📦 **2026-04-21 이후 버전부터는 per-package CHANGELOG를 본다.**
+> Changesets가 자동 생성 — [`packages/server/CHANGELOG.md`](packages/server/CHANGELOG.md),
+> [`packages/sdk/CHANGELOG.md`](packages/sdk/CHANGELOG.md),
+> [`packages/shared/CHANGELOG.md`](packages/shared/CHANGELOG.md),
+> [`packages/mcp-server/CHANGELOG.md`](packages/mcp-server/CHANGELOG.md),
+> [`packages/cli/CHANGELOG.md`](packages/cli/CHANGELOG.md).
+>
+> 이 파일은 Changesets 도입 이전(2026-04-07 ~ 2026-04-20)의 히스토리 아카이브.
+
+---
+
 ## server@0.6.2 / sdk@0.4.1 / shared@0.3.1 — 2026-04-20
 
 **`action` field on `POST /onesub/purchase/validate`:**

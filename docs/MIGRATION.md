@@ -4,6 +4,21 @@ Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases wi
 
 ---
 
+## `@onesub/server` 0.6.3 → 0.6.4
+
+**What changed:** Internal upgrade from Express 4 to Express 5.
+
+`@onesub/server` 내부 구현이 `express@^5.2.1`을 사용합니다. 호스트 앱도 Express 5이면 아무 것도 바꿀 필요 없음 (추천 경로).
+
+**You're affected if:**
+- 호스트 앱이 여전히 Express 4인데 `@onesub/server`의 Router를 `app.use(createOneSubMiddleware(config))`로 mount하는 경우. 대부분의 경우 `(req, res, next)` 미들웨어 시그니처가 안정적이라 작동하지만, Router-level 기능(error handler 체인, async throw propagation)이 버전 간 불일치를 일으킬 수 있음.
+
+**Action:**
+- 호스트 앱을 Express 5로 올리는 걸 추천. 마이그레이션 문서: <https://expressjs.com/en/guide/migrating-5.html>
+- Express 4를 유지해야 하면 `@onesub/server@0.6.3` 이하에 핀 고정.
+
+---
+
 ## `@onesub/server` 0.5.x → 0.6.x
 
 **What changed:** Apple JWS verification now walks the full `x5c` certificate chain up to a bundled Apple Root CA (G3). Previously only the leaf certificate was used to verify the signature, so a self-signed cert could mint a JWS that passed.
