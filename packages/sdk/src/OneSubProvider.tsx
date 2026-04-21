@@ -9,6 +9,12 @@ import React, {
 import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType } from '@onesub/shared';
 import { PURCHASE_TYPE } from '@onesub/shared';
 import { checkStatus, validateReceipt, validatePurchase } from './api.js';
+import {
+  handlePurchaseEvent as handlePurchaseEventPure,
+  registerInFlight as registerInFlightPure,
+  extractReceiptToken,
+  type InFlightEntry,
+} from './purchaseFlow.js';
 
 // ---------------------------------------------------------------------------
 // IAP import — react-native-iap is an optional peer dependency.
@@ -98,23 +104,6 @@ function buildRequestPurchaseArgs(
 }
 
 // ---------------------------------------------------------------------------
-// Helper — extract the unified purchase token from a v15 Purchase object
-// ---------------------------------------------------------------------------
-function extractReceiptToken(purchase: unknown): string {
-  if (!purchase || typeof purchase !== 'object') return '';
-  const p = purchase as Record<string, unknown>;
-  // v15: unified `purchaseToken` (iOS JWS or Android purchaseToken)
-  if (typeof p.purchaseToken === 'string' && p.purchaseToken.length > 0) {
-    return p.purchaseToken;
-  }
-  // Legacy fallback (v12 and earlier)
-  if (typeof p.transactionReceipt === 'string' && p.transactionReceipt.length > 0) {
-    return p.transactionReceipt;
-  }
-  return '';
-}
-
-// ---------------------------------------------------------------------------
 // Architecture notes — why a single mount-level listener (read before editing)
 //
 // StoreKit 2 delivers unfinished transactions via `Transaction.updates`, an
@@ -152,13 +141,6 @@ function extractReceiptToken(purchase: unknown): string {
 // can fire is the fresh transaction StoreKit creates after the user confirms
 // in the sheet.
 // ---------------------------------------------------------------------------
-
-type InFlightEntry = {
-  kind: 'subscription' | 'purchase';
-  purchaseType?: 'consumable' | 'non_consumable';
-  resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
-};
 
 export interface OneSubProviderProps {
   config: OneSubConfig;
@@ -228,97 +210,20 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function handlePurchaseEvent(purchase: any): Promise<void> {
-      if (!purchase || !purchase.productId) return;
-      const productId: string = purchase.productId;
-      const inFlight = inFlightRef.current.get(productId);
-
-      const receiptToken = extractReceiptToken(purchase);
-      if (!receiptToken) {
-        const err = new Error('[onesub] No receipt data in purchase event.');
-        inFlight?.reject(err);
-        inFlightRef.current.delete(productId);
-        return;
-      }
-
       const platform = getCurrentPlatform();
-      const platformName = platform === 'ios' ? 'apple' : 'google';
-
-      // Determine validation route: either caller's in-flight context tells
-      // us (subscription vs purchase), or we infer from the purchase object's
-      // type field for orphan events (pending-replay at startup, before any
-      // user interaction). For a StoreKit 2 transaction, react-native-iap v15
-      // exposes `productType` — 'subs' → subscription, 'inapp' → one-time.
-      const productType: string | undefined = typeof purchase.productType === 'string'
-        ? purchase.productType
-        : undefined;
-
-      const isSubscription = inFlight
-        ? inFlight.kind === 'subscription'
-        : productType === 'subs' || productType === 'auto-renewable';
-
-      try {
-        if (isSubscription) {
-          const result = await validateReceipt(config.serverUrl, {
-            platform: platformName,
-            receipt: receiptToken,
-            userId,
-            productId,
-          });
-          if (!cancelled && result.valid && result.subscription) {
-            setIsActive(true);
-            setSubscription(result.subscription);
-          }
-          if (result.valid) {
-            await RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
-              /* ignore */
-            });
-            inFlight?.resolve(result);
-          } else {
-            // Don't finish — server rejected; let StoreKit replay next launch
-            inFlight?.reject(new Error(result.error ?? '[onesub] Receipt validation failed.'));
-          }
-        } else {
-          // One-time purchase — caller tells us consumable vs non-consumable,
-          // otherwise default to non-consumable (safer: no consume API call).
-          const purchaseType: PurchaseType =
-            inFlight?.purchaseType === 'consumable'
-              ? PURCHASE_TYPE.CONSUMABLE
-              : PURCHASE_TYPE.NON_CONSUMABLE;
-
-          const result = await validatePurchase(config.serverUrl, {
-            platform: platformName,
-            receipt: receiptToken,
-            userId,
-            productId,
-            type: purchaseType,
-          });
-          if (result.valid) {
-            await RNIap.finishTransaction({
-              purchase,
-              isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
-            }).catch(() => {
-              /* ignore */
-            });
-            inFlight?.resolve(result);
-          } else if (result.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
-            // Server side idempotency — already owned is a legitimate success
-            await RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
-              /* ignore */
-            });
-            inFlight?.resolve({
-              valid: true,
-              purchase: { productId, userId, platform: platformName, type: purchaseType } as PurchaseInfo,
-              action: 'restored',
-            });
-          } else {
-            inFlight?.reject(new Error(result.error ?? '[onesub] Purchase validation failed.'));
-          }
-        }
-      } catch (err) {
-        inFlight?.reject(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        inFlightRef.current.delete(productId);
-      }
+      await handlePurchaseEventPure(purchase, {
+        config,
+        userId,
+        platform,
+        inFlight: inFlightRef.current,
+        RNIap,
+        api: { validateReceipt, validatePurchase },
+        onSubscriptionActivated: (sub) => {
+          setIsActive(true);
+          setSubscription(sub);
+        },
+        isCancelled: () => cancelled,
+      });
     }
 
     async function setupIap(): Promise<void> {
@@ -372,34 +277,12 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.serverUrl, userId]);
 
-  // -------------------------------------------------------------------------
-  // Helper — register an in-flight slot for a productId and return a promise
-  // that resolves when the mount-level listener sees the matching event.
-  // Only one in-flight per productId at a time; concurrent calls throw.
-  // -------------------------------------------------------------------------
   function registerInFlight<T>(
     productId: string,
     kind: 'subscription' | 'purchase',
     purchaseType: 'consumable' | 'non_consumable' | undefined,
-    timeoutMs = 180_000,
   ): Promise<T> {
-    if (inFlightRef.current.has(productId)) {
-      return Promise.reject(new Error(`[onesub] A purchase for ${productId} is already in progress.`));
-    }
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        if (inFlightRef.current.get(productId)) {
-          inFlightRef.current.delete(productId);
-          reject(new Error('[onesub] Purchase timed out'));
-        }
-      }, timeoutMs);
-      inFlightRef.current.set(productId, {
-        kind,
-        purchaseType,
-        resolve: (v) => { clearTimeout(timer); resolve(v as T); },
-        reject: (e) => { clearTimeout(timer); reject(e); },
-      });
-    });
+    return registerInFlightPure<T>(inFlightRef.current, productId, kind, purchaseType);
   }
 
   // -------------------------------------------------------------------------
