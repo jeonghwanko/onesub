@@ -4,18 +4,34 @@ Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases wi
 
 ---
 
-## `@onesub/server` 0.6.3 → 0.6.4
+## `@onesub/server` 0.6.x → 0.7.0
 
-**What changed:** Internal upgrade from Express 4 to Express 5.
+**What changed:** `express`가 `dependencies`에서 **`peerDependencies`로 이동**. 더 이상 `@onesub/server`가 자체 express 사본을 끌고 들어오지 않음.
 
-`@onesub/server` 내부 구현이 `express@^5.2.1`을 사용합니다. 호스트 앱도 Express 5이면 아무 것도 바꿀 필요 없음 (추천 경로).
+지원 범위: `"^4.17.0 || ^5.0.0"` — Express 4 또는 5 모두 호환.
+
+**Why:** middleware 라이브러리의 표준 패턴. 호스트 앱이 이미 가진 express 인스턴스와 `@onesub/server`의 Router가 같은 인스턴스를 공유하게 됨 (이중 설치 / 인스턴스 mismatch 방지).
 
 **You're affected if:**
-- 호스트 앱이 여전히 Express 4인데 `@onesub/server`의 Router를 `app.use(createOneSubMiddleware(config))`로 mount하는 경우. 대부분의 경우 `(req, res, next)` 미들웨어 시그니처가 안정적이라 작동하지만, Router-level 기능(error handler 체인, async throw propagation)이 버전 간 불일치를 일으킬 수 있음.
+- `@onesub/server`만 설치하고 호스트 앱에 `express`가 없었던 경우 — install이 peer warning을 띄움. 거의 없는 케이스 (express 없이 이 미들웨어를 쓸 일이 없음).
 
 **Action:**
-- 호스트 앱을 Express 5로 올리는 걸 추천. 마이그레이션 문서: <https://expressjs.com/en/guide/migrating-5.html>
-- Express 4를 유지해야 하면 `@onesub/server@0.6.3` 이하에 핀 고정.
+```bash
+npm install express          # 호스트 앱에 명시적으로 설치 (이미 있으면 no-op)
+npm install @onesub/server@latest
+```
+- Express 4 사용자: `npm install express@^4.17.0` 후 `@onesub/server@^0.7.0` 설치 — 그대로 작동
+- Express 5 사용자: `npm install express@^5` 후 동일
+
+내부 구현은 Express 4/5 공통 API만 사용 (`Router`, `express.json`, 표준 `(req, res, next)`). 이전 0.6.4의 Express 5 강제 의존성은 풀림.
+
+---
+
+## `@onesub/server` 0.6.3 → 0.6.4 (지금은 0.7.0으로 직행 추천)
+
+**What changed:** Internal upgrade from Express 4 to Express 5 — but this version pinned `express` as a regular `dependencies`. **0.7.0이 이 문제를 해결**하므로 0.6.3 사용자는 0.6.4를 건너뛰고 0.7.0으로 직행 권장.
+
+**호환성 메모:** 0.6.4의 Router는 express 5 인스턴스를 사용. 호스트 앱이 express 4면 `(req, res, next)` 미들웨어 시그니처는 호환되지만 Router-level error handler 체인이 분리될 수 있음.
 
 ---
 

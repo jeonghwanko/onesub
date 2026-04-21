@@ -9,7 +9,10 @@ npm install @onesub/server
 ## Requirements
 
 - Node.js **>= 20**
-- Express **5.x** (as of `@onesub/server@0.6.4`) — see [Migration](../../docs/MIGRATION.md) if upgrading from `0.6.3`
+- **Express** as a peer dependency — `^4.17.0 || ^5.0.0`. Install in your app:
+  ```bash
+  npm install @onesub/server express
+  ```
 - PostgreSQL **12+** (optional, for production stores)
 
 ## Quick start
