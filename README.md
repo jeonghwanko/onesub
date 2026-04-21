@@ -213,6 +213,12 @@ For Claude Code / Cursor users — AI helps set up your subscription:
 
 > "Add a monthly subscription to my Expo app"
 
+### Skill document for AI agents
+
+A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`](SKILL.md). Point Claude / Cursor / any agent at it for complete onesub context:
+
+> Read `https://raw.githubusercontent.com/jeonghwanko/onesub/master/SKILL.md` then integrate onesub into this project.
+
 ---
 
 ## Packages
