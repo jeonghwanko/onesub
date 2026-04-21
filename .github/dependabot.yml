@@ -18,6 +18,20 @@ updates:
       # react-native-iap is a peer dep with a known-compatible major (v15).
       # Upgrade manually and test the SDK event flow — never auto-bump.
       - dependency-name: react-native-iap
+      # express 5 has breaking changes to route patterns, req.query parsing,
+      # and async error propagation (see closed PR #6). Revisit manually.
+      - dependency-name: express
+        update-types: [version-update:semver-major]
+      - dependency-name: '@types/express'
+        update-types: [version-update:semver-major]
+      # @types/node must track the supported runtime (engines: node >=20).
+      # Bump manually when the support line changes.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+      # TypeScript 6 changed node: specifier resolution + ambient types
+      # handling (see closed PR #8). Revisit after 6.x matures.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
 
   # GitHub Actions workflow pins — weekly.
   - package-ecosystem: github-actions
