@@ -40,13 +40,20 @@ export function createAdminRouter(
   });
 
   // DELETE /onesub/purchase/admin/:userId/:productId
+  // Express 5 types route params as `string | string[]` — narrow via zod.
+  const resetParamsSchema = z.object({
+    userId: z.string().min(1).max(256),
+    productId: z.string().min(1).max(256),
+  });
   router.delete('/onesub/purchase/admin/:userId/:productId', async (req: Request, res: Response) => {
-    const { userId, productId } = req.params;
-    if (!userId || !productId) {
+    let params;
+    try {
+      params = resetParamsSchema.parse(req.params);
+    } catch {
       res.status(400).json({ error: 'userId and productId required' });
       return;
     }
-    const deleted = await purchaseStore.deletePurchases(userId, productId);
+    const deleted = await purchaseStore.deletePurchases(params.userId, params.productId);
     res.json({ ok: true, deleted });
   });
 
