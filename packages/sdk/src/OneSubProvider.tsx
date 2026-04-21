@@ -98,100 +98,6 @@ function buildRequestPurchaseArgs(
 }
 
 // ---------------------------------------------------------------------------
-// Helper — await a purchase event for a given productId.
-//
-// v15 requestPurchase uses an event-based model: the purchase arrives via
-// purchaseUpdatedListener, not as the return value. We wrap the listeners in
-// a Promise that resolves on the matching event (or rejects on error/cancel).
-// ---------------------------------------------------------------------------
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function awaitPurchaseEvent(productId: string, timeoutMs = 120_000): Promise<any> {
-  if (!RNIap) {
-    return Promise.reject(new Error('[onesub] react-native-iap not available'));
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let updatedSub: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let errorSub: any = null;
-
-    const cleanup = () => {
-      try { updatedSub?.remove?.(); } catch { /* ignore */ }
-      try { errorSub?.remove?.(); } catch { /* ignore */ }
-    };
-
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new Error('[onesub] Purchase timed out'));
-    }, timeoutMs);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    updatedSub = RNIap.purchaseUpdatedListener((purchase: any) => {
-      if (settled) return;
-      if (!purchase) return;
-      if (purchase.productId && purchase.productId !== productId) return;
-      settled = true;
-      clearTimeout(timer);
-      cleanup();
-      resolve(purchase);
-    });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    errorSub = RNIap.purchaseErrorListener((err: any) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      cleanup();
-      const wrapped: Error & { code?: string } = new Error(
-        err?.message ?? '[onesub] Purchase error',
-      );
-      if (err?.code) wrapped.code = err.code;
-      reject(wrapped);
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// StoreKit queue flush.
-//
-// If a previous session left an unfinished transaction for `productId` in the
-// StoreKit queue (TestFlight tests, crashes, force-quits), `initConnection`
-// causes the OS to re-deliver it to purchaseUpdatedListener the moment we
-// attach — *without* showing the confirmation sheet. That stale redelivery
-// would be mistaken for the fresh transaction the user is about to authorize,
-// so the purchase "succeeds" silently as a "restore" (from server 0.6.2+ auto-
-// restore) without user authentication.
-//
-// The safest remedy is to flush pending transactions for this productId
-// *before* calling requestPurchase. With an empty queue, the only event that
-// can fire is the one StoreKit creates after the user confirms in the sheet.
-//
-// Best-effort — if the platform/store can't enumerate pending purchases we
-// proceed anyway (the original silent-redelivery path may still surface, but
-// the user is no worse off than before the guard existed).
-// ---------------------------------------------------------------------------
-async function flushPendingForProduct(productId: string): Promise<void> {
-  try {
-    const pending = await RNIap.getAvailablePurchases();
-    if (!Array.isArray(pending)) return;
-    for (const p of pending) {
-      if (!p || p.productId !== productId) continue;
-      try {
-        await RNIap.finishTransaction({ purchase: p, isConsumable: false });
-      } catch {
-        /* ignore — per-tx cleanup is best-effort */
-      }
-    }
-  } catch {
-    /* ignore — snapshot unavailable; fall through to normal flow */
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Helper — extract the unified purchase token from a v15 Purchase object
 // ---------------------------------------------------------------------------
 function extractReceiptToken(purchase: unknown): string {
@@ -208,6 +114,52 @@ function extractReceiptToken(purchase: unknown): string {
   return '';
 }
 
+// ---------------------------------------------------------------------------
+// Architecture notes — why a single mount-level listener (read before editing)
+//
+// StoreKit 2 delivers unfinished transactions via `Transaction.updates`, an
+// AsyncSequence that Apple documents as firing "each time the system creates
+// a transaction OR the app launches with unfinished transactions" (see
+// https://developer.apple.com/documentation/storekit/transaction/updates).
+//
+// react-native-iap v15 (OpenIAP-Apple under the hood) bridges every event
+// from Transaction.updates to `purchaseUpdatedListener` indiscriminately.
+// It is NOT possible to reliably distinguish a replay of a previously
+// unfinished transaction from a freshly created one on the client.
+//
+// The correct architecture (as used by RevenueCat, Qonversion, Adapty) is:
+//
+//   1. Attach ONE listener for the lifetime of the Provider.
+//   2. Validate every event against the server. The server is idempotent —
+//      it returns `action: 'new'` for first-time transactionIds and
+//      `action: 'restored'` for redeliveries.
+//   3. Call finishTransaction ONLY after the server returns 2xx. If the
+//      server is unreachable, leave the transaction unfinished so StoreKit
+//      replays it on the next app launch (at-least-once semantics).
+//   4. Per-call `subscribe()` / `purchaseProduct()` registers an in-flight
+//      promise in a ref map keyed by productId. The listener resolves it
+//      when a matching event arrives. Events with no matching in-flight
+//      entry are "orphan" replays — processed silently (state updated, but
+//      no promise to resolve, no UI side-effect).
+//
+// Why this fixes the "TestFlight: sheet doesn't appear, app says 결제 복구됨"
+// bug: under the old per-call listener pattern, attaching the listener after
+// initConnection immediately delivered the pending transaction (before
+// requestPurchase could show the StoreKit sheet). The listener resolved the
+// promise with that stale event. Under this mount-level pattern, pending
+// transactions are drained silently right after initConnection, so by the
+// time the user taps Subscribe the queue is empty and the only event that
+// can fire is the fresh transaction StoreKit creates after the user confirms
+// in the sheet.
+// ---------------------------------------------------------------------------
+
+type InFlightEntry = {
+  kind: 'subscription' | 'purchase';
+  purchaseType?: 'consumable' | 'non_consumable';
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+};
+
 export interface OneSubProviderProps {
   config: OneSubConfig;
   userId: string;
@@ -220,6 +172,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
 
   const isBusyRef = useRef(false);
+  const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
   const mockMode = config.mockMode === true;
 
   if (mockMode && typeof console !== 'undefined') {
@@ -245,8 +198,15 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     } as PurchaseInfo;
   }
 
+  // -------------------------------------------------------------------------
+  // Mount: load initial status, open IAP connection, attach listeners.
+  // -------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let updatedSub: any = null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let errorSub: any = null;
 
     async function loadStatus() {
       setIsLoading(true);
@@ -266,16 +226,181 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       }
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async function handlePurchaseEvent(purchase: any): Promise<void> {
+      if (!purchase || !purchase.productId) return;
+      const productId: string = purchase.productId;
+      const inFlight = inFlightRef.current.get(productId);
+
+      const receiptToken = extractReceiptToken(purchase);
+      if (!receiptToken) {
+        const err = new Error('[onesub] No receipt data in purchase event.');
+        inFlight?.reject(err);
+        inFlightRef.current.delete(productId);
+        return;
+      }
+
+      const platform = getCurrentPlatform();
+      const platformName = platform === 'ios' ? 'apple' : 'google';
+
+      // Determine validation route: either caller's in-flight context tells
+      // us (subscription vs purchase), or we infer from the purchase object's
+      // type field for orphan events (pending-replay at startup, before any
+      // user interaction). For a StoreKit 2 transaction, react-native-iap v15
+      // exposes `productType` — 'subs' → subscription, 'inapp' → one-time.
+      const productType: string | undefined = typeof purchase.productType === 'string'
+        ? purchase.productType
+        : undefined;
+
+      const isSubscription = inFlight
+        ? inFlight.kind === 'subscription'
+        : productType === 'subs' || productType === 'auto-renewable';
+
+      try {
+        if (isSubscription) {
+          const result = await validateReceipt(config.serverUrl, {
+            platform: platformName,
+            receipt: receiptToken,
+            userId,
+            productId,
+          });
+          if (!cancelled && result.valid && result.subscription) {
+            setIsActive(true);
+            setSubscription(result.subscription);
+          }
+          if (result.valid) {
+            await RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
+              /* ignore */
+            });
+            inFlight?.resolve(result);
+          } else {
+            // Don't finish — server rejected; let StoreKit replay next launch
+            inFlight?.reject(new Error(result.error ?? '[onesub] Receipt validation failed.'));
+          }
+        } else {
+          // One-time purchase — caller tells us consumable vs non-consumable,
+          // otherwise default to non-consumable (safer: no consume API call).
+          const purchaseType: PurchaseType =
+            inFlight?.purchaseType === 'consumable'
+              ? PURCHASE_TYPE.CONSUMABLE
+              : PURCHASE_TYPE.NON_CONSUMABLE;
+
+          const result = await validatePurchase(config.serverUrl, {
+            platform: platformName,
+            receipt: receiptToken,
+            userId,
+            productId,
+            type: purchaseType,
+          });
+          if (result.valid) {
+            await RNIap.finishTransaction({
+              purchase,
+              isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
+            }).catch(() => {
+              /* ignore */
+            });
+            inFlight?.resolve(result);
+          } else if (result.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
+            // Server side idempotency — already owned is a legitimate success
+            await RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
+              /* ignore */
+            });
+            inFlight?.resolve({
+              valid: true,
+              purchase: { productId, userId, platform: platformName, type: purchaseType } as PurchaseInfo,
+              action: 'restored',
+            });
+          } else {
+            inFlight?.reject(new Error(result.error ?? '[onesub] Purchase validation failed.'));
+          }
+        }
+      } catch (err) {
+        inFlight?.reject(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        inFlightRef.current.delete(productId);
+      }
+    }
+
+    async function setupIap(): Promise<void> {
+      if (!RNIap || mockMode) return;
+      try {
+        await RNIap.initConnection();
+      } catch {
+        return;
+      }
+      if (cancelled) return;
+
+      // Attach listeners BEFORE any further await so we catch every replay
+      // from Transaction.updates.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      updatedSub = RNIap.purchaseUpdatedListener((purchase: any) => {
+        void handlePurchaseEvent(purchase);
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      errorSub = RNIap.purchaseErrorListener((err: any) => {
+        // Errors are routed to every in-flight promise (we can't tell which
+        // SKU StoreKit was processing when an error fires).
+        const wrapped: Error & { code?: string } = new Error(
+          err?.message ?? '[onesub] Purchase error',
+        );
+        if (err?.code) wrapped.code = err.code;
+        for (const [pid, entry] of inFlightRef.current.entries()) {
+          entry.reject(wrapped);
+          inFlightRef.current.delete(pid);
+        }
+      });
+    }
+
     void loadStatus();
+    void setupIap();
+
     return () => {
       cancelled = true;
+      try { updatedSub?.remove?.(); } catch { /* ignore */ }
+      try { errorSub?.remove?.(); } catch { /* ignore */ }
+      // Reject any dangling in-flight promises so callers don't hang forever
+      for (const [pid, entry] of inFlightRef.current.entries()) {
+        entry.reject(new Error('[onesub] Provider unmounted'));
+        inFlightRef.current.delete(pid);
+      }
       if (RNIap) {
-        void RNIap.endConnection().catch(() => {
+        void RNIap.endConnection?.().catch?.(() => {
           /* ignore */
         });
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config.serverUrl, userId]);
+
+  // -------------------------------------------------------------------------
+  // Helper — register an in-flight slot for a productId and return a promise
+  // that resolves when the mount-level listener sees the matching event.
+  // Only one in-flight per productId at a time; concurrent calls throw.
+  // -------------------------------------------------------------------------
+  function registerInFlight<T>(
+    productId: string,
+    kind: 'subscription' | 'purchase',
+    purchaseType: 'consumable' | 'non_consumable' | undefined,
+    timeoutMs = 180_000,
+  ): Promise<T> {
+    if (inFlightRef.current.has(productId)) {
+      return Promise.reject(new Error(`[onesub] A purchase for ${productId} is already in progress.`));
+    }
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (inFlightRef.current.get(productId)) {
+          inFlightRef.current.delete(productId);
+          reject(new Error('[onesub] Purchase timed out'));
+        }
+      }, timeoutMs);
+      inFlightRef.current.set(productId, {
+        kind,
+        purchaseType,
+        resolve: (v) => { clearTimeout(timer); resolve(v as T); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+    });
+  }
 
   // -------------------------------------------------------------------------
   // subscribe()
@@ -296,14 +421,9 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     isBusyRef.current = true;
     setIsLoading(true);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let singlePurchase: any = null;
-
     try {
       const platform = getCurrentPlatform();
       const productId = getProductId(config, platform);
-
-      await RNIap.initConnection();
 
       // v15: fetchProducts replaces getSubscriptions
       const subs = await RNIap.fetchProducts({ skus: [productId], type: 'subs' });
@@ -311,50 +431,32 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         throw new Error(`[onesub] Subscription product not found: ${productId}`);
       }
 
-      // v15: event-based purchase — flush any stale pending transactions for
-      // this productId first, then listen, then kick off the request. Flushing
-      // keeps the StoreKit queue from silently re-delivering a prior session's
-      // transaction to purchaseUpdatedListener without showing the confirmation
-      // sheet (see flushPendingForProduct for the full rationale).
-      await flushPendingForProduct(productId);
-      const eventPromise = awaitPurchaseEvent(productId);
-      await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
-      singlePurchase = await eventPromise;
-      if (!singlePurchase) {
-        throw new Error('[onesub] No purchase data returned from the store.');
-      }
-
-      const receiptToken = extractReceiptToken(singlePurchase);
-      if (!receiptToken) {
-        throw new Error('[onesub] No receipt data in purchase response.');
-      }
-
-      const validationResult = await validateReceipt(config.serverUrl, {
-        platform: platform === 'ios' ? 'apple' : 'google',
-        receipt: receiptToken,
-        userId,
+      // Register in-flight promise BEFORE calling requestPurchase — the
+      // mount-level listener matches incoming events to this entry.
+      const resultPromise = registerInFlight<{ valid: boolean; subscription?: SubscriptionInfo; error?: string }>(
         productId,
-      });
-
-      if (validationResult.valid && validationResult.subscription) {
-        setIsActive(true);
-        setSubscription(validationResult.subscription);
-      } else {
-        throw new Error(validationResult.error ?? '[onesub] Receipt validation failed.');
+        'subscription',
+        undefined,
+      );
+      try {
+        await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
+      } catch (err) {
+        inFlightRef.current.delete(productId);
+        if (isUserCancelled(err)) return;
+        throw err;
+      }
+      const result = await resultPromise;
+      if (!result.valid) {
+        throw new Error(result.error ?? '[onesub] Subscription validation failed.');
       }
     } finally {
-      if (singlePurchase) {
-        await RNIap.finishTransaction({ purchase: singlePurchase, isConsumable: false }).catch(() => {
-          /* ignore */
-        });
-      }
       setIsLoading(false);
       isBusyRef.current = false;
     }
-  }, [config, userId]);
+  }, [config, userId, mockMode]);
 
   // -------------------------------------------------------------------------
-  // restore()
+  // restore() — query the store's existing purchases and re-validate with server.
   // -------------------------------------------------------------------------
   const restore = useCallback(async () => {
     if (isBusyRef.current) return;
@@ -372,8 +474,6 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     setIsLoading(true);
 
     try {
-      await RNIap.initConnection();
-
       const platform = getCurrentPlatform();
       const purchases = await RNIap.getAvailablePurchases();
 
@@ -408,13 +508,16 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       setIsLoading(false);
       isBusyRef.current = false;
     }
-  }, [config, userId]);
+  }, [config, userId, mockMode]);
 
   // -------------------------------------------------------------------------
   // purchaseProduct() — consumable or non-consumable one-time purchase
   // -------------------------------------------------------------------------
   const purchaseProduct = useCallback(
-    async (productId: string, type: 'consumable' | 'non_consumable'): Promise<PurchaseInfo | null> => {
+    async (
+      productId: string,
+      type: 'consumable' | 'non_consumable',
+    ): Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null> => {
       if (isBusyRef.current) return null;
       if (mockMode) {
         return mockPurchaseInfo(productId, type);
@@ -428,76 +531,53 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       isBusyRef.current = true;
       setIsLoading(true);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let purchase: any = null;
-
       try {
         const platform = getCurrentPlatform();
-        await RNIap.initConnection();
 
-        // v15: fetchProducts replaces getProducts
         const products = await RNIap.fetchProducts({ skus: [productId], type: 'in-app' });
         if (!products || !products.length) {
           throw new Error(`[onesub] Product not found in store: ${productId}`);
         }
 
-        // Flush any stale pending transactions for this productId before
-        // attaching the listener + requesting a fresh purchase. Otherwise
-        // StoreKit silently re-delivers the pending transaction and bypasses
-        // the confirmation sheet (see flushPendingForProduct).
-        await flushPendingForProduct(productId);
-        const eventPromise = awaitPurchaseEvent(productId);
-        await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
-        purchase = await eventPromise;
-        if (!purchase) {
-          return null;
+        const resultPromise = registerInFlight<{
+          valid: boolean;
+          purchase?: PurchaseInfo;
+          action?: 'new' | 'restored';
+          error?: string;
+        }>(productId, 'purchase', type);
+
+        try {
+          await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
+        } catch (err) {
+          inFlightRef.current.delete(productId);
+          if (isUserCancelled(err)) return null;
+          throw err;
         }
 
-        const receipt = extractReceiptToken(purchase);
-        if (!receipt) {
-          throw new Error('[onesub] No receipt data in purchase response.');
+        const result = await resultPromise;
+        if (result.valid && result.purchase) {
+          return { ...result.purchase, action: result.action };
         }
-
-        const purchaseType: PurchaseType =
-          type === 'consumable' ? PURCHASE_TYPE.CONSUMABLE : PURCHASE_TYPE.NON_CONSUMABLE;
-
-        const validationResult = await validatePurchase(config.serverUrl, {
-          platform: platform === 'ios' ? 'apple' : 'google',
-          receipt,
-          userId,
-          productId,
-          type: purchaseType,
-        });
-
-        if (validationResult.valid && validationResult.purchase) {
-          return { ...validationResult.purchase, action: validationResult.action } as PurchaseInfo & { action?: 'new' | 'restored' };
-        }
-
-        throw new Error(validationResult.error ?? '[onesub] Purchase validation failed.');
+        throw new Error(result.error ?? '[onesub] Purchase validation failed.');
       } catch (err) {
         if (isUserCancelled(err)) return null;
         throw err;
       } finally {
-        if (purchase) {
-          await RNIap.finishTransaction({
-            purchase,
-            isConsumable: type === 'consumable',
-          }).catch(() => {
-            /* ignore — store will re-deliver on next app launch if unfinished */
-          });
-        }
         setIsLoading(false);
         isBusyRef.current = false;
       }
     },
-    [config, userId],
+    [config, userId, mockMode],
   );
 
   // -------------------------------------------------------------------------
   // restoreProduct() — restore a one-time purchase (non-consumable)
   // -------------------------------------------------------------------------
   const restoreProduct = useCallback(
-    async (productId: string, type: 'consumable' | 'non_consumable'): Promise<PurchaseInfo | null> => {
+    async (
+      productId: string,
+      type: 'consumable' | 'non_consumable',
+    ): Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null> => {
       if (isBusyRef.current) return null;
       if (mockMode) {
         return mockPurchaseInfo(productId, type);
@@ -513,7 +593,6 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
       try {
         const platform = getCurrentPlatform();
-        await RNIap.initConnection();
 
         const purchases = await RNIap.getAvailablePurchases();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -554,7 +633,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         isBusyRef.current = false;
       }
     },
-    [config, userId],
+    [config, userId, mockMode],
   );
 
   const value: OneSubContextValue = {
