@@ -1,6 +1,6 @@
 {
   "name": "@jeonghwanko/onesub-sdk",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "React Native SDK for in-app subscriptions. useOneSub() hook + Paywall component. Built on react-native-iap.",
   "main": "dist/index.js",
   "module": "dist/index.js",
@@ -39,7 +39,7 @@
   "homepage": "https://github.com/jeonghwanko/onesub",
   "license": "MIT",
   "dependencies": {
-    "@onesub/shared": "0.3.3"
+    "@onesub/shared": "0.3.4"
   },
   "peerDependencies": {
     "react": ">=18.0.0",
