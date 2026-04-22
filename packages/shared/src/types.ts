@@ -181,6 +181,20 @@ export interface OneSubConfig {
    * configured store credentials. NEVER enable in production builds.
    */
   mockMode?: boolean;
+  /**
+   * When true, the SDK emits verbose `[onesub]` traces at every step of the
+   * purchase lifecycle: IAP connection, listener events with productId and
+   * transactionId, in-flight matches, server validations, finishTransaction
+   * calls, and drain-window transitions. Recommended while debugging an
+   * integration; leave unset (falsy) in production.
+   */
+  debug?: boolean;
+  /**
+   * Structured logger for SDK logs. If omitted, logs go to `console`. Any
+   * object with `{ info, warn, error }` works (`pino`, `winston`, `console`,
+   * or a custom sink). `debug` traces always route through the same logger.
+   */
+  logger?: OneSubLogger;
 }
 
 /** Paywall config */

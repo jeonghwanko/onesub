@@ -19,7 +19,12 @@ export { checkStatus, validateReceipt, validatePurchase, checkPurchaseStatus } f
 // Structured errors — `err.code` is a value from ONESUB_ERROR_CODE.
 export { OneSubError, isOneSubError, toOneSubError } from './OneSubError.js';
 export { ONESUB_ERROR_CODE } from '@onesub/shared';
-export type { OneSubErrorCode } from '@onesub/shared';
+export type { OneSubErrorCode, OneSubLogger } from '@onesub/shared';
+
+// SDK logger factory — exported so consumers with custom debug tooling can
+// reuse the same formatting. Most apps only need `config.debug: true`.
+export { createSdkLogger } from './logger.js';
+export type { SdkLogger } from './logger.js';
 
 // Re-export shared types for consumer convenience — no need to depend on @onesub/shared separately
 export type {

@@ -449,6 +449,87 @@ describe('error codes on rejection', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Logger wiring — handlePurchaseEvent emits trace events when debug is on
+// ---------------------------------------------------------------------------
+describe('logger wiring', () => {
+  it('emits "event received" trace with productId / inFlight / matching state', async () => {
+    const trace = vi.fn();
+    const inFlight = new Map<string, InFlightEntry>();
+    inFlight.set('pro', {
+      kind: 'subscription',
+      resolve: () => {},
+      reject: () => {},
+    });
+
+    const validateReceipt = vi.fn().mockResolvedValue({
+      valid: true,
+      subscription: { userId: 'user_1', productId: 'pro', status: 'active' },
+      action: 'new',
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction: vi.fn().mockResolvedValue(undefined) },
+      api: { validateReceipt, validatePurchase: vi.fn() },
+      logger: { trace, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await handlePurchaseEvent(
+      makePurchase({ productId: 'pro', productType: 'subs', transactionId: 'tx_1' }),
+      deps,
+    );
+
+    const receivedCall = trace.mock.calls.find((c) => c[0] === 'event received');
+    expect(receivedCall).toBeDefined();
+    expect(receivedCall?.[1]).toMatchObject({
+      productId: 'pro',
+      transactionId: 'tx_1',
+      productType: 'subs',
+      hasInFlight: true,
+      matchingAllowed: true,
+      matched: true,
+    });
+  });
+
+  it('emits "no receipt" warn when receipt is missing', async () => {
+    const warn = vi.fn();
+    const inFlight = new Map<string, InFlightEntry>();
+    inFlight.set('pro', { kind: 'purchase', purchaseType: 'non_consumable', resolve: () => {}, reject: () => {} });
+
+    const deps = makeDeps({
+      inFlight,
+      logger: { trace: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+    await handlePurchaseEvent({ productId: 'pro' }, deps);
+
+    expect(warn).toHaveBeenCalledWith('event rejected: no receipt', { productId: 'pro' });
+  });
+
+  it('emits "validated" trace on successful purchase', async () => {
+    const trace = vi.fn();
+    const inFlight = new Map<string, InFlightEntry>();
+    inFlight.set('credits', { kind: 'purchase', purchaseType: 'consumable', resolve: () => {}, reject: () => {} });
+
+    const validatePurchase = vi.fn().mockResolvedValue({
+      valid: true,
+      purchase: { productId: 'credits', transactionId: 'tx_1' },
+      action: 'new',
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction: vi.fn().mockResolvedValue(undefined) },
+      api: { validateReceipt: vi.fn(), validatePurchase },
+      logger: { trace, info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+    await handlePurchaseEvent(makePurchase({ productId: 'credits' }), deps);
+
+    const validatedCall = trace.mock.calls.find((c) => c[0] === 'purchase validated');
+    expect(validatedCall?.[1]).toMatchObject({ productId: 'credits', action: 'new', type: 'consumable' });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Regression: drain-window race
 // User taps Subscribe RIGHT AFTER mount, so their in-flight entry is already
 // registered when StoreKit's queued `Transaction.updates` replay finally fires.

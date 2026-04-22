@@ -10,6 +10,7 @@
 import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType, OneSubErrorCode } from '@onesub/shared';
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
+import type { SdkLogger } from './logger.js';
 
 export type InFlightEntry = {
   kind: 'subscription' | 'purchase';
@@ -40,6 +41,7 @@ export interface PurchaseFlowDeps {
   };
   onSubscriptionActivated?: (subscription: SubscriptionInfo) => void;
   isCancelled?: () => boolean;
+  logger?: SdkLogger;
   /**
    * When false, this event is treated as an orphan replay no matter what —
    * in-flight matching is suppressed. Used during the mount drain window to
@@ -108,17 +110,30 @@ export function isSubscriptionEvent(
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps): Promise<void> {
-  if (!purchase || !purchase.productId) return;
+  if (!purchase || !purchase.productId) {
+    deps.logger?.trace('event ignored: missing productId');
+    return;
+  }
   const productId: string = purchase.productId;
   // Respect the caller's drain-window gate: during the first few hundred ms
   // after listener attach, StoreKit may still be flushing queued replays.
   // Pretend there's no in-flight match so those replays are silently drained
   // even when they happen to target the same productId the user just tapped.
   const matchingAllowed = deps.allowInFlightMatching ? deps.allowInFlightMatching() : true;
+  const hasInFlight = deps.inFlight.has(productId);
   const inFlight = matchingAllowed ? deps.inFlight.get(productId) : undefined;
+  deps.logger?.trace('event received', {
+    productId,
+    transactionId: purchase.transactionId,
+    productType: purchase.productType,
+    hasInFlight,
+    matchingAllowed,
+    matched: Boolean(inFlight),
+  });
 
   const receiptToken = extractReceiptToken(purchase);
   if (!receiptToken) {
+    deps.logger?.warn('event rejected: no receipt', { productId });
     inFlight?.reject(new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] No receipt data in purchase event.'));
     deps.inFlight.delete(productId);
     return;
@@ -126,6 +141,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
 
   const platformName = deps.platform === 'ios' ? 'apple' : 'google';
   const isSubscription = isSubscriptionEvent(purchase, inFlight);
+  deps.logger?.trace('validating', { productId, platform: platformName, kind: isSubscription ? 'subscription' : 'purchase' });
 
   try {
     if (isSubscription) {
@@ -139,6 +155,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         deps.onSubscriptionActivated?.(result.subscription);
       }
       if (result.valid) {
+        deps.logger?.trace('subscription validated', { productId, action: result.action, active: Boolean(result.subscription) });
         await deps.RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
           /* ignore */
         });
@@ -146,6 +163,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
       } else {
         // Don't finish — server rejected; let StoreKit replay next launch.
         const code = serverErrorCode(result.errorCode, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
+        deps.logger?.warn('subscription rejected by server', { productId, code, error: result.error });
         inFlight?.reject(new OneSubError(code, result.error ?? '[onesub] Receipt validation failed.'));
       }
     } else {
@@ -161,6 +179,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         type: purchaseType,
       });
       if (result.valid) {
+        deps.logger?.trace('purchase validated', { productId, action: result.action, type: purchaseType });
         await deps.RNIap.finishTransaction({
           purchase,
           isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
@@ -169,6 +188,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         });
         inFlight?.resolve(result);
       } else if (result.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
+        deps.logger?.trace('purchase synthesized as restored (already owned)', { productId });
         await deps.RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
           /* ignore */
         });
@@ -179,6 +199,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         });
       } else {
         const code = serverErrorCode(result.errorCode, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
+        deps.logger?.warn('purchase rejected by server', { productId, code, error: result.error });
         inFlight?.reject(new OneSubError(code, result.error ?? '[onesub] Purchase validation failed.'));
       }
     }

@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -16,6 +17,7 @@ import {
   type InFlightEntry,
 } from './purchaseFlow.js';
 import { OneSubError } from './OneSubError.js';
+import { createSdkLogger } from './logger.js';
 
 // ---------------------------------------------------------------------------
 // IAP import — react-native-iap is an optional peer dependency.
@@ -156,6 +158,12 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
   const isBusyRef = useRef(false);
   const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
+  // Recreate only when the relevant config fields change — referential
+  // stability keeps re-mount effects from firing on every parent render.
+  const logger = useMemo(
+    () => createSdkLogger({ debug: config.debug, logger: config.logger }),
+    [config.debug, config.logger],
+  );
   // Drain window: during the first ~2.5s after mount, StoreKit may still be
   // flushing queued `Transaction.updates` redeliveries. Any listener event
   // during this window is treated as an orphan replay regardless of whether
@@ -219,6 +227,14 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       }
     }
 
+    function releaseDrain(reason: string) {
+      drainCompleteRef.current = true;
+      const waiters = drainWaitersRef.current.length;
+      drainWaitersRef.current.forEach((w) => w());
+      drainWaitersRef.current = [];
+      logger.trace('drain released', { reason, waiters });
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function handlePurchaseEvent(purchase: any): Promise<void> {
       const platform = getCurrentPlatform();
@@ -235,23 +251,22 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         },
         isCancelled: () => cancelled,
         allowInFlightMatching: () => drainCompleteRef.current,
+        logger,
       });
     }
 
     async function setupIap(): Promise<void> {
       if (!RNIap || mockMode) {
-        // No IAP to drain — release the purchase gate immediately.
-        drainCompleteRef.current = true;
-        drainWaitersRef.current.forEach((w) => w());
-        drainWaitersRef.current = [];
+        releaseDrain(mockMode ? 'mockMode' : 'no-rn-iap');
         return;
       }
       try {
+        logger.trace('initConnection start');
         await RNIap.initConnection();
-      } catch {
-        drainCompleteRef.current = true;
-        drainWaitersRef.current.forEach((w) => w());
-        drainWaitersRef.current = [];
+        logger.trace('initConnection ok');
+      } catch (err) {
+        logger.warn('initConnection failed', err);
+        releaseDrain('init-failed');
         return;
       }
       if (cancelled) return;
@@ -271,29 +286,31 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         const code = (rnCode === 'E_USER_CANCELLED' || rnCode === 'E_USER_ERROR')
           ? ONESUB_ERROR_CODE.USER_CANCELLED
           : ONESUB_ERROR_CODE.INTERNAL_ERROR;
+        logger.trace('purchase error event', { code, rnCode, inFlightCount: inFlightRef.current.size });
         const wrapped = new OneSubError(code, err?.message ?? '[onesub] Purchase error', err);
         for (const [pid, entry] of inFlightRef.current.entries()) {
           entry.reject(wrapped);
           inFlightRef.current.delete(pid);
         }
       });
+      logger.trace('listeners attached; drain window open', { drainMs: DRAIN_WINDOW_MS });
 
       // Release the drain gate after the window closes. Any queued replays
       // have been processed silently by now; in-flight matching becomes
       // active so user-initiated subscribe()/purchaseProduct() can resolve.
       setTimeout(() => {
         if (cancelled) return;
-        drainCompleteRef.current = true;
-        drainWaitersRef.current.forEach((w) => w());
-        drainWaitersRef.current = [];
+        releaseDrain('timeout');
       }, DRAIN_WINDOW_MS);
     }
 
+    logger.trace('provider mount', { serverUrl: config.serverUrl, userId, mockMode });
     void loadStatus();
     void setupIap();
 
     return () => {
       cancelled = true;
+      logger.trace('provider unmount', { pendingInFlight: inFlightRef.current.size });
       try { updatedSub?.remove?.(); } catch { /* ignore */ }
       try { errorSub?.remove?.(); } catch { /* ignore */ }
       // Reject any dangling in-flight promises so callers don't hang forever
@@ -350,6 +367,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     try {
       const platform = getCurrentPlatform();
       const productId = getProductId(config, platform);
+      logger.trace('subscribe() called', { productId, drainReady: drainCompleteRef.current });
 
       // Wait until the mount drain window closes. During drain StoreKit may
       // still be flushing queued replays, and in-flight matching is disabled.
@@ -465,6 +483,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
       try {
         const platform = getCurrentPlatform();
+        logger.trace('purchaseProduct() called', { productId, type, drainReady: drainCompleteRef.current });
 
         // Same drain-window gate as subscribe() — see there for rationale.
         await awaitDrainComplete();
