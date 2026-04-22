@@ -7,7 +7,7 @@ import React, {
   useState,
 } from 'react';
 import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType } from '@onesub/shared';
-import { PURCHASE_TYPE } from '@onesub/shared';
+import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import { checkStatus, validateReceipt, validatePurchase } from './api.js';
 import {
   handlePurchaseEvent as handlePurchaseEventPure,
@@ -15,6 +15,7 @@ import {
   extractReceiptToken,
   type InFlightEntry,
 } from './purchaseFlow.js';
+import { OneSubError } from './OneSubError.js';
 
 // ---------------------------------------------------------------------------
 // IAP import — react-native-iap is an optional peer dependency.
@@ -63,7 +64,7 @@ const OneSubContext = createContext<OneSubContextValue | null>(null);
 export function useOneSubContext(): OneSubContextValue {
   const ctx = useContext(OneSubContext);
   if (!ctx) {
-    throw new Error('[onesub] useOneSub must be used inside <OneSubProvider>');
+    throw new OneSubError(ONESUB_ERROR_CODE.NOT_IN_PROVIDER, '[onesub] useOneSub must be used inside <OneSubProvider>');
   }
   return ctx;
 }
@@ -264,11 +265,13 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       errorSub = RNIap.purchaseErrorListener((err: any) => {
         // Errors are routed to every in-flight promise (we can't tell which
-        // SKU StoreKit was processing when an error fires).
-        const wrapped: Error & { code?: string } = new Error(
-          err?.message ?? '[onesub] Purchase error',
-        );
-        if (err?.code) wrapped.code = err.code;
+        // SKU StoreKit was processing when an error fires). RN-IAP surfaces
+        // 'E_USER_CANCELLED' / 'E_USER_ERROR' — map both to USER_CANCELLED.
+        const rnCode: string | undefined = typeof err?.code === 'string' ? err.code : undefined;
+        const code = (rnCode === 'E_USER_CANCELLED' || rnCode === 'E_USER_ERROR')
+          ? ONESUB_ERROR_CODE.USER_CANCELLED
+          : ONESUB_ERROR_CODE.INTERNAL_ERROR;
+        const wrapped = new OneSubError(code, err?.message ?? '[onesub] Purchase error', err);
         for (const [pid, entry] of inFlightRef.current.entries()) {
           entry.reject(wrapped);
           inFlightRef.current.delete(pid);
@@ -295,7 +298,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       try { errorSub?.remove?.(); } catch { /* ignore */ }
       // Reject any dangling in-flight promises so callers don't hang forever
       for (const [pid, entry] of inFlightRef.current.entries()) {
-        entry.reject(new Error('[onesub] Provider unmounted'));
+        entry.reject(new OneSubError(ONESUB_ERROR_CODE.PROVIDER_UNMOUNTED, '[onesub] Provider unmounted'));
         inFlightRef.current.delete(pid);
       }
       if (RNIap) {
@@ -335,7 +338,8 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       return;
     }
     if (!RNIap) {
-      throw new Error(
+      throw new OneSubError(
+        ONESUB_ERROR_CODE.RN_IAP_NOT_INSTALLED,
         '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
       );
     }
@@ -354,7 +358,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       // v15: fetchProducts replaces getSubscriptions
       const subs = await RNIap.fetchProducts({ skus: [productId], type: 'subs' });
       if (!subs || !subs.length) {
-        throw new Error(`[onesub] Subscription product not found: ${productId}`);
+        throw new OneSubError(ONESUB_ERROR_CODE.PRODUCT_NOT_FOUND, `[onesub] Subscription product not found: ${productId}`);
       }
 
       // Register in-flight promise BEFORE calling requestPurchase — the
@@ -373,7 +377,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       }
       const result = await resultPromise;
       if (!result.valid) {
-        throw new Error(result.error ?? '[onesub] Subscription validation failed.');
+        throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, result.error ?? '[onesub] Subscription validation failed.');
       }
     } finally {
       setIsLoading(false);
@@ -391,7 +395,8 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
       return;
     }
     if (!RNIap) {
-      throw new Error(
+      throw new OneSubError(
+        ONESUB_ERROR_CODE.RN_IAP_NOT_INSTALLED,
         '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
       );
     }
@@ -449,7 +454,8 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         return mockPurchaseInfo(productId, type);
       }
       if (!RNIap) {
-        throw new Error(
+        throw new OneSubError(
+          ONESUB_ERROR_CODE.RN_IAP_NOT_INSTALLED,
           '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
         );
       }
@@ -465,7 +471,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
         const products = await RNIap.fetchProducts({ skus: [productId], type: 'in-app' });
         if (!products || !products.length) {
-          throw new Error(`[onesub] Product not found in store: ${productId}`);
+          throw new OneSubError(ONESUB_ERROR_CODE.PRODUCT_NOT_FOUND, `[onesub] Product not found in store: ${productId}`);
         }
 
         const resultPromise = registerInFlight<{
@@ -487,7 +493,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         if (result.valid && result.purchase) {
           return { ...result.purchase, action: result.action };
         }
-        throw new Error(result.error ?? '[onesub] Purchase validation failed.');
+        throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, result.error ?? '[onesub] Purchase validation failed.');
       } catch (err) {
         if (isUserCancelled(err)) return null;
         throw err;
@@ -512,7 +518,8 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         return mockPurchaseInfo(productId, type);
       }
       if (!RNIap) {
-        throw new Error(
+        throw new OneSubError(
+          ONESUB_ERROR_CODE.RN_IAP_NOT_INSTALLED,
           '[onesub] react-native-iap is not installed. Add it as a dependency: npm install react-native-iap',
         );
       }
@@ -532,7 +539,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
         const receipt = extractReceiptToken(match);
         if (!receipt) {
-          throw new Error('[onesub] Matched purchase has no receipt data.');
+          throw new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] Matched purchase has no receipt data.');
         }
 
         const purchaseType: PurchaseType =
@@ -556,7 +563,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
           return { productId, userId, platform: platform === 'ios' ? 'apple' : 'google', type: purchaseType } as PurchaseInfo;
         }
 
-        throw new Error(validationResult.error ?? '[onesub] Restore validation failed.');
+        throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, validationResult.error ?? '[onesub] Restore validation failed.');
       } finally {
         setIsLoading(false);
         isBusyRef.current = false;

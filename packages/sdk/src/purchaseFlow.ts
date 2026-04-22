@@ -7,8 +7,9 @@
  * pure except for the injected dependencies.
  */
 
-import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType } from '@onesub/shared';
-import { PURCHASE_TYPE } from '@onesub/shared';
+import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType, OneSubErrorCode } from '@onesub/shared';
+import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
+import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
 
 export type InFlightEntry = {
   kind: 'subscription' | 'purchase';
@@ -54,6 +55,11 @@ export interface PurchaseFlowDeps {
    * Default (undefined) is treated as true (matching enabled).
    */
   allowInFlightMatching?: () => boolean;
+}
+
+/** Normalize a server `errorCode` field; unknown strings → fallback. */
+function serverErrorCode(code: unknown, fallback: OneSubErrorCode): OneSubErrorCode {
+  return isOneSubErrorCode(code) ? code : fallback;
 }
 
 export function extractReceiptToken(purchase: unknown): string {
@@ -113,7 +119,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
 
   const receiptToken = extractReceiptToken(purchase);
   if (!receiptToken) {
-    inFlight?.reject(new Error('[onesub] No receipt data in purchase event.'));
+    inFlight?.reject(new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] No receipt data in purchase event.'));
     deps.inFlight.delete(productId);
     return;
   }
@@ -139,7 +145,8 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         inFlight?.resolve(result);
       } else {
         // Don't finish — server rejected; let StoreKit replay next launch.
-        inFlight?.reject(new Error(result.error ?? '[onesub] Receipt validation failed.'));
+        const code = serverErrorCode(result.errorCode, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
+        inFlight?.reject(new OneSubError(code, result.error ?? '[onesub] Receipt validation failed.'));
       }
     } else {
       const purchaseType: PurchaseType =
@@ -171,11 +178,18 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
           action: 'restored',
         });
       } else {
-        inFlight?.reject(new Error(result.error ?? '[onesub] Purchase validation failed.'));
+        const code = serverErrorCode(result.errorCode, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
+        inFlight?.reject(new OneSubError(code, result.error ?? '[onesub] Purchase validation failed.'));
       }
     }
   } catch (err) {
-    inFlight?.reject(err instanceof Error ? err : new Error(String(err)));
+    inFlight?.reject(err instanceof OneSubError
+      ? err
+      : new OneSubError(
+          ONESUB_ERROR_CODE.INTERNAL_ERROR,
+          err instanceof Error ? err.message : String(err),
+          err,
+        ));
   } finally {
     // Only clear the in-flight slot when we actually consumed it. If matching
     // was suppressed (drain window) we must leave the user's entry intact so
@@ -196,13 +210,16 @@ export function registerInFlight<T>(
   timeoutMs = 180_000,
 ): Promise<T> {
   if (inFlight.has(productId)) {
-    return Promise.reject(new Error(`[onesub] A purchase for ${productId} is already in progress.`));
+    return Promise.reject(new OneSubError(
+      ONESUB_ERROR_CODE.CONCURRENT_PURCHASE,
+      `[onesub] A purchase for ${productId} is already in progress.`,
+    ));
   }
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       if (inFlight.get(productId)) {
         inFlight.delete(productId);
-        reject(new Error('[onesub] Purchase timed out'));
+        reject(new OneSubError(ONESUB_ERROR_CODE.PURCHASE_TIMEOUT, '[onesub] Purchase timed out'));
       }
     }, timeoutMs);
     inFlight.set(productId, {

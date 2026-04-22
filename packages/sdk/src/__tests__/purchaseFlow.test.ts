@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { ONESUB_ERROR_CODE } from '@onesub/shared';
+import { OneSubError } from '../OneSubError.js';
 import {
   handlePurchaseEvent,
   registerInFlight,
@@ -362,6 +364,87 @@ describe('registerInFlight', () => {
     vi.advanceTimersByTime(5_100);
     await expect(promise).rejects.toThrow(/timed out/);
     expect(inFlight.has('pro_monthly')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error codes — rejections are OneSubError with correct .code
+// ---------------------------------------------------------------------------
+describe('error codes on rejection', () => {
+  it('missing receipt → NO_RECEIPT_DATA', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let rejected: unknown = null;
+    inFlight.set('premium', {
+      kind: 'purchase',
+      purchaseType: 'non_consumable',
+      resolve: () => {},
+      reject: (e) => { rejected = e; },
+    });
+
+    const deps = makeDeps({ inFlight });
+    await handlePurchaseEvent({ productId: 'premium' }, deps);
+
+    expect(rejected).toBeInstanceOf(OneSubError);
+    expect((rejected as OneSubError).code).toBe(ONESUB_ERROR_CODE.NO_RECEIPT_DATA);
+  });
+
+  it('server validateReceipt error passes through errorCode', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let rejected: unknown = null;
+    inFlight.set('pro', {
+      kind: 'subscription',
+      resolve: () => {},
+      reject: (e) => { rejected = e; },
+    });
+
+    const validateReceipt = vi.fn().mockResolvedValue({
+      valid: false,
+      error: 'Apple not set',
+      errorCode: ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING,
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      api: { validateReceipt, validatePurchase: vi.fn() },
+    });
+    await handlePurchaseEvent(makePurchase({ productId: 'pro', productType: 'subs' }), deps);
+
+    expect(rejected).toBeInstanceOf(OneSubError);
+    expect((rejected as OneSubError).code).toBe(ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING);
+  });
+
+  it('server validatePurchase unknown errorCode falls back to RECEIPT_VALIDATION_FAILED', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let rejected: unknown = null;
+    inFlight.set('credits', {
+      kind: 'purchase',
+      purchaseType: 'consumable',
+      resolve: () => {},
+      reject: (e) => { rejected = e; },
+    });
+
+    const validatePurchase = vi.fn().mockResolvedValue({
+      valid: false,
+      error: 'garbled',
+      errorCode: 'NOT_A_REAL_CODE',
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      api: { validateReceipt: vi.fn(), validatePurchase },
+    });
+    await handlePurchaseEvent(makePurchase({ productId: 'credits' }), deps);
+
+    expect(rejected).toBeInstanceOf(OneSubError);
+    expect((rejected as OneSubError).code).toBe(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
+  });
+
+  it('concurrent registerInFlight → CONCURRENT_PURCHASE', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    registerInFlight(inFlight, 'pro', 'subscription', undefined);
+    const second = registerInFlight(inFlight, 'pro', 'subscription', undefined);
+    await expect(second).rejects.toBeInstanceOf(OneSubError);
+    await expect(second).rejects.toMatchObject({ code: ONESUB_ERROR_CODE.CONCURRENT_PURCHASE });
   });
 });
 

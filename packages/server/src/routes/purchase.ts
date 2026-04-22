@@ -7,11 +7,14 @@ import type {
   PurchaseInfo,
   OneSubServerConfig,
 } from '@onesub/shared';
-import { ROUTES, PURCHASE_TYPE } from '@onesub/shared';
+import { ROUTES, PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
 import { validateGoogleProductReceipt, consumeGoogleProductReceipt } from '../providers/google.js';
 import { log } from '../logger.js';
+import { sendError, sendZodError } from '../errors.js';
+
+const NO_PURCHASE = { valid: false, purchase: null } as const;
 
 const validatePurchaseSchema = z.object({
   platform: z.enum(['apple', 'google']),
@@ -53,12 +56,7 @@ export function createPurchaseRouter(
       body = validatePurchaseSchema.parse(req.body);
     } catch (err) {
       if (err instanceof z.ZodError) {
-        const response: ValidatePurchaseResponse = {
-          valid: false,
-          purchase: null,
-          error: err.issues.map((e: { message: string }) => e.message).join(', '),
-        };
-        res.status(400).json(response);
+        sendZodError(res, err, NO_PURCHASE);
         return;
       }
       throw err;
@@ -71,12 +69,7 @@ export function createPurchaseRouter(
       if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
         const alreadyOwned = await purchaseStore.hasPurchased(userId, productId);
         if (alreadyOwned) {
-          const response: ValidatePurchaseResponse = {
-            valid: false,
-            purchase: null,
-            error: 'NON_CONSUMABLE_ALREADY_OWNED',
-          };
-          res.status(409).json(response);
+          sendError(res, 409, ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED, 'NON_CONSUMABLE_ALREADY_OWNED', NO_PURCHASE);
           return;
         }
       }
@@ -90,12 +83,7 @@ export function createPurchaseRouter(
 
       if (platform === 'apple') {
         if (!config.apple) {
-          const response: ValidatePurchaseResponse = {
-            valid: false,
-            purchase: null,
-            error: 'Apple configuration not provided',
-          };
-          res.status(500).json(response);
+          sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);
           return;
         }
         const result = await validateAppleConsumableReceipt(receipt, config.apple, productId);
@@ -105,12 +93,7 @@ export function createPurchaseRouter(
         }
       } else {
         if (!config.google) {
-          const response: ValidatePurchaseResponse = {
-            valid: false,
-            purchase: null,
-            error: 'Google configuration not provided',
-          };
-          res.status(500).json(response);
+          sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_PURCHASE);
           return;
         }
         const result = await validateGoogleProductReceipt(
@@ -126,12 +109,7 @@ export function createPurchaseRouter(
       }
 
       if (!transactionId) {
-        const response: ValidatePurchaseResponse = {
-          valid: false,
-          purchase: null,
-          error: 'Receipt validation failed',
-        };
-        res.status(422).json(response);
+        sendError(res, 422, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, 'Receipt validation failed', NO_PURCHASE);
         return;
       }
 
@@ -152,12 +130,13 @@ export function createPurchaseRouter(
               `[onesub/purchase] reassigned transaction ${transactionId} from ${existing.userId} to ${userId}`,
             );
           } else {
-            const response: ValidatePurchaseResponse = {
-              valid: false,
-              purchase: null,
-              error: 'TRANSACTION_BELONGS_TO_OTHER_USER',
-            };
-            res.status(409).json(response);
+            sendError(
+              res,
+              409,
+              ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER,
+              'TRANSACTION_BELONGS_TO_OTHER_USER',
+              NO_PURCHASE,
+            );
             return;
           }
         }
@@ -197,12 +176,7 @@ export function createPurchaseRouter(
       res.status(200).json(response);
     } catch (err) {
       log.error('[onesub/purchase/validate] Unexpected error:', err);
-      const response: ValidatePurchaseResponse = {
-        valid: false,
-        purchase: null,
-        error: 'Internal server error during purchase validation',
-      };
-      res.status(500).json(response);
+      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during purchase validation', NO_PURCHASE);
     }
   });
 
@@ -218,10 +192,7 @@ export function createPurchaseRouter(
       query = purchaseStatusQuerySchema.parse(req.query);
     } catch (err) {
       if (err instanceof z.ZodError) {
-        res.status(400).json({
-          purchases: [],
-          error: err.issues.map((e: { message: string }) => e.message).join(', '),
-        });
+        sendZodError(res, err, { purchases: [] });
         return;
       }
       throw err;
@@ -240,7 +211,7 @@ export function createPurchaseRouter(
       res.status(200).json(response);
     } catch (err) {
       log.error('[onesub/purchase/status] Store error:', err);
-      res.status(500).json({ purchases: [], error: 'Internal server error' });
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error', { purchases: [] });
     }
   });
 

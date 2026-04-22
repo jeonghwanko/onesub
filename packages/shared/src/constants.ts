@@ -25,3 +25,54 @@ export const PURCHASE_TYPE = {
   NON_CONSUMABLE: 'non_consumable',
   SUBSCRIPTION: 'subscription',
 } as const;
+
+/**
+ * Canonical error codes returned by the server and thrown by the SDK.
+ * Clients should branch on these machine-readable codes rather than parsing
+ * human-readable `error` strings. The `OneSubError` class in `@jeonghwanko/onesub-sdk`
+ * carries one of these in its `.code` property.
+ */
+export const ONESUB_ERROR_CODE = {
+  // ── Input / configuration (client sent bad request, or server misconfigured) ──
+  INVALID_INPUT: 'INVALID_INPUT',
+  APPLE_CONFIG_MISSING: 'APPLE_CONFIG_MISSING',
+  GOOGLE_CONFIG_MISSING: 'GOOGLE_CONFIG_MISSING',
+  USER_ID_TOO_LONG: 'USER_ID_TOO_LONG',
+
+  // ── Receipt validation ──
+  RECEIPT_VALIDATION_FAILED: 'RECEIPT_VALIDATION_FAILED',
+  NO_RECEIPT_DATA: 'NO_RECEIPT_DATA',
+
+  // ── Authorization ──
+  UNAUTHORIZED: 'UNAUTHORIZED',
+  INVALID_ADMIN_SECRET: 'INVALID_ADMIN_SECRET',
+
+  // ── Ownership / conflict ──
+  TRANSACTION_BELONGS_TO_OTHER_USER: 'TRANSACTION_BELONGS_TO_OTHER_USER',
+  TRANSACTION_NOT_FOUND: 'TRANSACTION_NOT_FOUND',
+  NON_CONSUMABLE_ALREADY_OWNED: 'NON_CONSUMABLE_ALREADY_OWNED',
+
+  // ── Webhook specific ──
+  MISSING_SIGNED_PAYLOAD: 'MISSING_SIGNED_PAYLOAD',
+  INVALID_SIGNED_PAYLOAD: 'INVALID_SIGNED_PAYLOAD',
+  MISSING_MESSAGE_DATA: 'MISSING_MESSAGE_DATA',
+  PACKAGE_NAME_MISMATCH: 'PACKAGE_NAME_MISMATCH',
+
+  // ── Server internal ──
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+  STORE_ERROR: 'STORE_ERROR',
+  WEBHOOK_PROCESSING_FAILED: 'WEBHOOK_PROCESSING_FAILED',
+
+  // ── SDK client ──
+  NOT_IN_PROVIDER: 'NOT_IN_PROVIDER',
+  RN_IAP_NOT_INSTALLED: 'RN_IAP_NOT_INSTALLED',
+  PRODUCT_NOT_FOUND: 'PRODUCT_NOT_FOUND',
+  PURCHASE_TIMEOUT: 'PURCHASE_TIMEOUT',
+  USER_CANCELLED: 'USER_CANCELLED',
+  CONCURRENT_PURCHASE: 'CONCURRENT_PURCHASE',
+  PROVIDER_UNMOUNTED: 'PROVIDER_UNMOUNTED',
+  NETWORK_ERROR: 'NETWORK_ERROR',
+} as const;
+
+/** Union of all canonical error code string literals. */
+export type OneSubErrorCode = typeof ONESUB_ERROR_CODE[keyof typeof ONESUB_ERROR_CODE];

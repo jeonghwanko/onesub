@@ -1,3 +1,5 @@
+import type { OneSubErrorCode } from './constants.js';
+
 /** Subscription status */
 export type SubscriptionStatus = 'active' | 'expired' | 'canceled' | 'none';
 
@@ -16,7 +18,10 @@ export interface ValidateReceiptRequest {
 export interface ValidateReceiptResponse {
   valid: boolean;
   subscription: SubscriptionInfo | null;
+  /** Human-readable error. For programmatic handling use `errorCode`. */
   error?: string;
+  /** Machine-readable canonical error code. */
+  errorCode?: OneSubErrorCode;
 }
 
 /** Subscription info returned by server */
@@ -35,6 +40,8 @@ export interface SubscriptionInfo {
 export interface StatusResponse {
   active: boolean;
   subscription: SubscriptionInfo | null;
+  error?: string;
+  errorCode?: OneSubErrorCode;
 }
 
 /** Apple Server Notification V2 */
@@ -139,7 +146,10 @@ export interface ValidatePurchaseRequest {
 export interface ValidatePurchaseResponse {
   valid: boolean;
   purchase: PurchaseInfo | null;
+  /** Human-readable error. For programmatic handling use `errorCode`. */
   error?: string;
+  /** Machine-readable canonical error code. */
+  errorCode?: OneSubErrorCode;
   /**
    * Present on `valid: true` only:
    * - 'new'      — freshly inserted (first time this transactionId seen)
@@ -152,6 +162,8 @@ export interface ValidatePurchaseResponse {
 /** Purchase status response */
 export interface PurchaseStatusResponse {
   purchases: PurchaseInfo[];
+  error?: string;
+  errorCode?: OneSubErrorCode;
 }
 
 /** SDK config (client-side) */

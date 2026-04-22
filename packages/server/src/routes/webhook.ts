@@ -7,7 +7,7 @@ import type {
   OneSubServerConfig,
   SubscriptionInfo,
 } from '@onesub/shared';
-import { ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { decodeAppleNotification, decodeJws } from '../providers/apple.js';
 import {
@@ -18,6 +18,7 @@ import {
   isGoogleExpiredNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
+import { sendError } from '../errors.js';
 
 /**
  * Google's public JWKS endpoint used to verify Pub/Sub push JWT tokens.
@@ -123,7 +124,7 @@ export function createWebhookRouter(
     const body = req.body as { signedPayload?: string };
 
     if (!body.signedPayload) {
-      res.status(400).json({ error: 'Missing signedPayload' });
+      sendError(res, 400, ONESUB_ERROR_CODE.MISSING_SIGNED_PAYLOAD, 'Missing signedPayload');
       return;
     }
 
@@ -136,7 +137,7 @@ export function createWebhookRouter(
       );
     } catch (err) {
       log.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
-      res.status(400).json({ error: 'Invalid signedPayload' });
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_SIGNED_PAYLOAD, 'Invalid signedPayload');
       return;
     }
 
@@ -179,7 +180,7 @@ export function createWebhookRouter(
       res.status(200).json({ received: true });
     } catch (err) {
       log.error('[onesub/webhook/apple] Store update error:', err);
-      res.status(500).json({ error: 'Failed to update subscription' });
+      sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to update subscription');
     }
   });
 
@@ -195,7 +196,7 @@ export function createWebhookRouter(
     if (config.google?.pushAudience) {
       const authenticated = await verifyGooglePushToken(req, config.google.pushAudience);
       if (!authenticated) {
-        res.status(401).json({ error: 'Unauthorized' });
+        sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
         return;
       }
     }
@@ -203,7 +204,7 @@ export function createWebhookRouter(
     const body = req.body as Partial<GoogleNotificationPayload>;
 
     if (!body.message?.data) {
-      res.status(400).json({ error: 'Missing message.data' });
+      sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');
       return;
     }
 
@@ -225,7 +226,7 @@ export function createWebhookRouter(
         '!==',
         config.google.packageName
       );
-      res.status(400).json({ error: 'Package name mismatch' });
+      sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
       return;
     }
 
@@ -282,7 +283,7 @@ export function createWebhookRouter(
       res.status(200).json({ received: true });
     } catch (err) {
       log.error('[onesub/webhook/google] Error handling notification:', err);
-      res.status(500).json({ error: 'Failed to process notification' });
+      sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process notification');
     }
   });
 

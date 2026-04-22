@@ -16,6 +16,11 @@ export type { PaywallModalProps } from './PaywallModal.js';
 // API utilities (for advanced / custom UI usage)
 export { checkStatus, validateReceipt, validatePurchase, checkPurchaseStatus } from './api.js';
 
+// Structured errors — `err.code` is a value from ONESUB_ERROR_CODE.
+export { OneSubError, isOneSubError, toOneSubError } from './OneSubError.js';
+export { ONESUB_ERROR_CODE } from '@onesub/shared';
+export type { OneSubErrorCode } from '@onesub/shared';
+
 // Re-export shared types for consumer convenience — no need to depend on @onesub/shared separately
 export type {
   OneSubConfig,

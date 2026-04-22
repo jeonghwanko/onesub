@@ -2,8 +2,9 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { OneSubServerConfig, PurchaseInfo } from '@onesub/shared';
-import { PURCHASE_TYPE } from '@onesub/shared';
+import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
+import { sendError, sendZodError } from '../errors.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -33,7 +34,7 @@ export function createAdminRouter(
   router.use((req, res, next) => {
     const provided = req.headers[ADMIN_SECRET_HEADER];
     if (typeof provided !== 'string' || provided !== adminSecret) {
-      res.status(401).json({ error: 'INVALID_ADMIN_SECRET' });
+      sendError(res, 401, ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET, 'INVALID_ADMIN_SECRET');
       return;
     }
     next();
@@ -50,7 +51,7 @@ export function createAdminRouter(
     try {
       params = resetParamsSchema.parse(req.params);
     } catch {
-      res.status(400).json({ error: 'userId and productId required' });
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId and productId required');
       return;
     }
     const deleted = await purchaseStore.deletePurchases(params.userId, params.productId);
@@ -69,14 +70,14 @@ export function createAdminRouter(
       body = transferSchema.parse(req.body);
     } catch (err) {
       if (err instanceof z.ZodError) {
-        res.status(400).json({ error: err.issues.map((e: { message: string }) => e.message).join(', ') });
+        sendZodError(res, err);
         return;
       }
       throw err;
     }
     const existing = await purchaseStore.getPurchaseByTransactionId(body.transactionId);
     if (!existing) {
-      res.status(404).json({ error: 'TRANSACTION_NOT_FOUND' });
+      sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
       return;
     }
     // Delete the old row, then save under new userId
@@ -101,7 +102,7 @@ export function createAdminRouter(
       body = grantSchema.parse(req.body);
     } catch (err) {
       if (err instanceof z.ZodError) {
-        res.status(400).json({ error: err.issues.map((e: { message: string }) => e.message).join(', ') });
+        sendZodError(res, err);
         return;
       }
       throw err;
