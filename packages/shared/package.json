@@ -1,6 +1,6 @@
 {
   "name": "@onesub/shared",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Shared types and constants for onesub — server-side receipt validation for react-native-iap",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
