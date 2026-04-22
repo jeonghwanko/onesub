@@ -62,6 +62,7 @@ Canonical Postgres DDL shipped at [`sql/schema.sql`](./sql/schema.sql). Apply wi
 - `transactionId` ownership enforced — same receipt can't be reused across users (`0.5.0+`)
 - zod input validation + 50 KB body cap
 - Full write-up: [`docs/SECURITY.md`](../../docs/SECURITY.md)
+- Error troubleshooting: [`docs/RECEIPT-ERRORS.md`](../../docs/RECEIPT-ERRORS.md)
 
 ## Links
 

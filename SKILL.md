@@ -153,16 +153,18 @@ Environment variables the CLI template reads: `APPLE_BUNDLE_ID`, `APPLE_SHARED_S
 
 ## Troubleshooting common errors
 
+Full catalog (every `ONESUB_ERROR_CODE` with cause and fix): https://github.com/jeonghwanko/onesub/blob/master/docs/RECEIPT-ERRORS.md
+
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
 | `400 Invalid signedPayload` on Apple webhook | Bundle ID mismatch or JWS signature broken | Check `config.apple.bundleId` matches the app. Do not set `skipJwsVerification` in prod |
 | `409 TRANSACTION_BELONGS_TO_OTHER_USER` on consumable | Same receipt sent with different `userId` | Intentional — receipts can't be reused. For non-consumables 0.6.1+ auto-reassigns |
 | `400 "Sandbox receipt in production"` | TestFlight receipt on prod server | Set `ONESUB_ALLOW_SANDBOX=true` env on the prod server during QA |
 | SDK `isActive` stays false after purchase | Server didn't receive webhook | Verify webhook URL in App Store Connect / Pub/Sub push config. Check `POST /onesub/webhook/*` returns 2xx |
-| SDK throws "react-native-iap is not installed" | Peer dep missing | `npm i react-native-iap@^15` in the app |
-| `ENOENT ... _gitignore` from `onesub init` | CLI version ≤ 0.1.2 | Upgrade: `npx -y @onesub/cli@latest init` |
+| SDK throws `RN_IAP_NOT_INSTALLED` | Peer dep missing | `npm i react-native-iap@^15` in the app |
+| TestFlight purchase succeeds without sheet | Stale pending in StoreKit queue (fixed in sdk@0.5.1+) | Upgrade `@jeonghwanko/onesub-sdk` and rebuild |
 
-Always look at server logs with the `[onesub/*]` prefix — each provider/route tags its own logs.
+Enable `config.debug: true` on the SDK for verbose `[onesub]` traces. Server logs are tagged `[onesub/*]` per provider/route.
 
 ---
 
@@ -172,6 +174,7 @@ Always look at server logs with the `[onesub/*]` prefix — each provider/route 
 - **Security model**: https://github.com/jeonghwanko/onesub/blob/master/docs/SECURITY.md
 - **Architecture diagram**: https://github.com/jeonghwanko/onesub/blob/master/docs/ARCHITECTURE.md
 - **Breaking changes / migration**: https://github.com/jeonghwanko/onesub/blob/master/docs/MIGRATION.md
+- **Receipt / purchase errors** (errorCode → cause → fix): https://github.com/jeonghwanko/onesub/blob/master/docs/RECEIPT-ERRORS.md
 - **Per-package changelogs**: `packages/*/CHANGELOG.md` in the repo
 
 ---

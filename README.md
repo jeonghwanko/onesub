@@ -156,6 +156,7 @@ const { valid, purchase } = await res.json();
 - **Storage**: Pluggable `SubscriptionStore` — built-in PostgreSQL + in-memory
 - **Validation**: zod input validation, 50KB body limit, userId length checks
 - **Security**: [Full details →](docs/SECURITY.md)
+- **Troubleshooting**: [errorCode → cause → fix](docs/RECEIPT-ERRORS.md)
 
 ---
 
