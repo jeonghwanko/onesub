@@ -31,7 +31,7 @@ A pragmatic guide for teams switching from RevenueCat (RC) to onesub — coverin
 Stop here and confirm each item. Migrations that skip these bite hardest 2 weeks later.
 
 - [ ] **Apple credentials**: App-Specific Shared Secret from App Store Connect → Apps → App Information → App-Specific Shared Secret. You'll set `APPLE_SHARED_SECRET`.
-- [ ] **Google credentials**: Service Account JSON with "View financial data" permission. You'll set `GOOGLE_SERVICE_ACCOUNT_KEY`.
+- [ ] **Google credentials**: Service Account JSON with "View financial data" permission. You'll set `GOOGLE_SERVICE_ACCOUNT_KEY`. *(Tip: [`@yoonion/mimi-seed-mcp`](https://github.com/jeonghwanko/app-gen) — `iam_create_service_account` → `iam_create_key` → `playstore_verify_service_account` 3-step automation from Claude CLI)*
 - [ ] **Bundle ID / package name** for both platforms. `config.apple.bundleId` and `config.google.packageName` must match exactly.
 - [ ] **Postgres** (>= 12) or your own `SubscriptionStore` / `PurchaseStore` implementation.
 - [ ] **A server host** with a public HTTPS URL — Apple and Google require TLS.

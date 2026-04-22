@@ -65,7 +65,7 @@ The platform provider (Apple or Google) rejected the receipt. Covers many underl
   - `[onesub/apple] Purchase was revoked/refunded` — user got a refund
   - `[onesub/apple] Consumable receipt too old (>72h)` — security cutoff
   - `[onesub/apple] Product ID mismatch` — `productId` in request doesn't match the JWS transaction
-  - `[onesub/google] Play Products API error 401` — service account doesn't have "View financial data" permission
+  - `[onesub/google] Play Products API error 401` — service account doesn't have "View financial data" permission (use `playstore_verify_service_account` from [`@yoonion/mimi-seed-mcp`](https://github.com/jeonghwanko/app-gen) to diagnose step-by-step)
   - `[onesub/google] Consumable already consumed — possible replay attack` — token was already consumed (replay)
 - **Fix**: match the log line above.
 

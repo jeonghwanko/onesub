@@ -189,7 +189,7 @@ Enable `config.debug: true` on the SDK for verbose `[onesub]` traces. Server log
 5. **Mobile app**: `npm i react-native-iap@^15 @jeonghwanko/onesub-sdk` — wrap root with `OneSubProvider`
 6. **Configure store credentials** (App Store Connect + Google Play Console):
    - Apple: App-Specific Shared Secret → `APPLE_SHARED_SECRET`
-   - Google: Service Account with "View financial data" → JSON to `GOOGLE_SERVICE_ACCOUNT_KEY`
+   - Google: Service Account with "View financial data" → JSON to `GOOGLE_SERVICE_ACCOUNT_KEY` *(automate with [`@yoonion/mimi-seed-mcp`](https://github.com/jeonghwanko/app-gen): `iam_create_service_account` + `iam_create_key` + `playstore_verify_service_account`)*
 7. **Configure webhooks**:
    - Apple: App Store Server Notifications V2 → `POST https://api.yourapp.com/onesub/webhook/apple`
    - Google: Pub/Sub push subscription → `POST https://api.yourapp.com/onesub/webhook/google`
