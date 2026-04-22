@@ -86,6 +86,13 @@ export interface OneSubServerConfig {
     privateKey?: string;
     /** Skip JWS signature verification (for development/testing only) */
     skipJwsVerification?: boolean;
+    /**
+     * Mock provider mode — when true, bypass all Apple API calls and decide
+     * receipt validity from the receipt string pattern (see `providers/mock.ts`).
+     * Use for local development, CI, and AI-driven integration testing without
+     * real App Store Connect credentials. **NEVER enable in production.**
+     */
+    mockMode?: boolean;
   };
   google?: {
     packageName: string;
@@ -100,6 +107,12 @@ export interface OneSubServerConfig {
      * e.g. `https://your-server.example.com/onesub/webhook/google`.
      */
     pushAudience?: string;
+    /**
+     * Mock provider mode — same as `apple.mockMode` but for Google Play.
+     * Bypass Play Developer API calls and decide receipt validity from the
+     * receipt string pattern. **NEVER enable in production.**
+     */
+    mockMode?: boolean;
   };
   database: {
     url: string;

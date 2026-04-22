@@ -4,6 +4,10 @@ import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } f
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
+import {
+  mockValidateAppleSubscription,
+  mockValidateAppleProduct,
+} from './mock.js';
 
 type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
@@ -163,6 +167,7 @@ export async function validateAppleReceipt(
   receipt: string,
   config: AppleConfig
 ): Promise<SubscriptionInfo | null> {
+  if (config.mockMode) return mockValidateAppleSubscription(receipt);
   let tx: AppleTransactionPayload;
 
   try {
@@ -240,6 +245,7 @@ export async function validateAppleConsumableReceipt(
   config: AppleConfig,
   expectedProductId?: string,
 ): Promise<AppleProductResult | null> {
+  if (config.mockMode) return mockValidateAppleProduct(signedTransaction, expectedProductId);
   let tx: AppleTransactionPayload;
 
   try {

@@ -76,3 +76,19 @@ export const ONESUB_ERROR_CODE = {
 
 /** Union of all canonical error code string literals. */
 export type OneSubErrorCode = typeof ONESUB_ERROR_CODE[keyof typeof ONESUB_ERROR_CODE];
+
+/**
+ * Receipt string prefixes that the mock providers (when `config.{apple,google}.mockMode`
+ * is true) interpret as specific test scenarios. Send one of these as the
+ * `receipt` field to exercise the corresponding code path without real store
+ * credentials. Anything not matching these prefixes is treated as a valid
+ * receipt (deterministic fake transactionId derived from the string).
+ */
+export const MOCK_RECEIPT_PREFIX = {
+  REVOKED: 'MOCK_REVOKED',
+  EXPIRED: 'MOCK_EXPIRED',
+  INVALID: 'MOCK_INVALID',
+  BAD_SIG: 'MOCK_BAD_SIG',
+  NETWORK_ERROR: 'MOCK_NETWORK_ERROR',
+  SANDBOX: 'MOCK_SANDBOX',
+} as const;

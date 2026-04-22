@@ -35,7 +35,9 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@onesub/shared": "0.3.4"
+    "@onesub/server": "0.7.2",
+    "@onesub/shared": "0.3.4",
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

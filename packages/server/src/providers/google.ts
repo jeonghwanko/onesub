@@ -1,6 +1,10 @@
 import type { SubscriptionInfo, GoogleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { log } from '../logger.js';
+import {
+  mockValidateGoogleSubscription,
+  mockValidateGoogleProduct,
+} from './mock.js';
 
 type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
 
@@ -295,6 +299,7 @@ export async function validateGoogleReceipt(
   productId: string,
   config: GoogleConfig
 ): Promise<SubscriptionInfo | null> {
+  if (config.mockMode) return mockValidateGoogleSubscription(receipt, productId);
   if (!config.serviceAccountKey) {
     log.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API');
     return null;
@@ -350,6 +355,7 @@ export async function validateGoogleProductReceipt(
   config: GoogleConfig,
   type: 'consumable' | 'non_consumable' = 'non_consumable',
 ): Promise<GoogleProductResult | null> {
+  if (config.mockMode) return mockValidateGoogleProduct(purchaseToken, productId);
   if (!config.serviceAccountKey) {
     log.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
     return null;

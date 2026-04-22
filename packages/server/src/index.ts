@@ -47,6 +47,16 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
 export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   setLogger(config.logger);
 
+  // Hard guard — mockMode accepts ANY receipt as valid. Letting this run on
+  // a production server would be a fraud disaster. `skipJwsVerification` has
+  // a similar shape but only degrades Apple signature checking; this one is
+  // strictly worse, so the check is an error, not a warning.
+  if ((config.apple?.mockMode || config.google?.mockMode) && process.env['NODE_ENV'] === 'production') {
+    throw new Error(
+      '[onesub] apple.mockMode / google.mockMode cannot be enabled when NODE_ENV=production — these modes accept any receipt as valid.',
+    );
+  }
+
   const store: SubscriptionStore = config.store ?? new InMemorySubscriptionStore();
   const purchaseStore: PurchaseStore = config.purchaseStore ?? new InMemoryPurchaseStore();
 

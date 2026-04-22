@@ -30,8 +30,10 @@ export function createAdminRouter(
   const router = Router();
   const adminSecret = config.adminSecret;
 
-  // Auth middleware — reject any admin request without matching secret
-  router.use((req, res, next) => {
+  // Auth middleware — scoped to /onesub/purchase/admin/* so it doesn't
+  // swallow unrelated requests (e.g. host-app routes like /health) when the
+  // admin router is mounted at the parent root.
+  router.use('/onesub/purchase/admin', (req, res, next) => {
     const provided = req.headers[ADMIN_SECRET_HEADER];
     if (typeof provided !== 'string' || provided !== adminSecret) {
       sendError(res, 401, ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET, 'INVALID_ADMIN_SECRET');

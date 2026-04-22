@@ -17,35 +17,57 @@ const here = dirname(fileURLToPath(import.meta.url));
 // dist/index.js → packages/cli/templates
 const TEMPLATES_DIR = resolve(here, '..', 'templates');
 
-const HELP = `onesub — scaffold a receipt-validation server and paywall app
+const HELP = `onesub — scaffold and run a receipt-validation server locally
 
 Usage:
   onesub init [directory]   Create a new onesub project in <directory> (default: .)
+  onesub dev [--port N]     Start a fully-mocked onesub server for local testing
   onesub --help             Show this help
 
-What 'init' creates:
-  server.ts                 Express server with createOneSubMiddleware() wired up
-  .env.example              Apple + Google credential placeholders
-  package.json              With @onesub/server as a dependency
-  docker-compose.yml        Postgres + server, schema auto-initialized
-  README.md                 Next-steps guide
+── init ─────────────────────────────────────────────────────────────────
+Creates server.ts, .env.example, package.json, docker-compose.yml, README.md,
+tsconfig.json, .gitignore. After:
+  cd <directory> && cp .env.example .env && npm install && npm start
 
-After init:
-  cd <directory>
-  cp .env.example .env      # fill in your credentials
-  npm install
-  npm start                 # http://localhost:4100
+── dev ──────────────────────────────────────────────────────────────────
+Zero-config server with mock Apple / Google providers + in-memory stores.
+No credentials needed. Use for local testing, CI, or AI-driven flows:
+  POST /onesub/validate                { platform, receipt, userId, productId }
+  POST /onesub/purchase/validate       { ...same + type }
+  GET  /onesub/status?userId=
+  GET  /onesub/purchase/status?userId=
+
+Receipt patterns (prefix match):
+  MOCK_VALID_* / any other string   → valid
+  MOCK_REVOKED_*                    → revoked/refunded (422)
+  MOCK_EXPIRED_*                    → 72h expired (422)
+  MOCK_INVALID_* / MOCK_BAD_SIG_*   → bad signature (422)
+  MOCK_NETWORK_ERROR_*              → simulated upstream failure (500)
+  MOCK_SANDBOX_*                    → valid but short expiry
+
+No persistence — restarting clears all purchases.
 `;
 
-function parseArgs(argv: string[]): { cmd: string; target: string } {
+interface ParsedArgs {
+  cmd: 'help' | 'init' | 'dev' | 'unknown';
+  target: string;
+  port: number;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
+  const portFlag = args.findIndex((a) => a === '--port' || a === '-p');
+  const port = portFlag >= 0 && args[portFlag + 1] ? parseInt(args[portFlag + 1]!, 10) : 4100;
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    return { cmd: 'help', target: '.' };
+    return { cmd: 'help', target: '.', port };
   }
-  if (args[0] !== 'init') {
-    return { cmd: 'unknown', target: args[0] ?? '' };
+  if (args[0] === 'init') {
+    return { cmd: 'init', target: args[1] ?? '.', port };
   }
-  return { cmd: 'init', target: args[1] ?? '.' };
+  if (args[0] === 'dev') {
+    return { cmd: 'dev', target: '.', port };
+  }
+  return { cmd: 'unknown', target: args[0] ?? '', port };
 }
 
 async function isEmpty(dir: string): Promise<boolean> {
@@ -107,11 +129,80 @@ Docs: https://github.com/jeonghwanko/onesub
 `);
 }
 
+async function dev(port: number): Promise<void> {
+  // Lazy imports — only loaded when the dev command runs, so `onesub init`
+  // doesn't pay express + @onesub/server startup cost.
+  const express = (await import('express')).default;
+  const { createOneSubMiddleware, InMemorySubscriptionStore, InMemoryPurchaseStore } =
+    await import('@onesub/server');
+
+  const app = express();
+  app.use(
+    createOneSubMiddleware({
+      apple: { bundleId: 'mock.onesub.dev', mockMode: true },
+      google: { packageName: 'mock.onesub.dev', mockMode: true },
+      database: { url: '' },
+      store: new InMemorySubscriptionStore(),
+      purchaseStore: new InMemoryPurchaseStore(),
+      adminSecret: 'dev-admin-secret',
+      logger: console,
+    }),
+  );
+  app.get('/health', (_req, res) => {
+    res.json({ ok: true, mode: 'mock', uptime: process.uptime() });
+  });
+
+  // Bind to loopback so port-forwarding or stray ngrok exposure doesn't
+  // let anyone on the internet hit the mock admin routes with the well-known
+  // dev secret.
+  const server = app.listen(port, '127.0.0.1', () => {
+    console.log(`
+onesub dev server — mocked Apple / Google providers
+───────────────────────────────────────────────────
+  http://localhost:${port}/health
+  http://localhost:${port}/onesub/*
+
+Try it:
+
+  # validate a mock subscription
+  curl -X POST http://localhost:${port}/onesub/validate \\
+    -H "Content-Type: application/json" \\
+    -d '{"platform":"apple","receipt":"MOCK_VALID_sub","userId":"u1","productId":"pro"}'
+
+  # validate a mock one-time purchase
+  curl -X POST http://localhost:${port}/onesub/purchase/validate \\
+    -H "Content-Type: application/json" \\
+    -d '{"platform":"google","receipt":"MOCK_VALID_prod","userId":"u1","productId":"premium","type":"non_consumable"}'
+
+  # check status
+  curl 'http://localhost:${port}/onesub/status?userId=u1'
+
+  # simulate a rejected receipt
+  curl -X POST http://localhost:${port}/onesub/purchase/validate \\
+    -H "Content-Type: application/json" \\
+    -d '{"platform":"apple","receipt":"MOCK_REVOKED","userId":"u1","productId":"premium","type":"non_consumable"}'
+
+Admin secret: "dev-admin-secret"
+Ctrl+C to stop. State is in-memory — restarts clear everything.
+`);
+  });
+
+  const shutdown = () => {
+    console.log('\n[onesub] shutting down...');
+    server.close(() => process.exit(0));
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
 async function main(): Promise<void> {
-  const { cmd, target } = parseArgs(process.argv);
+  const { cmd, target, port } = parseArgs(process.argv);
   switch (cmd) {
     case 'help':
       console.log(HELP);
+      return;
+    case 'dev':
+      await dev(port);
       return;
     case 'init':
       await init(target);

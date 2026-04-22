@@ -148,6 +148,24 @@ describe('server error codes', () => {
       expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET);
     });
 
+    it('admin auth middleware does NOT intercept non-admin routes on the host app', async () => {
+      // Regression: before the fix, `router.use(authMiddleware)` without a path
+      // prefix caught every request routed through createOneSubMiddleware,
+      // so host-app routes like /health returned 401.
+      const appWithHealth = express();
+      appWithHealth.use(createOneSubMiddleware({
+        database: { url: '' },
+        adminSecret: 'test-admin-secret',
+        store: new InMemorySubscriptionStore(),
+        purchaseStore: new InMemoryPurchaseStore(),
+      }));
+      appWithHealth.get('/health', (_req, res) => res.json({ ok: true }));
+
+      const res = await request(appWithHealth).get('/health');
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+    });
+
     it('transfer with unknown tx → errorCode: TRANSACTION_NOT_FOUND', async () => {
       const res = await request(app)
         .post('/onesub/purchase/admin/transfer')
