@@ -175,6 +175,7 @@ Enable `config.debug: true` on the SDK for verbose `[onesub]` traces. Server log
 - **Architecture diagram**: https://github.com/jeonghwanko/onesub/blob/master/docs/ARCHITECTURE.md
 - **Breaking changes / migration**: https://github.com/jeonghwanko/onesub/blob/master/docs/MIGRATION.md
 - **Receipt / purchase errors** (errorCode → cause → fix): https://github.com/jeonghwanko/onesub/blob/master/docs/RECEIPT-ERRORS.md
+- **Migration from RevenueCat**: https://github.com/jeonghwanko/onesub/blob/master/docs/MIGRATE-FROM-REVENUECAT.md
 - **Per-package changelogs**: `packages/*/CHANGELOG.md` in the repo
 
 ---

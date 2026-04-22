@@ -247,6 +247,8 @@ A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`
 
 **onesub is not a RevenueCat replacement.** RevenueCat offers analytics, experiments, and a dashboard. onesub is for developers who want to own their subscription infrastructure.
 
+Already on RevenueCat and curious? See [`docs/MIGRATE-FROM-REVENUECAT.md`](docs/MIGRATE-FROM-REVENUECAT.md) — a step-by-step guide covering client code, historical data, webhook switchover, and rollback.
+
 ---
 
 ## Examples
