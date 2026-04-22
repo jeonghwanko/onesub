@@ -10,6 +10,8 @@ import { troubleshootInputSchema, runTroubleshoot } from './tools/troubleshoot.j
 import { createProductInputSchema, runCreateProduct } from './tools/create-product.js';
 import { listProductsInputSchema, runListProducts } from './tools/list-products.js';
 import { viewSubscribersInputSchema, runViewSubscribers } from './tools/view-subscribers.js';
+import { simulatePurchaseInputSchema, runSimulatePurchase } from './tools/simulate-purchase.js';
+import { inspectStateInputSchema, runInspectState } from './tools/inspect-state.js';
 
 const server = new McpServer({
   name: 'onesub-mcp',
@@ -128,6 +130,34 @@ server.tool(
   },
   async (args) => {
     return runViewSubscribers(args);
+  },
+);
+
+server.tool(
+  'onesub_simulate_purchase',
+  "Simulate a purchase against a onesub server running in mockMode (started via `npx @onesub/cli dev`). Drives the full validation flow with no real App Store / Play Store credentials — sends a MOCK_* receipt that the server's mock provider decodes into the chosen outcome (new / revoked / expired / invalid / network_error / sandbox). Use to exercise app error paths, verify integration, or drive end-to-end test scenarios from an AI agent.",
+  {
+    serverUrl: simulatePurchaseInputSchema.serverUrl,
+    userId: simulatePurchaseInputSchema.userId,
+    productId: simulatePurchaseInputSchema.productId,
+    platform: simulatePurchaseInputSchema.platform,
+    type: simulatePurchaseInputSchema.type,
+    scenario: simulatePurchaseInputSchema.scenario,
+  },
+  async (args) => {
+    return runSimulatePurchase(args);
+  },
+);
+
+server.tool(
+  'onesub_inspect_state',
+  "Read the current subscription + one-time purchase state for a user from the onesub server in one call. Useful after simulating purchases to confirm the server recorded them, or when debugging 'isActive' mismatches.",
+  {
+    serverUrl: inspectStateInputSchema.serverUrl,
+    userId: inspectStateInputSchema.userId,
+  },
+  async (args) => {
+    return runInspectState(args);
   },
 );
 
