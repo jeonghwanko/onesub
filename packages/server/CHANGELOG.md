@@ -1,5 +1,12 @@
 # @onesub/server
 
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [63580dc]
+  - @onesub/shared@0.3.4
+
 ## 0.7.1
 
 ### Patch Changes
