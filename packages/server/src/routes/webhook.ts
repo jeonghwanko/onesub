@@ -478,6 +478,13 @@ export function createWebhookRouter(
               status: preserveNotificationStatus ? finalStatus : fresh.status,
               expiresAt: fresh.expiresAt,
               willRenew: fresh.willRenew,
+              // Propagate v2-only fields that fresh may have updated. Without
+              // these, paused→active transitions left autoResumeTime stale and
+              // upgrade chains lost their linkedPurchaseToken on subsequent
+              // notifications. Use ?? undefined so cleared values become undefined
+              // (e.g. resume from paused → autoResumeTime should disappear).
+              autoResumeTime: fresh.autoResumeTime,
+              linkedPurchaseToken: fresh.linkedPurchaseToken ?? existing.linkedPurchaseToken,
             };
           }
         }
