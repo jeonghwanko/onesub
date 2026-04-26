@@ -4,6 +4,79 @@ Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases wi
 
 ---
 
+## `@onesub/server` 0.7.x → 0.9.x
+
+Two minor releases in one window. Almost no host code change; the visible changes are **new lifecycle states**, **new opt-in config options**, and **two auto-backfilled Postgres columns**.
+
+### What changed
+
+**1. Lifecycle states added** (`@onesub/shared` 0.4.0 + 0.5.0):
+
+`SubscriptionStatus` gained three values:
+- `grace_period` — payment failed but Apple/Google still grants access (Apple `DID_FAIL_TO_RENEW` + `GRACE_PERIOD` subtype, Google `IN_GRACE_PERIOD`)
+- `on_hold` — grace ended, billing retry continues, entitlement REVOKED (Apple post-`GRACE_PERIOD_EXPIRED`, Google `ON_HOLD`)
+- `paused` — user-voluntary pause (Google only); resumes at `autoResumeTime`
+
+The `/onesub/status` route's `active: boolean` continues to work — it now treats `grace_period` as active and additionally checks `expiresAt > now` (stale-record safety + natural expiry for `until_expiry` refunds).
+
+**2. Webhook lifecycle classification fixed**:
+- Google: `IN_GRACE_PERIOD` (6) was previously misclassified as `active`; `ON_HOLD` (5) was unhandled. Now both map correctly.
+- Apple: `DID_FAIL_TO_RENEW` + `GRACE_PERIOD_EXPIRED` are now mapped explicitly (previously fell through to JWS-derived status).
+- Google: `validateGoogleReceipt` returns `'paused'` for `SUBSCRIPTION_STATE_PAUSED` (previously returned `'on_hold'` — see PR #29).
+
+**3. Google Play Developer API v1 → v2** (`subscriptionsv2.get`):
+Internal change. The v2 endpoint returns explicit `subscriptionState` enum strings instead of having to infer from `expiryTime`/`cancelReason`, which is what enables the correct grace/hold/paused classification above.
+
+**4. Two auto-backfilled Postgres columns**:
+- `onesub_subscriptions.linked_purchase_token TEXT`
+- `onesub_subscriptions.auto_resume_time TIMESTAMPTZ`
+
+`store.initSchema()` runs `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` on the next startup. No manual migration needed.
+
+**5. New opt-in config options** — all default to off; existing behavior unchanged.
+
+### You're affected if
+
+- You `switch (status)` exhaustively on `SubscriptionStatus`. The new values will need cases (TS will tell you).
+- You read `validateGoogleReceipt` output and compare the `status` string for `SUBSCRIPTION_STATE_PAUSED`-derived records. They now arrive as `'paused'` instead of `'on_hold'`.
+- You run a manually-applied schema (you don't call `store.initSchema()`). Add the two columns yourself or call `initSchema()` once on next deploy.
+
+### You're NOT affected if
+
+- You only check `isActive` (the SDK / status route's `active` boolean). The new states fold into the same active/not-active answer correctly.
+- You let `PostgresSubscriptionStore.initSchema()` run at boot.
+
+### Action
+
+```bash
+npm install @onesub/server@^0.9 @onesub/shared@^0.5
+```
+
+Optional follow-ups:
+
+```ts
+// Goodwill refund: keep entitlement until expiry
+{ refundPolicy: 'until_expiry' }
+
+// Apple App Store Server API features (status fetch fallback + consumption response)
+apple: { keyId, issuerId, privateKey, consumptionInfoProvider: ... }
+
+// Google price-change analytics
+google: { onPriceChangeConfirmed: (ctx) => analytics.track(...) }
+```
+
+### New behaviors to verify in sandbox
+
+The internal hardening (Apple JWT cache, fetch timeouts) is transparent. The lifecycle reclassification is not — verify:
+
+1. Apple billing retry: `SUBSCRIBED → DID_FAIL_TO_RENEW(GRACE) → GRACE_PERIOD_EXPIRED → DID_RENEW`
+2. Google paused: `PURCHASED → PAUSED → RESTARTED` (`autoResumeTime` populated while paused)
+3. Google plan upgrade: new token's `linkedPurchaseToken` correctly inherits the previous `userId`
+4. Apple subscription `REFUND` with `refundPolicy: 'immediate'` (default) flips to `canceled` immediately
+5. Apple webhook for an unknown `originalTransactionId` triggers Status API fallback (with API creds)
+
+---
+
 ## `@onesub/server` 0.6.x → 0.7.0
 
 **What changed:** `express`가 `dependencies`에서 **`peerDependencies`로 이동**. 더 이상 `@onesub/server`가 자체 express 사본을 끌고 들어오지 않음.
