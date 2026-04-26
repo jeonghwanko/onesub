@@ -1,5 +1,12 @@
 # @onesub/mcp-server
 
+## 0.3.12
+
+### Patch Changes
+
+- Updated dependencies [f4ef21f]
+  - @onesub/shared@0.7.3
+
 ## 0.3.11
 
 ### Patch Changes
