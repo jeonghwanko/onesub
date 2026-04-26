@@ -147,17 +147,28 @@ export default async function SubscriptionsPage({ searchParams }: PageProps) {
                 </td>
               </tr>
             ) : (
-              result.items.map((s) => (
-                <tr key={s.originalTransactionId} className="border-t border-slate-100" title={s.expiresAt}>
-                  <Td className="font-mono text-xs">{s.userId}</Td>
-                  <Td>{s.productId}</Td>
-                  <Td><StatusBadge status={s.status} /></Td>
-                  <Td>{s.platform}</Td>
-                  <Td className="font-mono tabular-nums">{formatExpiry(s.expiresAt)}</Td>
-                  <Td>{s.willRenew ? 'yes' : 'no'}</Td>
-                  <Td className="font-mono text-xs text-slate-500">{s.originalTransactionId}</Td>
-                </tr>
-              ))
+              result.items.map((s) => {
+                const detailHref = `/dashboard/subscriptions/${encodeURIComponent(s.originalTransactionId)}`;
+                return (
+                  <tr
+                    key={s.originalTransactionId}
+                    className="border-t border-slate-100 hover:bg-slate-50"
+                    title={s.expiresAt}
+                  >
+                    <Td className="font-mono text-xs">
+                      <Link href={detailHref} className="hover:underline">{s.userId}</Link>
+                    </Td>
+                    <Td><Link href={detailHref} className="hover:underline">{s.productId}</Link></Td>
+                    <Td><StatusBadge status={s.status} /></Td>
+                    <Td>{s.platform}</Td>
+                    <Td className="font-mono tabular-nums">{formatExpiry(s.expiresAt)}</Td>
+                    <Td>{s.willRenew ? 'yes' : 'no'}</Td>
+                    <Td className="font-mono text-xs text-slate-500">
+                      <Link href={detailHref} className="hover:underline">{s.originalTransactionId}</Link>
+                    </Td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

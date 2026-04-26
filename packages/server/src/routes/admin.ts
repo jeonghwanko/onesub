@@ -32,6 +32,9 @@ const ADMIN_SECRET_HEADER = 'x-admin-secret';
  *
  *   GET /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=
  *     → filtered/paginated subscription list (used by dashboard + scripts)
+ *
+ *   GET /onesub/admin/subscriptions/:transactionId
+ *     → single subscription record by originalTransactionId (dashboard detail page)
  */
 export function createAdminRouter(
   config: OneSubServerConfig,
@@ -184,6 +187,31 @@ export function createAdminRouter(
     } catch (err) {
       // Bubble the message up but not the stack — admin clients log status code
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'list error');
+    }
+  });
+
+  // GET /onesub/admin/subscriptions/:transactionId — single record by
+  // originalTransactionId. Backs the dashboard's subscription detail page.
+  const detailParamsSchema = z.object({
+    transactionId: z.string().min(1).max(256),
+  });
+  router.get('/onesub/admin/subscriptions/:transactionId', async (req: Request, res: Response) => {
+    let params;
+    try {
+      params = detailParamsSchema.parse(req.params);
+    } catch {
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'transactionId required');
+      return;
+    }
+    try {
+      const sub = await store.getByTransactionId(params.transactionId);
+      if (!sub) {
+        sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
+        return;
+      }
+      res.status(200).json(sub);
+    } catch (err) {
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'detail error');
     }
   });
 

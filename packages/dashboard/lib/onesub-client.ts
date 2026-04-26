@@ -12,6 +12,7 @@ import type {
   ListSubscriptionsResponse,
   MetricsActiveResponse,
   MetricsCountResponse,
+  SubscriptionInfo,
 } from '@onesub/shared';
 
 export interface OneSubClient {
@@ -19,6 +20,12 @@ export interface OneSubClient {
   getStartedMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
   getExpiredMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
   listSubscriptions(query: ListSubscriptionsQuery): Promise<ListSubscriptionsResponse>;
+  /**
+   * Fetch a single subscription record by `originalTransactionId`. Throws
+   * `OneSubFetchError` with `status: 404` when the id is unknown — callers
+   * should branch on that to render a "not found" page.
+   */
+  getSubscription(transactionId: string): Promise<SubscriptionInfo>;
 }
 
 export class OneSubFetchError extends Error {
@@ -69,5 +76,7 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
       const qs = params.toString();
       return get<ListSubscriptionsResponse>(`/onesub/admin/subscriptions${qs ? `?${qs}` : ''}`);
     },
+    getSubscription: (transactionId) =>
+      get<SubscriptionInfo>(`/onesub/admin/subscriptions/${encodeURIComponent(transactionId)}`),
   };
 }

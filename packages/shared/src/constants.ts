@@ -12,6 +12,8 @@ export const ROUTES = {
   METRICS_STARTED: '/onesub/metrics/started',
   METRICS_EXPIRED: '/onesub/metrics/expired',
   ADMIN_SUBSCRIPTIONS: '/onesub/admin/subscriptions',
+  /** Single-record detail; takes :transactionId path param. */
+  ADMIN_SUBSCRIPTION_DETAIL: '/onesub/admin/subscriptions/:transactionId',
 } as const;
 
 /** Default server port */
