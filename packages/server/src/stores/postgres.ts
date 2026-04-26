@@ -111,6 +111,24 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
   }
 
   /**
+   * Returns every subscription record for the user (across all productIds),
+   * ordered most-recent-first. Used by entitlement evaluation, which needs to
+   * see all of a user's active subscriptions to decide whether any of them
+   * grants the requested entitlement.
+   */
+  async getAllByUserId(userId: string): Promise<SubscriptionInfo[]> {
+    const pool = await this.getPool();
+    const result = await pool.query<DbRow>(
+      `SELECT *
+         FROM onesub_subscriptions
+        WHERE user_id = $1
+        ORDER BY updated_at DESC`,
+      [userId]
+    );
+    return result.rows.map(rowToSubscriptionInfo);
+  }
+
+  /**
    * Returns the subscription identified by `originalTransactionId` (the
    * table primary key), or `null` if it does not exist.
    */
