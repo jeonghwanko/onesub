@@ -249,6 +249,21 @@ export interface OneSubServerConfig {
    */
   logger?: OneSubLogger;
   /**
+   * Entitlement definitions — maps host-defined access rights to productIds.
+   * Lets app code branch on stable entitlement names ("premium") instead of
+   * productIds ("pro_monthly"), insulating it from SKU changes / promos.
+   *
+   * When set, `/onesub/entitlement` and `/onesub/entitlements` routes are
+   * mounted. Without it, those routes return 503 ENTITLEMENTS_NOT_CONFIGURED.
+   *
+   * @example
+   * entitlements: {
+   *   premium: { productIds: ['pro_monthly', 'pro_yearly', 'lifetime_pass'] },
+   *   promode: { productIds: ['dev_tools_addon'] },
+   * }
+   */
+  entitlements?: EntitlementsConfig;
+  /**
    * How to handle subscription refunds (Apple REFUND/REVOKE, Google
    * voidedPurchaseNotification productType=1).
    *
@@ -266,6 +281,65 @@ export interface OneSubServerConfig {
    * have no expiry concept.
    */
   refundPolicy?: 'immediate' | 'until_expiry';
+}
+
+/**
+ * Entitlement abstraction — maps host-defined access rights (e.g. "premium")
+ * to one or more store-side productIds. Lets the app code branch on stable
+ * entitlement names instead of brittle productId strings, so adding a promo
+ * SKU or migrating from monthly→yearly doesn't ripple through the codebase.
+ *
+ * Defined statically in `OneSubServerConfig.entitlements`. A user is entitled
+ * to `'premium'` if any of:
+ *   - they have an active subscription (status === 'active' || 'grace_period',
+ *     not yet expired) for a productId in `productIds`
+ *   - they have a non-consumable purchase for a productId in `productIds`
+ *
+ * Consumables are NOT considered for entitlement checks — they grant the user
+ * a one-time consumable resource (coins, lives), not an ongoing right.
+ */
+export interface Entitlement {
+  productIds: string[];
+}
+
+/** Map of entitlement id → definition. Pass via `OneSubServerConfig.entitlements`. */
+export type EntitlementsConfig = Record<string, Entitlement>;
+
+/** Result of evaluating a single entitlement for a userId. */
+export interface EntitlementStatus {
+  /** True when at least one matching active subscription or non-consumable purchase exists. */
+  active: boolean;
+  /**
+   * Where the entitlement was sourced from when active:
+   *   - 'subscription' — an active SubscriptionInfo matched
+   *   - 'purchase'     — a non-consumable PurchaseInfo matched
+   *   - null when not active
+   */
+  source: 'subscription' | 'purchase' | null;
+  /** The matched productId (only present when active). */
+  productId?: string;
+  /** Subscription expiry (only present when source === 'subscription'). */
+  expiresAt?: string;
+}
+
+/** Response from `GET /onesub/entitlement?userId=&id=premium`. */
+export interface EntitlementResponse extends EntitlementStatus {
+  /** The entitlement id queried, echoed back for client-side caching. */
+  id: string;
+  /** Human-readable error. For programmatic handling use `errorCode`. */
+  error?: string;
+  /** Machine-readable canonical error code. */
+  errorCode?: OneSubErrorCode;
+}
+
+/**
+ * Response from `GET /onesub/entitlements?userId=` — every configured
+ * entitlement evaluated for the user in one round-trip.
+ */
+export interface EntitlementsResponse {
+  entitlements: Record<string, EntitlementStatus>;
+  error?: string;
+  errorCode?: OneSubErrorCode;
 }
 
 /** Purchase type */

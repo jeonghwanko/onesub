@@ -8,6 +8,7 @@ import { createStatusRouter } from './routes/status.js';
 import { createWebhookRouter } from './routes/webhook.js';
 import { createPurchaseRouter } from './routes/purchase.js';
 import { createAdminRouter } from './routes/admin.js';
+import { createEntitlementRouter } from './routes/entitlements.js';
 import { setLogger } from './logger.js';
 
 /**
@@ -74,6 +75,10 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   const adminRouter = createAdminRouter(config, purchaseStore);
   if (adminRouter) router.use(adminRouter);
 
+  // Entitlement routes — only mounted when config.entitlements is set
+  const entitlementRouter = createEntitlementRouter(config, store, purchaseStore);
+  if (entitlementRouter) router.use(entitlementRouter);
+
   return router;
 }
 
@@ -106,6 +111,10 @@ export { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postg
 // Provider functions for direct (non-HTTP) usage
 export { validateAppleReceipt, fetchAppleSubscriptionStatus } from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
+
+// Entitlement evaluator — exported so hosts can evaluate entitlements
+// in-process (e.g. from non-HTTP background workers, custom routes).
+export { evaluateEntitlement } from './routes/entitlements.js';
 
 // Logger plumbing — expose so non-middleware callers (direct provider use)
 // can still redirect logs.

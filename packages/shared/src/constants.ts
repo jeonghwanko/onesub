@@ -6,6 +6,8 @@ export const ROUTES = {
   WEBHOOK_GOOGLE: '/onesub/webhook/google',
   VALIDATE_PURCHASE: '/onesub/purchase/validate',
   PURCHASE_STATUS: '/onesub/purchase/status',
+  ENTITLEMENT: '/onesub/entitlement',
+  ENTITLEMENTS: '/onesub/entitlements',
 } as const;
 
 /** Default server port */
@@ -63,6 +65,10 @@ export const ONESUB_ERROR_CODE = {
   INVALID_SIGNED_PAYLOAD: 'INVALID_SIGNED_PAYLOAD',
   MISSING_MESSAGE_DATA: 'MISSING_MESSAGE_DATA',
   PACKAGE_NAME_MISMATCH: 'PACKAGE_NAME_MISMATCH',
+
+  // ── Entitlements ──
+  ENTITLEMENT_NOT_FOUND: 'ENTITLEMENT_NOT_FOUND',
+  ENTITLEMENTS_NOT_CONFIGURED: 'ENTITLEMENTS_NOT_CONFIGURED',
 
   // ── Server internal ──
   INTERNAL_ERROR: 'INTERNAL_ERROR',

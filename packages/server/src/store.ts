@@ -7,8 +7,23 @@ import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
  */
 export interface SubscriptionStore {
   save(sub: SubscriptionInfo): Promise<void>;
+  /**
+   * Returns the most recent subscription for the user, or null if none exist.
+   * Use this for legacy single-product checks (`/onesub/status`); for
+   * entitlements that span multiple productIds, prefer `getAllByUserId`.
+   */
   getByUserId(userId: string): Promise<SubscriptionInfo | null>;
   getByTransactionId(txId: string): Promise<SubscriptionInfo | null>;
+  /**
+   * Returns every subscription record for the user (across all productIds),
+   * ordered most-recent-first. Used by entitlement evaluation, which needs to
+   * see all of a user's active subscriptions to decide whether any of them
+   * grants the requested entitlement.
+   *
+   * Implementations: in-memory currently coalesces by userId so this returns
+   * at most one row; Postgres returns the full history.
+   */
+  getAllByUserId(userId: string): Promise<SubscriptionInfo[]>;
 }
 
 /**
@@ -16,16 +31,30 @@ export interface SubscriptionStore {
  * Data is lost on process restart.
  */
 export class InMemorySubscriptionStore implements SubscriptionStore {
-  private readonly byUserId = new Map<string, SubscriptionInfo>();
+  // Multiple records per user (different originalTransactionIds) — required
+  // for entitlement evaluation across multiple productIds. Ordering is
+  // last-written-first so getByUserId returns "most recent" naturally.
+  private readonly byUserId = new Map<string, SubscriptionInfo[]>();
   private readonly byTransactionId = new Map<string, SubscriptionInfo>();
 
   async save(sub: SubscriptionInfo): Promise<void> {
-    this.byUserId.set(sub.userId, sub);
     this.byTransactionId.set(sub.originalTransactionId, sub);
+
+    const existing = this.byUserId.get(sub.userId) ?? [];
+    // Replace any prior record with the same originalTransactionId, then
+    // unshift to the front so the latest write is index 0 (= getByUserId result).
+    const filtered = existing.filter((s) => s.originalTransactionId !== sub.originalTransactionId);
+    filtered.unshift(sub);
+    this.byUserId.set(sub.userId, filtered);
   }
 
   async getByUserId(userId: string): Promise<SubscriptionInfo | null> {
-    return this.byUserId.get(userId) ?? null;
+    const list = this.byUserId.get(userId);
+    return list?.[0] ?? null;
+  }
+
+  async getAllByUserId(userId: string): Promise<SubscriptionInfo[]> {
+    return [...(this.byUserId.get(userId) ?? [])];
   }
 
   async getByTransactionId(txId: string): Promise<SubscriptionInfo | null> {
