@@ -9,6 +9,7 @@ import type {
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
+import { fetchWithTimeout } from '../http.js';
 import {
   mockValidateAppleSubscription,
   mockValidateAppleProduct,
@@ -402,6 +403,21 @@ export async function decodeAppleNotification(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
+ * Module-level JWT cache for the App Store Server API. Apple caps token TTL
+ * at 20 minutes; we mint with that TTL and re-use until 60 seconds before
+ * expiry (so long-running webhook bursts don't pay the ECDSA-sign cost on
+ * every request). Promise dedup prevents thundering-herd JWT mints when many
+ * concurrent callers race the cache miss.
+ *
+ * Keyed by `${issuerId}|${keyId}` since rotating either invalidates the JWT.
+ */
+let cachedAppleJwt: { token: string; expiresAt: number; key: string } | null = null;
+let appleJwtMintPromise: Promise<string> | null = null;
+
+const APPLE_JWT_TTL_MS = 20 * 60 * 1000;
+const APPLE_JWT_REFRESH_BEFORE_MS = 60 * 1000;
+
+/**
  * Mint a JWT for the App Store Server API (audience `appstoreconnect-v1`).
  * Requires keyId, issuerId, and privateKey (PKCS8 ES256 from App Store Connect).
  * Token TTL is capped at 20 minutes per Apple's spec.
@@ -411,15 +427,46 @@ async function makeAppleApiJwt(config: AppleConfig): Promise<string> {
   if (!issuerId || !keyId || !privateKey) {
     throw new Error('[onesub/apple] App Store Server API requires issuerId, keyId, and privateKey');
   }
-  const key = await importPKCS8(privateKey, 'ES256');
-  return await new SignJWT({ bid: bundleId })
-    .setProtectedHeader({ alg: 'ES256', kid: keyId, typ: 'JWT' })
-    .setIssuer(issuerId)
-    .setAudience('appstoreconnect-v1')
-    .setIssuedAt()
-    .setExpirationTime('20m')
-    .sign(key);
+
+  const cacheKey = `${issuerId}|${keyId}`;
+  const now = Date.now();
+
+  if (
+    cachedAppleJwt &&
+    cachedAppleJwt.key === cacheKey &&
+    cachedAppleJwt.expiresAt - now > APPLE_JWT_REFRESH_BEFORE_MS
+  ) {
+    return cachedAppleJwt.token;
+  }
+
+  if (!appleJwtMintPromise) {
+    appleJwtMintPromise = (async () => {
+      const key = await importPKCS8(privateKey, 'ES256');
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const token = await new SignJWT({ bid: bundleId })
+        .setProtectedHeader({ alg: 'ES256', kid: keyId, typ: 'JWT' })
+        .setIssuer(issuerId)
+        .setAudience('appstoreconnect-v1')
+        .setIssuedAt(issuedAt)
+        .setExpirationTime(issuedAt + Math.floor(APPLE_JWT_TTL_MS / 1000))
+        .sign(key);
+      cachedAppleJwt = { token, expiresAt: Date.now() + APPLE_JWT_TTL_MS, key: cacheKey };
+      return token;
+    })().finally(() => {
+      appleJwtMintPromise = null;
+    });
+  }
+
+  return appleJwtMintPromise;
 }
+
+/** Test-only: clear the module-level Apple JWT cache. Not exported. */
+function clearAppleJwtCacheForTests(): void {
+  cachedAppleJwt = null;
+  appleJwtMintPromise = null;
+}
+// Expose for the test suite without polluting the public API surface.
+export const __testing = { clearAppleJwtCacheForTests };
 
 /**
  * PUT a ConsumptionRequest to Apple's
@@ -455,7 +502,7 @@ export async function sendAppleConsumptionResponse(
   const url = `https://${host}/inApps/v1/transactions/consumption/${encodeURIComponent(transactionId)}`;
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${jwt}`,
@@ -556,7 +603,7 @@ export async function fetchAppleSubscriptionStatus(
 
   let body: AppleSubscriptionStatusResponse;
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       headers: { Authorization: `Bearer ${jwt}` },
     });
     if (!resp.ok) {
