@@ -1,4 +1,4 @@
-import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
+import type { SubscriptionInfo, PurchaseInfo, EntitlementStatus } from '@onesub/shared';
 import { useOneSubContext } from './OneSubProvider.js';
 
 export interface UseOneSubReturn {
@@ -23,6 +23,16 @@ export interface UseOneSubReturn {
    * no record of the product.
    */
   restoreProduct: (productId: string, type: 'consumable' | 'non_consumable') => Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null>;
+  /**
+   * Map of entitlement id → evaluation status, populated from the server's
+   * `GET /onesub/entitlements`. Empty map when the server has no entitlements
+   * configured. Refreshed automatically after subscribe / purchase / restore.
+   */
+  entitlements: Record<string, EntitlementStatus>;
+  /** Convenience: `entitlements[id]?.active === true`. Safe even if the id is unknown. */
+  hasEntitlement: (id: string) => boolean;
+  /** Manually re-fetch the entitlements map (e.g. after a server-side state change). */
+  refreshEntitlements: () => Promise<void>;
 }
 
 /**
