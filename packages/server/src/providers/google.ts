@@ -488,6 +488,14 @@ export async function validateGoogleReceipt(
   const purchasedAt = purchase.startTime ?? new Date().toISOString();
   const willRenew = lineItem.autoRenewingPlan?.autoRenewEnabled ?? false;
 
+  // Surface autoResumeTime only when the subscription is actually paused —
+  // pausedStateContext is undefined for any other state, but be defensive in
+  // case Google starts including it on adjacent states (e.g. recently-resumed).
+  const autoResumeTime =
+    status === SUBSCRIPTION_STATUS.PAUSED
+      ? purchase.pausedStateContext?.autoResumeTime
+      : undefined;
+
   return {
     userId: '',  // caller fills this in
     productId,
@@ -500,6 +508,7 @@ export async function validateGoogleReceipt(
     // Surface the linked token so host apps (and our webhook userId-continuity
     // logic) can follow upgrade/downgrade chains.
     linkedPurchaseToken: purchase.linkedPurchaseToken,
+    autoResumeTime,
   };
 }
 
