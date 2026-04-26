@@ -1,6 +1,6 @@
 {
   "name": "@onesub/server",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Server-side receipt validation middleware for react-native-iap. Apple StoreKit 2 + Google Play Billing. One line.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
