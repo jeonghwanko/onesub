@@ -73,7 +73,7 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   router.use(createPurchaseRouter(config, purchaseStore));
 
   // Admin routes — only mounted when config.adminSecret is set
-  const adminRouter = createAdminRouter(config, purchaseStore);
+  const adminRouter = createAdminRouter(config, purchaseStore, store);
   if (adminRouter) router.use(adminRouter);
 
   // Entitlement routes — only mounted when config.entitlements is set

@@ -1,9 +1,15 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { OneSubServerConfig, PurchaseInfo } from '@onesub/shared';
-import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
-import type { PurchaseStore } from '../store.js';
+import type {
+  OneSubServerConfig,
+  PurchaseInfo,
+  ListSubscriptionsResponse,
+  Platform,
+  SubscriptionStatus,
+} from '@onesub/shared';
+import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { sendError, sendZodError } from '../errors.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
@@ -20,27 +26,36 @@ const ADMIN_SECRET_HEADER = 'x-admin-secret';
  *   POST /onesub/purchase/admin/grant
  *     → manually insert a purchase record (skips store verification)
  *     body: { userId, productId, platform, type?, transactionId? }
+ *
+ *   POST /onesub/purchase/admin/transfer
+ *     → reassign a transactionId to a new userId (device migration)
+ *
+ *   GET /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=
+ *     → filtered/paginated subscription list (used by dashboard + scripts)
  */
 export function createAdminRouter(
   config: OneSubServerConfig,
   purchaseStore: PurchaseStore,
+  store: SubscriptionStore,
 ): Router | null {
   if (!config.adminSecret) return null;
 
   const router = Router();
   const adminSecret = config.adminSecret;
 
-  // Auth middleware — scoped to /onesub/purchase/admin/* so it doesn't
-  // swallow unrelated requests (e.g. host-app routes like /health) when the
-  // admin router is mounted at the parent root.
-  router.use('/onesub/purchase/admin', (req, res, next) => {
+  // Auth middleware — applied to both admin scopes. Without this guard, a
+  // misconfigured mount on the parent root would expose admin endpoints
+  // alongside host-app routes (e.g. /health).
+  const adminAuth = (req: Request, res: Response, next: () => void) => {
     const provided = req.headers[ADMIN_SECRET_HEADER];
     if (typeof provided !== 'string' || provided !== adminSecret) {
       sendError(res, 401, ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET, 'INVALID_ADMIN_SECRET');
       return;
     }
     next();
-  });
+  };
+  router.use('/onesub/purchase/admin', adminAuth);
+  router.use('/onesub/admin', adminAuth);
 
   // DELETE /onesub/purchase/admin/:userId/:productId
   // Express 5 types route params as `string | string[]` — narrow via zod.
@@ -122,6 +137,54 @@ export function createAdminRouter(
     };
     await purchaseStore.savePurchase(purchase);
     res.json({ ok: true, purchase });
+  });
+
+  // GET /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=
+  // Filtered + paginated subscription list. Backs the dashboard's
+  // subscriptions page and ad-hoc operational scripts.
+  const listQuerySchema = z.object({
+    userId: z.string().min(1).max(256).optional(),
+    status: z.enum([
+      SUBSCRIPTION_STATUS.ACTIVE,
+      SUBSCRIPTION_STATUS.GRACE_PERIOD,
+      SUBSCRIPTION_STATUS.ON_HOLD,
+      SUBSCRIPTION_STATUS.PAUSED,
+      SUBSCRIPTION_STATUS.EXPIRED,
+      SUBSCRIPTION_STATUS.CANCELED,
+      SUBSCRIPTION_STATUS.NONE,
+    ] as [SubscriptionStatus, ...SubscriptionStatus[]]).optional(),
+    productId: z.string().min(1).max(256).optional(),
+    platform: z.enum(['apple', 'google'] as [Platform, ...Platform[]]).optional(),
+    // Cap at 200 server-side so a runaway dashboard query can't tip the DB.
+    limit: z.coerce.number().int().positive().max(200).optional(),
+    offset: z.coerce.number().int().nonnegative().optional(),
+  });
+
+  router.get(ROUTES.ADMIN_SUBSCRIPTIONS, async (req: Request, res: Response) => {
+    let query: z.infer<typeof listQuerySchema>;
+    try {
+      query = listQuerySchema.parse(req.query);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        sendZodError(res, err);
+        return;
+      }
+      throw err;
+    }
+
+    try {
+      const result = await store.listFiltered(query);
+      const response: ListSubscriptionsResponse = {
+        items: result.items,
+        total: result.total,
+        limit: result.limit,
+        offset: result.offset,
+      };
+      res.status(200).json(response);
+    } catch (err) {
+      // Bubble the message up but not the stack — admin clients log status code
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'list error');
+    }
   });
 
   return router;

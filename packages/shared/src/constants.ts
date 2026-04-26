@@ -11,6 +11,7 @@ export const ROUTES = {
   METRICS_ACTIVE: '/onesub/metrics/active',
   METRICS_STARTED: '/onesub/metrics/started',
   METRICS_EXPIRED: '/onesub/metrics/expired',
+  ADMIN_SUBSCRIPTIONS: '/onesub/admin/subscriptions',
 } as const;
 
 /** Default server port */
