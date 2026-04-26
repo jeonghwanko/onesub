@@ -1,5 +1,12 @@
 # @jeonghwanko/onesub-sdk
 
+## 0.5.6
+
+### Patch Changes
+
+- Updated dependencies [7b92dc8]
+  - @onesub/shared@0.5.0
+
 ## 0.5.5
 
 ### Patch Changes
