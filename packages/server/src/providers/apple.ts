@@ -471,3 +471,149 @@ export async function sendAppleConsumptionResponse(
     log.warn('[onesub/apple] Consumption response network error:', err);
   }
 }
+
+/**
+ * Apple's status code in the GET /inApps/v1/subscriptions/{originalTxId} response.
+ * https://developer.apple.com/documentation/appstoreserverapi/status
+ */
+const APPLE_SUBSCRIPTION_STATUS_CODE = {
+  ACTIVE: 1,
+  EXPIRED: 2,
+  BILLING_RETRY: 3,
+  GRACE_PERIOD: 4,
+  REVOKED: 5,
+} as const;
+
+function mapAppleStatusCode(code: number): SubscriptionInfo['status'] {
+  switch (code) {
+    case APPLE_SUBSCRIPTION_STATUS_CODE.ACTIVE:
+      return SUBSCRIPTION_STATUS.ACTIVE;
+    case APPLE_SUBSCRIPTION_STATUS_CODE.GRACE_PERIOD:
+      return SUBSCRIPTION_STATUS.GRACE_PERIOD;
+    case APPLE_SUBSCRIPTION_STATUS_CODE.BILLING_RETRY:
+      return SUBSCRIPTION_STATUS.ON_HOLD;
+    case APPLE_SUBSCRIPTION_STATUS_CODE.REVOKED:
+      return SUBSCRIPTION_STATUS.CANCELED;
+    case APPLE_SUBSCRIPTION_STATUS_CODE.EXPIRED:
+    default:
+      return SUBSCRIPTION_STATUS.EXPIRED;
+  }
+}
+
+/**
+ * Shape of the GET /inApps/v1/subscriptions/{originalTransactionId} response.
+ * Only the fields we read.
+ */
+interface AppleSubscriptionStatusResponse {
+  data?: Array<{
+    subscriptionGroupIdentifier?: string;
+    lastTransactions?: Array<{
+      originalTransactionId?: string;
+      status?: number;
+      signedTransactionInfo?: string;
+      signedRenewalInfo?: string;
+    }>;
+  }>;
+  bundleId?: string;
+  environment?: 'Production' | 'Sandbox';
+}
+
+/**
+ * Fetch the current state of a subscription directly from Apple's App Store
+ * Server API — the canonical source of truth when webhooks have been missed,
+ * delivered out of order, or the local store has no record at all.
+ *
+ * GET /inApps/v1/subscriptions/{originalTransactionId}
+ * https://developer.apple.com/documentation/appstoreserverapi/get_all_subscription_statuses
+ *
+ * Returns null on:
+ *   - Missing API credentials (issuerId/keyId/privateKey)
+ *   - Network or auth failure
+ *   - Empty response (transaction not found)
+ *
+ * Hosts can call this directly (e.g. from a reconciliation cron) or it runs
+ * automatically as the unknown-transaction fallback inside the Apple webhook.
+ */
+export async function fetchAppleSubscriptionStatus(
+  originalTransactionId: string,
+  config: AppleConfig,
+  options?: { sandbox?: boolean },
+): Promise<SubscriptionInfo | null> {
+  if (config.mockMode) return null;
+
+  let jwt: string;
+  try {
+    jwt = await makeAppleApiJwt(config);
+  } catch (err) {
+    log.warn('[onesub/apple] Cannot fetch subscription status — JWT mint failed:', err);
+    return null;
+  }
+
+  const host = options?.sandbox
+    ? 'api.storekit-sandbox.itunes.apple.com'
+    : 'api.storekit.itunes.apple.com';
+  const url = `https://${host}/inApps/v1/subscriptions/${encodeURIComponent(originalTransactionId)}`;
+
+  let body: AppleSubscriptionStatusResponse;
+  try {
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      log.warn(`[onesub/apple] Status API error ${resp.status}: ${text}`);
+      return null;
+    }
+    body = (await resp.json()) as AppleSubscriptionStatusResponse;
+  } catch (err) {
+    log.warn('[onesub/apple] Status API network error:', err);
+    return null;
+  }
+
+  // Find the lastTransactions entry matching the requested originalTransactionId.
+  // Apple groups by subscriptionGroupIdentifier; one originalTxId is in exactly one group.
+  const entry = body.data
+    ?.flatMap((g) => g.lastTransactions ?? [])
+    .find((t) => t.originalTransactionId === originalTransactionId);
+
+  if (!entry || entry.status == null || !entry.signedTransactionInfo) {
+    log.warn('[onesub/apple] Status API returned no matching transaction for', originalTransactionId);
+    return null;
+  }
+
+  let tx: AppleTransactionPayload;
+  try {
+    tx = await decodeJws<AppleTransactionPayload>(entry.signedTransactionInfo, config.skipJwsVerification);
+  } catch (err) {
+    log.warn('[onesub/apple] Failed to decode signedTransactionInfo from Status API:', err);
+    return null;
+  }
+
+  let renewal: AppleRenewalPayload | null = null;
+  if (entry.signedRenewalInfo) {
+    try {
+      renewal = await decodeJws<AppleRenewalPayload>(entry.signedRenewalInfo, config.skipJwsVerification);
+    } catch {
+      // renewal info is optional
+    }
+  }
+
+  if (!tx.productId || !tx.expiresDate) {
+    log.warn('[onesub/apple] Status API transaction missing productId or expiresDate');
+    return null;
+  }
+
+  const status = mapAppleStatusCode(entry.status);
+  const purchasedAt = tx.originalPurchaseDate ?? tx.purchaseDate ?? Date.now();
+
+  return {
+    userId: '',  // caller fills this in
+    productId: tx.productId,
+    platform: 'apple',
+    status,
+    expiresAt: new Date(tx.expiresDate).toISOString(),
+    originalTransactionId,
+    purchasedAt: new Date(purchasedAt).toISOString(),
+    willRenew: renewal?.autoRenewStatus === 1,
+  };
+}
