@@ -1,6 +1,7 @@
 import type { SubscriptionInfo, GoogleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { log } from '../logger.js';
+import { fetchWithTimeout } from '../http.js';
 import {
   mockValidateGoogleSubscription,
   mockValidateGoogleProduct,
@@ -195,7 +196,7 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
 
   const assertion = `${signingInput}.${signature}`;
 
-  const resp = await fetch(tokenUri, {
+  const resp = await fetchWithTimeout(tokenUri, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -229,7 +230,7 @@ async function fetchSubscriptionPurchaseV2(
     `${encodeURIComponent(packageName)}/purchases/subscriptionsv2/tokens/` +
     `${encodeURIComponent(purchaseToken)}`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
@@ -256,7 +257,7 @@ async function fetchProductPurchase(
     `${encodeURIComponent(packageName)}/purchases/products/` +
     `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithTimeout(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
@@ -298,7 +299,7 @@ export async function acknowledgeGoogleSubscription(
     `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:acknowledge`;
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: '{}',
@@ -341,7 +342,7 @@ export async function acknowledgeGoogleProduct(
     `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:acknowledge`;
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: '{}',
@@ -385,7 +386,7 @@ export async function consumeGoogleProductReceipt(
     `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:consume`;
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchWithTimeout(url, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
     });

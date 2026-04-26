@@ -1,0 +1,11 @@
+# Force LF line endings on text sources so Windows checkouts (core.autocrlf=true)
+# don't break parsers that anchor on \n — notably the schema parity test which
+# uses /--.*$/ on each line and silently fails on \r\n.
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

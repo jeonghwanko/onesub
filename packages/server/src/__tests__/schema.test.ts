@@ -17,8 +17,12 @@ describe('schema SQL parity', () => {
 
   // Normalize both sides to compare by semantics rather than whitespace:
   // strip SQL line comments, collapse whitespace, lowercase.
+  // The leading \r normalisation matters on Windows checkouts (core.autocrlf):
+  // without it, `--.*$` fails to match because `$` doesn't see `\r` as a line
+  // terminator, leaving comments in place and breaking the parity check.
   const normalize = (sql: string) =>
     sql
+      .replace(/\r/g, '')
       .split('\n')
       .map((l) => l.replace(/--.*$/, ''))
       .join('\n')
