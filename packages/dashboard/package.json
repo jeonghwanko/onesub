@@ -1,0 +1,32 @@
+{
+  "name": "@onesub/dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted dashboard for onesub — view active subscriptions, metrics, and operational state. Connects to a running @onesub/server instance with adminSecret.",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 4101",
+    "build": "next build",
+    "start": "next start -p 4101",
+    "lint": "next lint",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@onesub/shared": "0.7.0",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
