@@ -269,6 +269,15 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rowCount ?? 0;
   }
 
+  async deletePurchaseByTransactionId(transactionId: string): Promise<boolean> {
+    const pool = await this.getPool();
+    const result = await pool.query(
+      `DELETE FROM onesub_purchases WHERE transaction_id = $1`,
+      [transactionId]
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   /** Gracefully close the underlying connection pool. */
   async close(): Promise<void> {
     if (this.poolPromise) {

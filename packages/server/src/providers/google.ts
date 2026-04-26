@@ -64,6 +64,14 @@ interface GoogleDeveloperNotification {
     purchaseToken: string;
     subscriptionId: string;
   };
+  voidedPurchaseNotification?: {
+    purchaseToken: string;
+    orderId: string;
+    /** 1 = Subscription, 2 = One-time product */
+    productType: 1 | 2;
+    /** 1 = Full refund, 2 = Quantity-based partial refund (consumables) */
+    refundType: 1 | 2;
+  };
   testNotification?: {
     version: string;
   };
@@ -225,6 +233,94 @@ async function fetchProductPurchase(
   }
 
   return resp.json() as Promise<GoogleProductPurchase>;
+}
+
+/**
+ * Acknowledge a Google Play subscription purchase.
+ * Google auto-refunds purchases that are not acknowledged within 3 days.
+ *
+ * Idempotent on Google's side: a no-op when the purchase has already been
+ * acknowledged. Fire-and-forget — entitlement was already granted, so failures
+ * are logged but not surfaced to the caller (operations should monitor logs).
+ */
+export async function acknowledgeGoogleSubscription(
+  purchaseToken: string,
+  productId: string,
+  config: GoogleConfig,
+): Promise<void> {
+  if (config.mockMode) return;
+  if (!config.serviceAccountKey) return;
+
+  let accessToken: string;
+  try {
+    accessToken = await getCachedAccessToken(config.serviceAccountKey);
+  } catch (err) {
+    log.warn('[onesub/google] Could not get access token for subscription ack:', err);
+    return;
+  }
+
+  const url =
+    `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/` +
+    `${encodeURIComponent(config.packageName)}/purchases/subscriptions/` +
+    `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:acknowledge`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      log.warn(`[onesub/google] Subscription acknowledge API error ${resp.status}: ${body} — auto-refund risk`);
+    }
+  } catch (err) {
+    log.warn('[onesub/google] Subscription acknowledge network error — auto-refund risk:', err);
+  }
+}
+
+/**
+ * Acknowledge a Google Play one-time product purchase (non-consumable).
+ * Consumables do not need this — :consume implicitly acknowledges.
+ *
+ * Same fire-and-forget semantics as acknowledgeGoogleSubscription.
+ */
+export async function acknowledgeGoogleProduct(
+  purchaseToken: string,
+  productId: string,
+  config: GoogleConfig,
+): Promise<void> {
+  if (config.mockMode) return;
+  if (!config.serviceAccountKey) return;
+
+  let accessToken: string;
+  try {
+    accessToken = await getCachedAccessToken(config.serviceAccountKey);
+  } catch (err) {
+    log.warn('[onesub/google] Could not get access token for product ack:', err);
+    return;
+  }
+
+  const url =
+    `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/` +
+    `${encodeURIComponent(config.packageName)}/purchases/products/` +
+    `${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}:acknowledge`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+
+    if (!resp.ok) {
+      const body = await resp.text();
+      log.warn(`[onesub/google] Product acknowledge API error ${resp.status}: ${body} — auto-refund risk`);
+    }
+  } catch (err) {
+    log.warn('[onesub/google] Product acknowledge network error — auto-refund risk:', err);
+  }
 }
 
 /**
@@ -407,7 +503,8 @@ export async function validateGoogleProductReceipt(
 
 /**
  * Decode a Google RTDN Pub/Sub notification.
- * Returns the extracted subscription notification data, or null for test pings.
+ * Returns the extracted subscription notification data, or null for test pings
+ * and notification kinds handled by other decoders (e.g. voided purchases).
  */
 export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   notificationType: GoogleNotificationType;
@@ -425,7 +522,7 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   }
 
   if (!notification.subscriptionNotification) {
-    // test notification or unsupported type
+    // test notification, voided purchase, or unsupported type
     return null;
   }
 
@@ -435,6 +532,53 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
     notificationType,
     purchaseToken,
     subscriptionId,
+    packageName: notification.packageName,
+  };
+}
+
+/**
+ * Decoded Google RTDN voidedPurchaseNotification — sent when a purchase
+ * (subscription or one-time product) is refunded, charged back, or revoked.
+ *
+ * https://developer.android.com/google/play/billing/rtdn-reference#voided-purchase
+ */
+export interface GoogleVoidedNotification {
+  /** Subscription purchaseToken or one-time product purchaseToken */
+  purchaseToken: string;
+  /** GPA.* — matches the orderId stored as transactionId for one-time products */
+  orderId: string;
+  /** 1 = Subscription, 2 = One-time product */
+  productType: 1 | 2;
+  /** 1 = Full refund, 2 = Quantity-based partial refund (consumables) */
+  refundType: 1 | 2;
+  packageName: string;
+}
+
+/**
+ * Decode a Google RTDN voidedPurchaseNotification, if the payload is one.
+ * Returns null when the payload is a different notification kind.
+ */
+export function decodeGoogleVoidedNotification(
+  payload: GoogleNotificationPayload,
+): GoogleVoidedNotification | null {
+  let notification: GoogleDeveloperNotification;
+
+  try {
+    const json = Buffer.from(payload.message.data, 'base64').toString('utf-8');
+    notification = JSON.parse(json) as GoogleDeveloperNotification;
+  } catch {
+    return null;
+  }
+
+  if (!notification.voidedPurchaseNotification) return null;
+
+  const { purchaseToken, orderId, productType, refundType } = notification.voidedPurchaseNotification;
+
+  return {
+    purchaseToken,
+    orderId,
+    productType,
+    refundType,
     packageName: notification.packageName,
   };
 }

@@ -10,7 +10,11 @@ import type {
 import { ROUTES, PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
-import { validateGoogleProductReceipt, consumeGoogleProductReceipt } from '../providers/google.js';
+import {
+  validateGoogleProductReceipt,
+  consumeGoogleProductReceipt,
+  acknowledgeGoogleProduct,
+} from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError, sendZodError } from '../errors.js';
 
@@ -161,11 +165,19 @@ export function createPurchaseRouter(
 
       await purchaseStore.savePurchase(purchase);
 
-      // For Google consumables: acknowledge the purchase after the entitlement is saved.
-      // Must happen after savePurchase — if called before, a DB failure would leave the
-      // receipt consumed but the entitlement ungranted with no retry path.
-      if (platform === 'google' && type === PURCHASE_TYPE.CONSUMABLE && config.google) {
-        void consumeGoogleProductReceipt(receipt, productId, config.google);
+      // Google requires acknowledgement within 3 days of purchase or the
+      // transaction is auto-refunded.
+      // - Consumables: :consume implicitly acknowledges, so consume is enough.
+      // - Non-consumables: must call :acknowledge explicitly.
+      // Both must run after savePurchase — if called before, a DB failure would
+      // leave the receipt acknowledged/consumed but the entitlement ungranted
+      // with no retry path.
+      if (platform === 'google' && config.google) {
+        if (type === PURCHASE_TYPE.CONSUMABLE) {
+          void consumeGoogleProductReceipt(receipt, productId, config.google);
+        } else {
+          void acknowledgeGoogleProduct(receipt, productId, config.google);
+        }
       }
 
       const response: ValidatePurchaseResponse = {

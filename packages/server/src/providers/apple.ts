@@ -333,7 +333,18 @@ export async function validateAppleConsumableReceipt(
 export async function decodeAppleNotification(
   payload: AppleNotificationPayload,
   skipJwsVerification = false
-): Promise<{ originalTransactionId: string; status: SubscriptionInfo['status']; willRenew: boolean; expiresAt: string } | null> {
+): Promise<{
+  originalTransactionId: string;
+  /** Per-transaction id (different from originalTransactionId for consumables / re-purchases). */
+  transactionId: string | null;
+  /** 'Auto-Renewable Subscription' | 'Consumable' | 'Non-Consumable' | 'Non-Renewing Subscription' */
+  type: string | null;
+  productId: string | null;
+  status: SubscriptionInfo['status'];
+  willRenew: boolean;
+  /** May be null for non-subscription notifications (consumable refund). */
+  expiresAt: string | null;
+} | null> {
   const { signedTransactionInfo, signedRenewalInfo } = payload.data;
 
   let tx: AppleTransactionPayload;
@@ -351,15 +362,20 @@ export async function decodeAppleNotification(
     // renewal info is optional for some notification types
   }
 
-  if (!tx.originalTransactionId || !tx.expiresDate) return null;
+  // expiresDate is only required for subscription notifications.
+  // Consumable / non-consumable refund notifications (REFUND for IAP) have no expiry.
+  if (!tx.originalTransactionId) return null;
 
   const status = deriveStatus(tx, renewal);
   const willRenew = renewal?.autoRenewStatus === 1;
 
   return {
     originalTransactionId: tx.originalTransactionId,
+    transactionId: tx.transactionId ?? null,
+    type: tx.type ?? null,
+    productId: tx.productId ?? null,
     status,
     willRenew,
-    expiresAt: new Date(tx.expiresDate).toISOString(),
+    expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
   };
 }

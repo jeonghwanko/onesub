@@ -67,7 +67,7 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
 
   router.use(createValidateRouter(config, store));
   router.use(createStatusRouter(store));
-  router.use(createWebhookRouter(config, store));
+  router.use(createWebhookRouter(config, store, purchaseStore));
   router.use(createPurchaseRouter(config, purchaseStore));
 
   // Admin routes — only mounted when config.adminSecret is set

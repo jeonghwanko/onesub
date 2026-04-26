@@ -5,7 +5,7 @@ import type { ValidateReceiptResponse, OneSubServerConfig } from '@onesub/shared
 import { ROUTES, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
-import { validateGoogleReceipt } from '../providers/google.js';
+import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError, sendZodError } from '../errors.js';
 
@@ -64,6 +64,13 @@ export function createValidateRouter(
 
       sub.userId = userId;
       await store.save(sub);
+
+      // Google requires acknowledgement within 3 days of purchase or the
+      // transaction is auto-refunded. Fire-and-forget — entitlement is already
+      // saved, ack is idempotent on the Play side.
+      if (platform === 'google' && config.google) {
+        void acknowledgeGoogleSubscription(receipt, productId, config.google);
+      }
 
       const response: ValidateReceiptResponse = { valid: true, subscription: sub };
       res.status(200).json(response);

@@ -49,6 +49,14 @@ export interface PurchaseStore {
    */
   deletePurchases(userId: string, productId: string): Promise<number>;
   /**
+   * Delete a single purchase by its transactionId.
+   * Used by the refund/voided-purchase webhook path to revoke entitlement
+   * for the exact transaction that was refunded — without touching sibling
+   * consumable purchases of the same user/product.
+   * Returns true if a row was deleted.
+   */
+  deletePurchaseByTransactionId(transactionId: string): Promise<boolean>;
+  /**
    * Reassign a transaction's owner to a new userId.
    * Used when the validate route encounters TRANSACTION_BELONGS_TO_OTHER_USER
    * for a genuinely-signed JWS — the Apple receipt proves the caller owns the
@@ -124,5 +132,17 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       if (p.productId === productId) this.byTransactionId.delete(p.transactionId);
     }
     return deleted;
+  }
+
+  async deletePurchaseByTransactionId(transactionId: string): Promise<boolean> {
+    const existing = this.byTransactionId.get(transactionId);
+    if (!existing) return false;
+    this.byTransactionId.delete(transactionId);
+    const list = (this.byUserId.get(existing.userId) ?? []).filter(
+      (p) => p.transactionId !== transactionId,
+    );
+    if (list.length) this.byUserId.set(existing.userId, list);
+    else this.byUserId.delete(existing.userId);
+    return true;
   }
 }

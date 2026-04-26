@@ -193,4 +193,24 @@ describe('InMemoryPurchaseStore', () => {
     expect(deleted).toBe(2);
     expect(await purchaseStore.getPurchasesByUserId('a')).toHaveLength(1);
   });
+
+  it('deletePurchaseByTransactionId removes only the matching row', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't1', productId: 'coins' }));
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 't2', productId: 'coins' }));
+    expect(await purchaseStore.deletePurchaseByTransactionId('t1')).toBe(true);
+    const remaining = await purchaseStore.getPurchasesByUserId('a');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].transactionId).toBe('t2');
+    expect(await purchaseStore.getPurchaseByTransactionId('t1')).toBeNull();
+  });
+
+  it('deletePurchaseByTransactionId returns false for unknown transaction', async () => {
+    expect(await purchaseStore.deletePurchaseByTransactionId('nope')).toBe(false);
+  });
+
+  it('deletePurchaseByTransactionId removes the user index when last row is gone', async () => {
+    await purchaseStore.savePurchase(makePurchase({ userId: 'a', transactionId: 'only' }));
+    expect(await purchaseStore.deletePurchaseByTransactionId('only')).toBe(true);
+    expect(await purchaseStore.getPurchasesByUserId('a')).toEqual([]);
+  });
 });

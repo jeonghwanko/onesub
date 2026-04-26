@@ -8,10 +8,11 @@ import type {
   SubscriptionInfo,
 } from '@onesub/shared';
 import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE } from '@onesub/shared';
-import type { SubscriptionStore } from '../store.js';
+import type { SubscriptionStore, PurchaseStore } from '../store.js';
 import { decodeAppleNotification, decodeJws } from '../providers/apple.js';
 import {
   decodeGoogleNotification,
+  decodeGoogleVoidedNotification,
   validateGoogleReceipt,
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
@@ -107,7 +108,8 @@ const APPLE_EXPIRED_TYPES = new Set([
  */
 export function createWebhookRouter(
   config: OneSubServerConfig,
-  store: SubscriptionStore
+  store: SubscriptionStore,
+  purchaseStore: PurchaseStore,
 ): Router {
   const router = Router();
 
@@ -148,7 +150,7 @@ export function createWebhookRouter(
       return;
     }
 
-    const { originalTransactionId, status, willRenew, expiresAt } = decoded;
+    const { originalTransactionId, transactionId, type, status, willRenew, expiresAt } = decoded;
     const notificationType = payload.notificationType;
 
     // Derive final status from the notification type (overrides the JWS-derived status
@@ -158,14 +160,39 @@ export function createWebhookRouter(
     else if (APPLE_EXPIRED_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
     else if (APPLE_ACTIVE_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
 
+    // IAP refund / revoke for one-time purchases (consumable / non-consumable).
+    // Apple sends REFUND notifications for both subscriptions and IAP — the
+    // transaction `type` field disambiguates. Subscription refunds keep flowing
+    // into the SubscriptionStore branch below.
+    const isOneTimePurchase = type === 'Consumable' || type === 'Non-Consumable';
+    const isRefundOrRevoke = APPLE_CANCELED_TYPES.has(notificationType);
+
     try {
+      if (isOneTimePurchase && isRefundOrRevoke) {
+        // For consumables, the refunded transactionId is unique per purchase.
+        // For non-consumables, transactionId === originalTransactionId, so either
+        // lookup succeeds.
+        const lookupId = transactionId ?? originalTransactionId;
+        const removed = await purchaseStore.deletePurchaseByTransactionId(lookupId);
+        if (!removed) {
+          log.warn(
+            '[onesub/webhook/apple] IAP refund for unknown transaction:',
+            lookupId,
+          );
+        }
+        res.status(200).json({ received: true });
+        return;
+      }
+
       const existing = await store.getByTransactionId(originalTransactionId);
       if (existing) {
         const updated: SubscriptionInfo = {
           ...existing,
           status: finalStatus,
           willRenew,
-          expiresAt,
+          // expiresAt may be absent on non-subscription payloads — keep the
+          // previously-stored value rather than overwriting with null/empty.
+          expiresAt: expiresAt ?? existing.expiresAt,
         };
         await store.save(updated);
       } else {
@@ -205,6 +232,52 @@ export function createWebhookRouter(
 
     if (!body.message?.data) {
       sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');
+      return;
+    }
+
+    // voidedPurchaseNotification — Google's refund/chargeback signal for both
+    // subscriptions and one-time products. Routed here before the regular
+    // subscriptionNotification decoder so it doesn't get swallowed as "unknown".
+    const voided = decodeGoogleVoidedNotification(body as GoogleNotificationPayload);
+    if (voided) {
+      if (config.google?.packageName && voided.packageName !== config.google.packageName) {
+        log.warn(
+          '[onesub/webhook/google] voided package name mismatch:',
+          voided.packageName,
+          '!==',
+          config.google.packageName,
+        );
+        sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
+        return;
+      }
+
+      try {
+        if (voided.productType === 1) {
+          // Subscription refund — purchaseToken is stored as originalTransactionId.
+          const existing = await store.getByTransactionId(voided.purchaseToken);
+          if (existing) {
+            await store.save({ ...existing, status: SUBSCRIPTION_STATUS.CANCELED });
+          } else {
+            log.warn(
+              '[onesub/webhook/google] voided subscription for unknown purchaseToken:',
+              voided.purchaseToken,
+            );
+          }
+        } else {
+          // One-time product refund — orderId is stored as transactionId.
+          const removed = await purchaseStore.deletePurchaseByTransactionId(voided.orderId);
+          if (!removed) {
+            log.warn(
+              '[onesub/webhook/google] voided IAP for unknown orderId:',
+              voided.orderId,
+            );
+          }
+        }
+        res.status(200).json({ received: true });
+      } catch (err) {
+        log.error('[onesub/webhook/google] voided notification error:', err);
+        sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process voided notification');
+      }
       return;
     }
 

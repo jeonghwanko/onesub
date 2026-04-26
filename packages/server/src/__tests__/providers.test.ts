@@ -6,7 +6,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { generateKeyPairSync } from 'crypto';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
-import { validateGoogleProductReceipt } from '../providers/google.js';
+import {
+  validateGoogleProductReceipt,
+  acknowledgeGoogleSubscription,
+  acknowledgeGoogleProduct,
+} from '../providers/google.js';
 
 // ── Apple helpers ──────────────────────────────────────────────────────────
 
@@ -345,5 +349,82 @@ describe('validateGoogleProductReceipt', () => {
       makeGoogleConfig(),
     );
     expect(result).toBeNull();
+  });
+});
+
+// ============================================================================
+// acknowledgeGoogleSubscription / acknowledgeGoogleProduct
+// ============================================================================
+
+describe('acknowledgeGoogleSubscription', () => {
+  it('POSTs to subscriptions/:acknowledge with empty body', async () => {
+    const calls: { url: string; method?: string; body?: unknown }[] = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      calls.push({ url: String(url), method: init?.method, body: init?.body });
+      const urlStr = String(url);
+      if (urlStr.includes('oauth2.googleapis.com')) {
+        return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
+      }
+      return { ok: true, json: async () => ({}), text: async () => '' } as Response;
+    });
+
+    await acknowledgeGoogleSubscription('purchase_token_xyz', 'pro_monthly', makeGoogleConfig());
+
+    const ackCall = calls.find((c) => c.url.includes(':acknowledge'));
+    expect(ackCall).toBeDefined();
+    expect(ackCall?.url).toContain('/purchases/subscriptions/pro_monthly/tokens/purchase_token_xyz:acknowledge');
+    expect(ackCall?.method).toBe('POST');
+    expect(ackCall?.body).toBe('{}');
+  });
+
+  it('does not throw when Play API returns an error (fire-and-forget)', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('oauth2.googleapis.com')) {
+        return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
+      }
+      return { ok: false, status: 500, json: async () => ({}), text: async () => 'oops' } as Response;
+    });
+
+    await expect(
+      acknowledgeGoogleSubscription('tok', 'pro_monthly', makeGoogleConfig()),
+    ).resolves.toBeUndefined();
+  });
+
+  it('skips when serviceAccountKey is missing', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    await acknowledgeGoogleSubscription('tok', 'pro', { packageName: 'com.example.app' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('skips when mockMode is true', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    await acknowledgeGoogleSubscription('tok', 'pro', { ...makeGoogleConfig(), mockMode: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('acknowledgeGoogleProduct', () => {
+  it('POSTs to products/:acknowledge with empty body', async () => {
+    const calls: { url: string }[] = [];
+    vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      calls.push({ url: String(url) });
+      const urlStr = String(url);
+      if (urlStr.includes('oauth2.googleapis.com')) {
+        return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
+      }
+      return { ok: true, json: async () => ({}), text: async () => '' } as Response;
+    });
+
+    await acknowledgeGoogleProduct('tok_nc', 'premium_unlock', makeGoogleConfig());
+
+    const ackCall = calls.find((c) => c.url.includes(':acknowledge'));
+    expect(ackCall?.url).toContain('/purchases/products/premium_unlock/tokens/tok_nc:acknowledge');
+  });
+
+  it('skips when serviceAccountKey is missing', async () => {
+    const fetchSpy = vi.spyOn(global, 'fetch');
+    await acknowledgeGoogleProduct('tok', 'p', { packageName: 'com.example.app' });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
