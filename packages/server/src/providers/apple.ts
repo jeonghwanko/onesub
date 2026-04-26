@@ -1,6 +1,11 @@
-import { decodeJwt, decodeProtectedHeader, importX509, jwtVerify } from 'jose';
+import { decodeJwt, decodeProtectedHeader, importPKCS8, importX509, jwtVerify, SignJWT } from 'jose';
 import { X509Certificate } from 'node:crypto';
-import type { SubscriptionInfo, AppleNotificationPayload, OneSubServerConfig } from '@onesub/shared';
+import type {
+  SubscriptionInfo,
+  AppleNotificationPayload,
+  AppleConsumptionRequest,
+  OneSubServerConfig,
+} from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
@@ -340,6 +345,9 @@ export async function decodeAppleNotification(
   /** 'Auto-Renewable Subscription' | 'Consumable' | 'Non-Consumable' | 'Non-Renewing Subscription' */
   type: string | null;
   productId: string | null;
+  bundleId: string | null;
+  /** 'Production' | 'Sandbox' — drives which Apple API host to call back. */
+  environment: 'Production' | 'Sandbox';
   status: SubscriptionInfo['status'];
   willRenew: boolean;
   /** May be null for non-subscription notifications (consumable refund). */
@@ -369,13 +377,97 @@ export async function decodeAppleNotification(
   const status = deriveStatus(tx, renewal);
   const willRenew = renewal?.autoRenewStatus === 1;
 
+  // environment is on the notification data envelope but Apple also includes
+  // it inside the signed transaction payload. Prefer the JWS-protected one.
+  const txEnv = (tx as { environment?: string }).environment;
+  const dataEnv = payload.data.environment;
+  const environment: 'Production' | 'Sandbox' =
+    txEnv === 'Sandbox' || dataEnv === 'Sandbox' ? 'Sandbox' : 'Production';
+
   return {
     originalTransactionId: tx.originalTransactionId,
     transactionId: tx.transactionId ?? null,
     type: tx.type ?? null,
     productId: tx.productId ?? null,
+    bundleId: tx.bundleId ?? payload.data.bundleId ?? null,
+    environment,
     status,
     willRenew,
     expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
   };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// App Store Server API — outbound calls (consumption response, etc.)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Mint a JWT for the App Store Server API (audience `appstoreconnect-v1`).
+ * Requires keyId, issuerId, and privateKey (PKCS8 ES256 from App Store Connect).
+ * Token TTL is capped at 20 minutes per Apple's spec.
+ */
+async function makeAppleApiJwt(config: AppleConfig): Promise<string> {
+  const { issuerId, keyId, privateKey, bundleId } = config;
+  if (!issuerId || !keyId || !privateKey) {
+    throw new Error('[onesub/apple] App Store Server API requires issuerId, keyId, and privateKey');
+  }
+  const key = await importPKCS8(privateKey, 'ES256');
+  return await new SignJWT({ bid: bundleId })
+    .setProtectedHeader({ alg: 'ES256', kid: keyId, typ: 'JWT' })
+    .setIssuer(issuerId)
+    .setAudience('appstoreconnect-v1')
+    .setIssuedAt()
+    .setExpirationTime('20m')
+    .sign(key);
+}
+
+/**
+ * PUT a ConsumptionRequest to Apple's
+ * /inApps/v1/transactions/consumption/{transactionId} endpoint.
+ *
+ * Apple sends CONSUMPTION_REQUEST notifications when a customer asks for a
+ * refund on a consumable. Without a response Apple has no usage signal and
+ * tends to grant the refund. This call provides the data Apple uses to weigh
+ * the refund decision.
+ *
+ * Fire-and-forget: failures are logged, never thrown — the webhook should
+ * still 200 to Apple even if our outbound call fails.
+ */
+export async function sendAppleConsumptionResponse(
+  transactionId: string,
+  body: AppleConsumptionRequest,
+  config: AppleConfig,
+  options?: { sandbox?: boolean },
+): Promise<void> {
+  if (config.mockMode) return;
+
+  let jwt: string;
+  try {
+    jwt = await makeAppleApiJwt(config);
+  } catch (err) {
+    log.warn('[onesub/apple] Cannot send consumption response — JWT mint failed:', err);
+    return;
+  }
+
+  const host = options?.sandbox
+    ? 'api.storekit-sandbox.itunes.apple.com'
+    : 'api.storekit.itunes.apple.com';
+  const url = `https://${host}/inApps/v1/transactions/consumption/${encodeURIComponent(transactionId)}`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      log.warn(`[onesub/apple] Consumption response API error ${resp.status}: ${text}`);
+    }
+  } catch (err) {
+    log.warn('[onesub/apple] Consumption response network error:', err);
+  }
 }

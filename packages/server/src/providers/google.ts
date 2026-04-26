@@ -584,15 +584,15 @@ export function decodeGoogleVoidedNotification(
 }
 
 /**
- * Determine if a Google RTDN notification type represents an active subscription.
+ * Determine if a Google RTDN notification type represents an active subscription
+ * inside the paid window (excludes grace period — that's a separate state now).
  */
 export function isGoogleActiveNotification(notificationType: GoogleNotificationType): boolean {
   return (
     notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_PURCHASED ||
     notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_RENEWED ||
     notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_RECOVERED ||
-    notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_RESTARTED ||
-    notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_IN_GRACE_PERIOD
+    notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_RESTARTED
   );
 }
 
@@ -605,4 +605,20 @@ export function isGoogleCanceledNotification(notificationType: GoogleNotificatio
 
 export function isGoogleExpiredNotification(notificationType: GoogleNotificationType): boolean {
   return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_EXPIRED;
+}
+
+/**
+ * Subscription is in the store-granted grace period — payment failed but the
+ * user retains access while Google retries. Maps to SUBSCRIPTION_STATUS.GRACE_PERIOD.
+ */
+export function isGoogleGracePeriodNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_IN_GRACE_PERIOD;
+}
+
+/**
+ * Subscription is on hold — grace period ended, retry continuing, entitlement
+ * REVOKED. Maps to SUBSCRIPTION_STATUS.ON_HOLD.
+ */
+export function isGoogleOnHoldNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_ON_HOLD;
 }

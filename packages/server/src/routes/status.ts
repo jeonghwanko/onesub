@@ -39,7 +39,12 @@ export function createStatusRouter(store: SubscriptionStore): Router {
         return;
       }
 
-      const active = sub.status === SUBSCRIPTION_STATUS.ACTIVE;
+      // Entitlement is valid during the store-granted grace period (Apple
+      // GRACE_PERIOD subtype, Google IN_GRACE_PERIOD). on_hold is excluded —
+      // the user must fix payment before they regain access.
+      const active =
+        sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
+        sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD;
       const response: StatusResponse = { active, subscription: sub };
       res.status(200).json(response);
     } catch (err) {
