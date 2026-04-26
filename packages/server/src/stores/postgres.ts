@@ -143,6 +143,12 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     return result.rows.length > 0 ? rowToSubscriptionInfo(result.rows[0]) : null;
   }
 
+  async listAll(): Promise<SubscriptionInfo[]> {
+    const pool = await this.getPool();
+    const result = await pool.query<DbRow>(`SELECT * FROM onesub_subscriptions`);
+    return result.rows.map(rowToSubscriptionInfo);
+  }
+
   /** Gracefully close the underlying connection pool. */
   async close(): Promise<void> {
     if (this.poolPromise) {
@@ -299,6 +305,12 @@ export class PostgresPurchaseStore implements PurchaseStore {
       [transactionId]
     );
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async listAll(): Promise<PurchaseInfo[]> {
+    const pool = await this.getPool();
+    const result = await pool.query<PurchaseDbRow>(`SELECT * FROM onesub_purchases`);
+    return result.rows.map(rowToPurchaseInfo);
   }
 
   /** Gracefully close the underlying connection pool. */

@@ -8,6 +8,9 @@ export const ROUTES = {
   PURCHASE_STATUS: '/onesub/purchase/status',
   ENTITLEMENT: '/onesub/entitlement',
   ENTITLEMENTS: '/onesub/entitlements',
+  METRICS_ACTIVE: '/onesub/metrics/active',
+  METRICS_STARTED: '/onesub/metrics/started',
+  METRICS_EXPIRED: '/onesub/metrics/expired',
 } as const;
 
 /** Default server port */

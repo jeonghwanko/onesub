@@ -9,6 +9,7 @@ import { createWebhookRouter } from './routes/webhook.js';
 import { createPurchaseRouter } from './routes/purchase.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createEntitlementRouter } from './routes/entitlements.js';
+import { createMetricsRouter } from './routes/metrics.js';
 import { setLogger } from './logger.js';
 
 /**
@@ -78,6 +79,11 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   // Entitlement routes — only mounted when config.entitlements is set
   const entitlementRouter = createEntitlementRouter(config, store, purchaseStore);
   if (entitlementRouter) router.use(entitlementRouter);
+
+  // Metrics routes — only mounted when config.adminSecret is set (same gate
+  // as admin routes; metrics expose aggregate operational data)
+  const metricsRouter = createMetricsRouter(config, store, purchaseStore);
+  if (metricsRouter) router.use(metricsRouter);
 
   return router;
 }

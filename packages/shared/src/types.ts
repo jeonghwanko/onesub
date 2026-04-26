@@ -389,6 +389,41 @@ export interface PurchaseStatusResponse {
   errorCode?: OneSubErrorCode;
 }
 
+// ─── Metrics (read-only admin API) ──────────────────────────────────────────
+
+/**
+ * Snapshot of currently-entitled users at the moment of the request.
+ * Aggregates active subscriptions + non-consumable purchases.
+ */
+export interface MetricsActiveResponse {
+  /** Total entitled users (active subs + grace_period subs + non-consumable owners). */
+  total: number;
+  /** Active + grace_period subscriptions only (no purchases). */
+  activeSubscriptions: number;
+  /** grace_period subset of activeSubscriptions — the "at risk" cohort. */
+  gracePeriodSubscriptions: number;
+  /** Non-consumable purchase rows (lifetime products). */
+  nonConsumablePurchases: number;
+  /** Subscription product distribution. Counted from activeSubscriptions only. */
+  byProduct: Record<string, number>;
+  /** 'apple' | 'google' counts across both subs and purchases. */
+  byPlatform: Record<string, number>;
+}
+
+/**
+ * Count of records that started or ended within the given window.
+ * Used for cohort / churn analysis.
+ */
+export interface MetricsCountResponse {
+  /** ISO range echoed back for client-side caching. */
+  from: string;
+  to: string;
+  /** Total matching records in the range. */
+  total: number;
+  byProduct: Record<string, number>;
+  byPlatform: Record<string, number>;
+}
+
 /** SDK config (client-side) */
 export interface OneSubConfig {
   serverUrl: string;
