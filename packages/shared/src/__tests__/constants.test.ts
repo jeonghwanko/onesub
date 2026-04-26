@@ -39,6 +39,10 @@ describe('shared constants', () => {
       expect(SUBSCRIPTION_STATUS.ON_HOLD).toBe('on_hold');
     });
 
+    it('PAUSED equals "paused"', () => {
+      expect(SUBSCRIPTION_STATUS.PAUSED).toBe('paused');
+    });
+
     it('EXPIRED equals "expired"', () => {
       expect(SUBSCRIPTION_STATUS.EXPIRED).toBe('expired');
     });

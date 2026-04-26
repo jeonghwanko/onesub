@@ -24,6 +24,7 @@ import {
   isGoogleExpiredNotification,
   isGoogleGracePeriodNotification,
   isGoogleOnHoldNotification,
+  isGooglePausedNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
@@ -426,12 +427,16 @@ export function createWebhookRouter(
         finalStatus = SUBSCRIPTION_STATUS.GRACE_PERIOD;
       } else if (isGoogleOnHoldNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.ON_HOLD;
+      } else if (isGooglePausedNotification(notificationType)) {
+        finalStatus = SUBSCRIPTION_STATUS.PAUSED;
       } else if (isGoogleCanceledNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.CANCELED;
       } else if (isGoogleExpiredNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
       } else {
-        // Unhandled notification type (paused, deferred, etc.) — re-fetch from Play API
+        // Unhandled notification type (PAUSE_SCHEDULE_CHANGED, DEFERRED, etc.) —
+        // re-fetch from Play API will correct the status (subscriptionsv2 returns
+        // SUBSCRIPTION_STATE_PAUSED etc. directly).
         finalStatus = SUBSCRIPTION_STATUS.ACTIVE; // optimistic; re-fetch below will correct it
       }
 

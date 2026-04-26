@@ -404,9 +404,6 @@ export async function consumeGoogleProductReceipt(
  *
  * Returns null when the state is unrecognised or PENDING (initial purchase
  * not yet settled — entitlement should not be granted yet).
- *
- * Note: SUBSCRIPTION_STATE_PAUSED currently maps to on_hold (entitlement
- * revoked). When a dedicated `paused` lifecycle state lands, switch this case.
  */
 function deriveStatusV2(
   state: GoogleSubscriptionPurchaseV2['subscriptionState'],
@@ -417,8 +414,9 @@ function deriveStatusV2(
     case 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD':
       return SUBSCRIPTION_STATUS.GRACE_PERIOD;
     case 'SUBSCRIPTION_STATE_ON_HOLD':
-    case 'SUBSCRIPTION_STATE_PAUSED':
       return SUBSCRIPTION_STATUS.ON_HOLD;
+    case 'SUBSCRIPTION_STATE_PAUSED':
+      return SUBSCRIPTION_STATUS.PAUSED;
     case 'SUBSCRIPTION_STATE_CANCELED':
       return SUBSCRIPTION_STATUS.CANCELED;
     case 'SUBSCRIPTION_STATE_EXPIRED':
@@ -696,4 +694,12 @@ export function isGoogleGracePeriodNotification(notificationType: GoogleNotifica
  */
 export function isGoogleOnHoldNotification(notificationType: GoogleNotificationType): boolean {
   return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_ON_HOLD;
+}
+
+/**
+ * User-voluntary pause — entitlement REVOKED until autoResumeTime or manual
+ * resume. Maps to SUBSCRIPTION_STATUS.PAUSED.
+ */
+export function isGooglePausedNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_PAUSED;
 }

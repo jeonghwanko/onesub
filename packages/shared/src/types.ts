@@ -9,6 +9,11 @@ import type { OneSubErrorCode } from './constants.js';
  *   - on_hold       — payment failed, retry window expired or grace ended.
  *                     Entitlement REVOKED until the user fixes payment.
  *                     (Apple "billing retry"; Google "on hold".)
+ *   - paused        — user voluntarily paused the subscription (Google only).
+ *                     Entitlement REVOKED until autoResumeTime or user resumes.
+ *                     Distinct from on_hold: paused is intentional, not a
+ *                     payment failure. UX should say "재개 예정" not
+ *                     "결제 정보를 업데이트하세요".
  *   - expired       — subscription ended without renewal
  *   - canceled      — refunded or revoked by store
  *   - none          — no record
@@ -17,6 +22,7 @@ export type SubscriptionStatus =
   | 'active'
   | 'grace_period'
   | 'on_hold'
+  | 'paused'
   | 'expired'
   | 'canceled'
   | 'none';
