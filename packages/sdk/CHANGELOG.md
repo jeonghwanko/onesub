@@ -1,5 +1,12 @@
 # @jeonghwanko/onesub-sdk
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [05ac535]
+  - @onesub/shared@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
