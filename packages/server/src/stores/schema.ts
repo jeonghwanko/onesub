@@ -21,15 +21,17 @@ CREATE TABLE IF NOT EXISTS onesub_subscriptions (
   purchased_at            TIMESTAMPTZ NOT NULL,
   will_renew              BOOLEAN     NOT NULL,
   linked_purchase_token   TEXT,
+  auto_resume_time        TIMESTAMPTZ,
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_user_id
   ON onesub_subscriptions (user_id, updated_at DESC);
 
--- Backfill column for installs that already created the table from an older
+-- Backfill columns for installs that already created the table from an older
 -- schema. Safe to re-run.
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS linked_purchase_token TEXT;
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS auto_resume_time TIMESTAMPTZ;
 `.trim();
 
 export const PURCHASES_SCHEMA_SQL = `

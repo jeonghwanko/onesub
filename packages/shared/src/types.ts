@@ -65,6 +65,14 @@ export interface SubscriptionInfo {
    * new token per plan change). Null/undefined for first-purchase or Apple.
    */
   linkedPurchaseToken?: string;
+  /**
+   * Google-only. When `status === 'paused'`, the RFC3339 timestamp at which
+   * Google plans to auto-resume the subscription (from
+   * `pausedStateContext.autoResumeTime` in subscriptionsv2). Lets the host UX
+   * show "재개 예정: YYYY-MM-DD" instead of just "일시정지 중". Undefined when
+   * not paused or if Google didn't supply it.
+   */
+  autoResumeTime?: string;
 }
 
 /** Subscription status check response */
