@@ -1,6 +1,6 @@
 ---
-"@onesub/shared": minor
-"@onesub/server": minor
+"@onesub/shared": patch
+"@onesub/server": patch
 ---
 
 Add admin endpoint for filtered/paginated subscription listing — backs the dashboard's subscriptions page and ad-hoc operational scripts.
