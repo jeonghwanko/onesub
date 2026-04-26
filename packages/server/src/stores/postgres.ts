@@ -1,5 +1,10 @@
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
-import type { SubscriptionStore, PurchaseStore } from '../store.js';
+import type {
+  SubscriptionStore,
+  PurchaseStore,
+  ListFilteredOptions,
+  ListFilteredResult,
+} from '../store.js';
 import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 
 /**
@@ -147,6 +152,56 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     const pool = await this.getPool();
     const result = await pool.query<DbRow>(`SELECT * FROM onesub_subscriptions`);
     return result.rows.map(rowToSubscriptionInfo);
+  }
+
+  async listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult> {
+    const pool = await this.getPool();
+    const limit = opts.limit ?? 50;
+    const offset = opts.offset ?? 0;
+
+    // Build the WHERE clause incrementally. Each non-undefined filter adds an
+    // AND condition with a parameterised value (no SQL injection surface).
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (opts.userId) {
+      params.push(opts.userId);
+      conditions.push(`user_id = $${params.length}`);
+    }
+    if (opts.status) {
+      params.push(opts.status);
+      conditions.push(`status = $${params.length}`);
+    }
+    if (opts.productId) {
+      params.push(opts.productId);
+      conditions.push(`product_id = $${params.length}`);
+    }
+    if (opts.platform) {
+      params.push(opts.platform);
+      conditions.push(`platform = $${params.length}`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Run the count + page in parallel — both queries hit the same WHERE clause
+    // so they share the index plan, and we save a round-trip.
+    const [countResult, pageResult] = await Promise.all([
+      pool.query<{ total: string }>(
+        `SELECT COUNT(*)::text AS total FROM onesub_subscriptions ${where}`,
+        params,
+      ),
+      pool.query<DbRow>(
+        `SELECT * FROM onesub_subscriptions ${where}
+           ORDER BY updated_at DESC
+           LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset],
+      ),
+    ]);
+
+    return {
+      items: pageResult.rows.map(rowToSubscriptionInfo),
+      total: parseInt(countResult.rows[0]?.total ?? '0', 10),
+      limit,
+      offset,
+    };
   }
 
   /** Gracefully close the underlying connection pool. */

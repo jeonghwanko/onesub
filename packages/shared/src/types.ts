@@ -411,6 +411,31 @@ export interface MetricsActiveResponse {
 }
 
 /**
+ * Filter options for `GET /onesub/admin/subscriptions`. All optional —
+ * unspecified fields are ignored. `limit` defaults to 50 (max 200).
+ *
+ * Used by the dashboard's subscriptions list page; can be called directly by
+ * any admin tool that needs to enumerate or page through subscription records.
+ */
+export interface ListSubscriptionsQuery {
+  userId?: string;
+  status?: SubscriptionStatus;
+  productId?: string;
+  platform?: Platform;
+  limit?: number;
+  offset?: number;
+}
+
+/** Response from `GET /onesub/admin/subscriptions`. */
+export interface ListSubscriptionsResponse {
+  items: SubscriptionInfo[];
+  /** Total matches before limit/offset — used by the dashboard for pagination. */
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+/**
  * Count of records that started or ended within the given window.
  * Used for cohort / churn analysis.
  */

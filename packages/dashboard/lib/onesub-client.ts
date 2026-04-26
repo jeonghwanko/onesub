@@ -7,12 +7,18 @@
  * Phase 3 work).
  */
 
-import type { MetricsActiveResponse, MetricsCountResponse } from '@onesub/shared';
+import type {
+  ListSubscriptionsQuery,
+  ListSubscriptionsResponse,
+  MetricsActiveResponse,
+  MetricsCountResponse,
+} from '@onesub/shared';
 
 export interface OneSubClient {
   getActiveMetrics(): Promise<MetricsActiveResponse>;
   getStartedMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
   getExpiredMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
+  listSubscriptions(query: ListSubscriptionsQuery): Promise<ListSubscriptionsResponse>;
 }
 
 export class OneSubFetchError extends Error {
@@ -52,5 +58,16 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
       get<MetricsCountResponse>(
         `/onesub/metrics/expired?from=${from.toISOString()}&to=${to.toISOString()}`,
       ),
+    listSubscriptions: (query) => {
+      const params = new URLSearchParams();
+      if (query.userId)    params.set('userId', query.userId);
+      if (query.status)    params.set('status', query.status);
+      if (query.productId) params.set('productId', query.productId);
+      if (query.platform)  params.set('platform', query.platform);
+      if (query.limit !== undefined)  params.set('limit', String(query.limit));
+      if (query.offset !== undefined) params.set('offset', String(query.offset));
+      const qs = params.toString();
+      return get<ListSubscriptionsResponse>(`/onesub/admin/subscriptions${qs ? `?${qs}` : ''}`);
+    },
   };
 }

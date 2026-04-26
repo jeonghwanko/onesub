@@ -1,4 +1,25 @@
-import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
+import type { SubscriptionInfo, PurchaseInfo, SubscriptionStatus, Platform } from '@onesub/shared';
+
+/** Filter options for SubscriptionStore.listFiltered. All fields optional. */
+export interface ListFilteredOptions {
+  userId?: string;
+  status?: SubscriptionStatus;
+  productId?: string;
+  platform?: Platform;
+  /** Max items to return. Defaults to 50, capped at 200 by the route handler. */
+  limit?: number;
+  /** Pagination cursor. Defaults to 0. */
+  offset?: number;
+}
+
+/** Result of SubscriptionStore.listFiltered. */
+export interface ListFilteredResult {
+  items: SubscriptionInfo[];
+  /** Total matches before limit/offset — used for pagination UI. */
+  total: number;
+  limit: number;
+  offset: number;
+}
 
 /**
  * Pluggable subscription store interface.
@@ -20,6 +41,16 @@ export interface SubscriptionStore {
    * the built-in `/onesub/metrics/*` endpoints gate it behind `adminSecret`.
    */
   listAll(): Promise<SubscriptionInfo[]>;
+  /**
+   * Filtered, paginated subscription list. Used by the dashboard's
+   * subscriptions page and any admin tool that needs to enumerate records
+   * without pulling the entire table.
+   *
+   * Filter semantics: each non-undefined field is an AND condition.
+   * Sorting: most-recently-updated first (PostgresStore uses `updated_at DESC`;
+   * InMemoryStore approximates via insertion order with newest at the front).
+   */
+  listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult>;
   /**
    * Returns every subscription record for the user (across all productIds),
    * ordered most-recent-first. Used by entitlement evaluation, which needs to
@@ -69,6 +100,31 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
 
   async listAll(): Promise<SubscriptionInfo[]> {
     return [...this.byTransactionId.values()];
+  }
+
+  async listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult> {
+    const limit = opts.limit ?? 50;
+    const offset = opts.offset ?? 0;
+    // Iterate via byUserId so insertion-order is "newest first" within each
+    // user (matches PostgresStore's `updated_at DESC` semantic). Across users
+    // we collect in Map iteration order — stable for a given run.
+    const all: SubscriptionInfo[] = [];
+    for (const list of this.byUserId.values()) {
+      for (const s of list) all.push(s);
+    }
+    const filtered = all.filter((s) => {
+      if (opts.userId && s.userId !== opts.userId) return false;
+      if (opts.status && s.status !== opts.status) return false;
+      if (opts.productId && s.productId !== opts.productId) return false;
+      if (opts.platform && s.platform !== opts.platform) return false;
+      return true;
+    });
+    return {
+      items: filtered.slice(offset, offset + limit),
+      total: filtered.length,
+      limit,
+      offset,
+    };
   }
 }
 

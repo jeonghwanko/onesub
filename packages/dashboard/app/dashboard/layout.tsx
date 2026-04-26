@@ -14,13 +14,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           >
             Overview
           </Link>
-          <span
-            aria-disabled
-            title="Coming in Phase 1b"
-            className="block cursor-not-allowed rounded-md px-3 py-2 text-slate-400"
+          <Link
+            href="/dashboard/subscriptions"
+            className="block rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
           >
             Subscriptions
-          </span>
+          </Link>
           <span
             aria-disabled
             title="Coming in Phase 3"
