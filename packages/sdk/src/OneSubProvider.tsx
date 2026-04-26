@@ -7,9 +7,15 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import type { OneSubConfig, SubscriptionInfo, PurchaseInfo, PurchaseType } from '@onesub/shared';
+import type {
+  OneSubConfig,
+  SubscriptionInfo,
+  PurchaseInfo,
+  PurchaseType,
+  EntitlementStatus,
+} from '@onesub/shared';
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
-import { checkStatus, validateReceipt, validatePurchase } from './api.js';
+import { checkStatus, validateReceipt, validatePurchase, checkEntitlements } from './api.js';
 import {
   handlePurchaseEvent as handlePurchaseEventPure,
   registerInFlight as registerInFlightPure,
@@ -58,6 +64,16 @@ export interface OneSubContextValue {
     productId: string,
     type: 'consumable' | 'non_consumable',
   ) => Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null>;
+  /**
+   * Map of entitlement id → evaluation status, populated from the server.
+   * Empty when the server has no entitlements configured. Auto-refreshed
+   * after subscribe / restore / purchase / restoreProduct.
+   */
+  entitlements: Record<string, EntitlementStatus>;
+  /** Convenience: `entitlements[id]?.active === true`. */
+  hasEntitlement: (id: string) => boolean;
+  /** Manually re-fetch the entitlements map. */
+  refreshEntitlements: () => Promise<void>;
 }
 
 const OneSubContext = createContext<OneSubContextValue | null>(null);
@@ -155,6 +171,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
+  const [entitlements, setEntitlements] = useState<Record<string, EntitlementStatus>>({});
 
   const isBusyRef = useRef(false);
   const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
@@ -224,6 +241,17 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         }
       } finally {
         if (!cancelled) setIsLoading(false);
+      }
+    }
+
+    async function loadEntitlements() {
+      try {
+        const result = await checkEntitlements(config.serverUrl, userId);
+        if (!cancelled) setEntitlements(result.entitlements);
+      } catch {
+        // Network/server failure — leave existing entitlements untouched. The
+        // map will be retried on next refresh trigger (post-purchase /
+        // explicit refreshEntitlements call).
       }
     }
 
@@ -306,6 +334,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
 
     logger.trace('provider mount', { serverUrl: config.serverUrl, userId, mockMode });
     void loadStatus();
+    void loadEntitlements();
     void setupIap();
 
     return () => {
@@ -591,14 +620,68 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
     [config, userId, mockMode],
   );
 
+  // Stable refresh function exposed via context. Re-fetches the entitlements
+  // map without touching subscription state. Called automatically after
+  // subscribe/restore/purchase/restoreProduct via the wrappers below; hosts can
+  // also call it directly when they know server-side state changed (e.g. after
+  // an admin grant).
+  const refreshEntitlements = useCallback(async () => {
+    try {
+      const result = await checkEntitlements(config.serverUrl, userId);
+      setEntitlements(result.entitlements);
+    } catch {
+      // Leave previous map in place on transient failure.
+    }
+  }, [config.serverUrl, userId]);
+
+  const hasEntitlement = useCallback(
+    (id: string) => entitlements[id]?.active === true,
+    [entitlements],
+  );
+
+  // Wrap the four mutation methods so a successful run automatically triggers
+  // an entitlements refresh — the host doesn't have to remember to refresh
+  // after each purchase/restore. Failures don't trigger a refresh (status
+  // unchanged).
+  const subscribeWithRefresh = useCallback(async () => {
+    await subscribe();
+    void refreshEntitlements();
+  }, [subscribe, refreshEntitlements]);
+
+  const restoreWithRefresh = useCallback(async () => {
+    await restore();
+    void refreshEntitlements();
+  }, [restore, refreshEntitlements]);
+
+  const purchaseProductWithRefresh = useCallback(
+    async (productId: string, type: 'consumable' | 'non_consumable') => {
+      const result = await purchaseProduct(productId, type);
+      if (result) void refreshEntitlements();
+      return result;
+    },
+    [purchaseProduct, refreshEntitlements],
+  );
+
+  const restoreProductWithRefresh = useCallback(
+    async (productId: string, type: 'consumable' | 'non_consumable') => {
+      const result = await restoreProduct(productId, type);
+      if (result) void refreshEntitlements();
+      return result;
+    },
+    [restoreProduct, refreshEntitlements],
+  );
+
   const value: OneSubContextValue = {
     isActive,
     isLoading,
     subscription,
-    subscribe,
-    restore,
-    purchaseProduct,
-    restoreProduct,
+    subscribe: subscribeWithRefresh,
+    restore: restoreWithRefresh,
+    purchaseProduct: purchaseProductWithRefresh,
+    restoreProduct: restoreProductWithRefresh,
+    entitlements,
+    hasEntitlement,
+    refreshEntitlements,
   };
 
   return <OneSubContext.Provider value={value}>{children}</OneSubContext.Provider>;

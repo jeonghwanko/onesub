@@ -5,6 +5,8 @@ import type {
   ValidatePurchaseRequest,
   ValidatePurchaseResponse,
   PurchaseStatusResponse,
+  EntitlementResponse,
+  EntitlementsResponse,
 } from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 
@@ -111,4 +113,64 @@ export async function checkPurchaseStatus(
 
   const data = (await response.json()) as PurchaseStatusResponse;
   return data;
+}
+
+/**
+ * Check a single entitlement for a user. Returns `{ active: false, source: null }`
+ * when the user has no matching record, or throws on transport / server error.
+ *
+ * Returns 404 errorCode `ENTITLEMENT_NOT_FOUND` when the id is unknown to the
+ * server (config mismatch). The throw differentiates this from "user not entitled".
+ */
+export async function checkEntitlement(
+  serverUrl: string,
+  userId: string,
+  id: string,
+): Promise<EntitlementResponse> {
+  const url =
+    `${serverUrl.replace(/\/$/, '')}${ROUTES.ENTITLEMENT}` +
+    `?userId=${encodeURIComponent(userId)}&id=${encodeURIComponent(id)}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (!response.ok) {
+    throw new Error(`[onesub] Entitlement check failed: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as EntitlementResponse;
+}
+
+/**
+ * Check all entitlements configured on the server in one round-trip.
+ * Use on app launch / login to populate the entitlements map.
+ *
+ * Returns `{ entitlements: {} }` when the server has no entitlements
+ * configured (the route is not mounted, returning 404 — surfaced here as an
+ * empty map rather than a throw, since "no entitlements configured" is a
+ * valid runtime state, not an error).
+ */
+export async function checkEntitlements(
+  serverUrl: string,
+  userId: string,
+): Promise<EntitlementsResponse> {
+  const url =
+    `${serverUrl.replace(/\/$/, '')}${ROUTES.ENTITLEMENTS}` +
+    `?userId=${encodeURIComponent(userId)}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (response.status === 404) {
+    // Route not mounted — server has no entitlements configured. Empty map is
+    // the right state-of-the-world here.
+    return { entitlements: {} };
+  }
+  if (!response.ok) {
+    throw new Error(`[onesub] Entitlements bulk check failed: ${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as EntitlementsResponse;
 }
