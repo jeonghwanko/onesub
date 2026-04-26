@@ -111,6 +111,36 @@ const { active } = await res.json();
 | `POST /onesub/webhook/apple` | Handle App Store Server Notifications V2 |
 | `POST /onesub/webhook/google` | Handle Google Real-Time Developer Notifications |
 
+#### Lifecycle states
+
+`SubscriptionInfo.status` carries the full lifecycle. The `/onesub/status` route's `active: boolean` collapses it for simple gating; the raw status lets you render accurate UX.
+
+```mermaid
+stateDiagram-v2
+    [*] --> active : 구매 / SUBSCRIBED / PURCHASED
+    active --> grace_period : Apple DID_FAIL_TO_RENEW + GRACE_PERIOD\nGoogle IN_GRACE_PERIOD
+    grace_period --> active : DID_RENEW / RENEWED
+    grace_period --> on_hold : Apple GRACE_PERIOD_EXPIRED\nGoogle ON_HOLD
+    on_hold --> active : DID_RENEW / RECOVERED
+    active --> paused : Google SUBSCRIPTION_PAUSED
+    paused --> active : SUBSCRIPTION_RESTARTED
+    active --> canceled : REFUND / REVOKE
+    grace_period --> canceled : REFUND
+    on_hold --> canceled : REFUND
+    active --> expired : 자연 만료 / EXPIRED
+```
+
+| State | `active` | When | Host UX hint |
+|-------|---------|------|-------------|
+| `active` | ✅ | paid period | normal |
+| `grace_period` | ✅ | payment failed but store still grants access | "결제 정보 확인 필요 (계속 사용 가능)" |
+| `on_hold` | ❌ | grace ended, billing retry continues | "결제 정보를 업데이트하세요" |
+| `paused` | ❌ | user-voluntary pause (Google only) | "재개 예정: \{autoResumeTime\}" |
+| `expired` | ❌ | natural end without renewal | re-purchase |
+| `canceled` | ❌ | refunded or revoked | re-purchase / restore |
+
+`active` is computed as `(active || grace_period) && expiresAt > now` — the `expiresAt` check is a backstop for missed `EXPIRED` webhooks and for the `'until_expiry'` refund policy.
+
 ### One-time Purchases (consumable + non-consumable)
 
 | Endpoint | What it does |
@@ -150,13 +180,17 @@ const { valid, purchase } = await res.json();
 
 ## What's Under the Hood
 
-- **Apple**: JWS signature verified against Apple JWKS (not just decoded)
-- **Google**: OAuth2 service account → Play Developer API v3, token cached
-- **Webhooks**: Auto-handle renewals, cancellations, expirations, refunds
-- **Storage**: Pluggable `SubscriptionStore` — built-in PostgreSQL + in-memory
+- **Apple**: StoreKit 2 JWS verified against Apple Root CA G3 (full x5c chain), App Store Server API for status fetch fallback + CONSUMPTION_REQUEST response, JWT minting cached + Promise-deduped
+- **Google**: OAuth2 service account → Play Developer API **v2** (`subscriptionsv2.get`) — `subscriptionState` enum directly mapped to lifecycle states (no expiry/cancelReason inference)
+- **Webhooks**: Lifecycle classification for grace_period / on_hold / paused (Apple subtype + Google notification types), `acknowledgePurchase` auto-called for Google subs+IAP, `voidedPurchasesNotification` routed to right store, `linkedPurchaseToken` chain tracking for plan changes
+- **Refund policy**: Choose `'immediate'` (default — flip status=canceled) or `'until_expiry'` (keep entitlement until original expiry)
+- **Outbound calls**: All upstream fetches (Apple/Google APIs) wrapped with `AbortController` timeout (default 10s) so a hung upstream doesn't pile up webhook handlers
+- **Storage**: Pluggable `SubscriptionStore` + `PurchaseStore` — built-in PostgreSQL (auto-backfilled columns via `ALTER TABLE IF NOT EXISTS`) + in-memory
 - **Validation**: zod input validation, 50KB body limit, userId length checks
+- **Tests**: 296+ tests (single-notification units + multi-notification e2e lifecycle scenarios)
 - **Security**: [Full details →](docs/SECURITY.md)
 - **Troubleshooting**: [errorCode → cause → fix](docs/RECEIPT-ERRORS.md)
+- **Migration**: [Per-version upgrade notes](docs/MIGRATION.md)
 
 ---
 
@@ -301,14 +335,26 @@ run it for you on startup.
 
 ## Roadmap
 
-- [x] Apple StoreKit 2 receipt validation (JWKS verified)
-- [x] Google Play Billing v3 receipt validation
-- [x] Webhook handlers (Apple V2 + Google RTDN)
-- [x] PostgreSQL subscription store
+- [x] Apple StoreKit 2 receipt validation (JWKS verified, x5c chain → Apple Root CA G3)
+- [x] Google Play Billing v2 (`subscriptionsv2.get`)
+- [x] Webhook handlers (Apple V2 + Google RTDN, voided purchases included)
+- [x] Lifecycle states: `grace_period` / `on_hold` / `paused` (correct classification, not inferred)
+- [x] PostgreSQL subscription store + purchase store (auto-backfill via `ALTER TABLE IF NOT EXISTS`)
 - [x] React Native SDK + paywall components
 - [x] MCP server for AI-assisted setup
+- [x] Apple App Store Server API direct fetch — webhook miss recovery + Status sync
+- [x] Apple `CONSUMPTION_REQUEST` response hook (server-signed JWT to Apple)
+- [x] Google `acknowledgePurchase` auto-call (subs + non-consumable IAP) — no more 3-day auto-refunds
+- [x] Google `linkedPurchaseToken` continuity (plan upgrade userId inheritance)
+- [x] Refund policy (`immediate` | `until_expiry`)
+- [x] Outbound fetch hardening (Apple JWT cache + Promise dedup, `AbortController` timeout)
 - [x] Security hardening (zod validation, body limits, signature verification)
+- [x] e2e lifecycle scenario test suite (multi-notification sequences)
 - [x] CLI scaffolding (`npx @onesub/cli init`)
+- [ ] Apple Family Sharing (`FAMILY_SHARED`)
+- [ ] Apple Promotional Offer server-side signing
+- [ ] Google `oneTimeProductNotification` (currently only voided purchases handled for IAP)
+- [ ] Apple Transaction History API (replay past transactions)
 - [ ] Analytics dashboard
 - [ ] Hosted service (no server needed)
 
