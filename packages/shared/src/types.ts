@@ -436,6 +436,25 @@ export interface ListSubscriptionsResponse {
 }
 
 /**
+ * One day in a `MetricsCountResponse.buckets` series. Date is ISO 8601
+ * `YYYY-MM-DD` interpreted as UTC midnight; count is the number of records
+ * whose anchor timestamp (purchasedAt for started, expiresAt for expired)
+ * fell within that calendar day.
+ */
+export interface MetricsBucket {
+  /** UTC calendar day in `YYYY-MM-DD` form. */
+  date: string;
+  count: number;
+}
+
+/**
+ * Aggregation granularity for metrics endpoints. `'none'` (default) returns
+ * window totals only; `'day'` additionally fills in `buckets` with one entry
+ * per UTC day in the window (zero-filled).
+ */
+export type MetricsGroupBy = 'none' | 'day';
+
+/**
  * Count of records that started or ended within the given window.
  * Used for cohort / churn analysis.
  */
@@ -447,6 +466,12 @@ export interface MetricsCountResponse {
   total: number;
   byProduct: Record<string, number>;
   byPlatform: Record<string, number>;
+  /**
+   * Daily breakdown — only present when the request was made with
+   * `?groupBy=day`. One entry per UTC day in the window, zero-filled. Sorted
+   * ascending by date. Used by the dashboard's growth chart.
+   */
+  buckets?: MetricsBucket[];
 }
 
 /** SDK config (client-side) */

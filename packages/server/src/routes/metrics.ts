@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type {
   MetricsActiveResponse,
+  MetricsBucket,
   MetricsCountResponse,
   OneSubServerConfig,
   PurchaseInfo,
@@ -114,14 +115,15 @@ export function createMetricsRouter(
     }
   });
 
-  // ── GET /onesub/metrics/started?from=&to= ────────────────────────────────
+  // ── GET /onesub/metrics/started?from=&to=&groupBy= ───────────────────────
 
   const rangeSchema = z.object({
     from: z.string().min(1),
     to: z.string().min(1),
+    groupBy: z.enum(['none', 'day']).optional(),
   });
 
-  type Range = { fromMs: number; toMs: number };
+  type Range = { fromMs: number; toMs: number; groupBy: 'none' | 'day' };
 
   function parseRange(req: Request): Range | { error: string } {
     const parsed = rangeSchema.safeParse(req.query);
@@ -132,7 +134,34 @@ export function createMetricsRouter(
       return { error: 'from / to must be ISO 8601 timestamps' };
     }
     if (fromMs > toMs) return { error: 'from must be ≤ to' };
-    return { fromMs, toMs };
+    return { fromMs, toMs, groupBy: parsed.data.groupBy ?? 'none' };
+  }
+
+  // UTC `YYYY-MM-DD` for a given epoch-ms. Used to assign each record to a
+  // calendar-day bucket; UTC keeps the result deterministic regardless of
+  // server timezone (Postgres `updated_at` is UTC; SubscriptionInfo dates are
+  // ISO with explicit zone offsets).
+  function utcDateKey(ms: number): string {
+    const d = new Date(ms);
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
+  // Zero-fill a daily series across [fromMs, toMs] (inclusive of both
+  // boundary days). The route handler then increments the counts.
+  function emptyDailyBuckets(fromMs: number, toMs: number): MetricsBucket[] {
+    const out: MetricsBucket[] = [];
+    // Snap `from` to UTC midnight so iteration steps land on calendar boundaries.
+    const start = new Date(fromMs);
+    start.setUTCHours(0, 0, 0, 0);
+    let cur = start.getTime();
+    while (cur <= toMs) {
+      out.push({ date: utcDateKey(cur), count: 0 });
+      cur += 86_400_000;
+    }
+    return out;
   }
 
   router.get(ROUTES.METRICS_STARTED, async (req: Request, res: Response) => {
@@ -147,12 +176,23 @@ export function createMetricsRouter(
       const byPlatform: Record<string, number> = {};
       let total = 0;
 
+      // Build a date→index map only when bucketing is requested — keeps the
+      // non-bucketed path identical to the previous implementation.
+      const buckets =
+        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
+      const bucketIndex =
+        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
+
       for (const sub of subs) {
         const purchasedMs = new Date(sub.purchasedAt).getTime();
         if (purchasedMs < range.fromMs || purchasedMs > range.toMs) continue;
         total++;
         bump(byProduct, sub.productId);
         bump(byPlatform, sub.platform);
+        if (buckets && bucketIndex) {
+          const idx = bucketIndex.get(utcDateKey(purchasedMs));
+          if (idx !== undefined) buckets[idx]!.count++;
+        }
       }
 
       const response: MetricsCountResponse = {
@@ -161,6 +201,7 @@ export function createMetricsRouter(
         total,
         byProduct,
         byPlatform,
+        ...(buckets ? { buckets } : {}),
       };
       res.status(200).json(response);
     } catch (err) {
@@ -183,6 +224,11 @@ export function createMetricsRouter(
       const byPlatform: Record<string, number> = {};
       let total = 0;
 
+      const buckets =
+        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
+      const bucketIndex =
+        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
+
       for (const sub of subs) {
         // Counted only if currently expired or canceled — a record that's
         // still active doesn't qualify even if its expiresAt happened to fall
@@ -196,6 +242,10 @@ export function createMetricsRouter(
         total++;
         bump(byProduct, sub.productId);
         bump(byPlatform, sub.platform);
+        if (buckets && bucketIndex) {
+          const idx = bucketIndex.get(utcDateKey(expiredMs));
+          if (idx !== undefined) buckets[idx]!.count++;
+        }
       }
 
       const response: MetricsCountResponse = {
@@ -204,6 +254,7 @@ export function createMetricsRouter(
         total,
         byProduct,
         byPlatform,
+        ...(buckets ? { buckets } : {}),
       };
       res.status(200).json(response);
     } catch (err) {
