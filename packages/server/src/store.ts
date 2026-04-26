@@ -15,6 +15,12 @@ export interface SubscriptionStore {
   getByUserId(userId: string): Promise<SubscriptionInfo | null>;
   getByTransactionId(txId: string): Promise<SubscriptionInfo | null>;
   /**
+   * Returns every subscription record in the store. Used by metrics
+   * aggregation. Hosts shouldn't expose this through unauthenticated routes —
+   * the built-in `/onesub/metrics/*` endpoints gate it behind `adminSecret`.
+   */
+  listAll(): Promise<SubscriptionInfo[]>;
+  /**
    * Returns every subscription record for the user (across all productIds),
    * ordered most-recent-first. Used by entitlement evaluation, which needs to
    * see all of a user's active subscriptions to decide whether any of them
@@ -60,6 +66,10 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
   async getByTransactionId(txId: string): Promise<SubscriptionInfo | null> {
     return this.byTransactionId.get(txId) ?? null;
   }
+
+  async listAll(): Promise<SubscriptionInfo[]> {
+    return [...this.byTransactionId.values()];
+  }
 }
 
 /**
@@ -69,6 +79,8 @@ export interface PurchaseStore {
   savePurchase(purchase: PurchaseInfo): Promise<void>;
   getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
+  /** Returns every purchase record. Used by metrics aggregation; admin-gated. */
+  listAll(): Promise<PurchaseInfo[]>;
   /** For non-consumables: check if a user has already purchased a product. */
   hasPurchased(userId: string, productId: string): Promise<boolean>;
   /**
@@ -161,6 +173,10 @@ export class InMemoryPurchaseStore implements PurchaseStore {
       if (p.productId === productId) this.byTransactionId.delete(p.transactionId);
     }
     return deleted;
+  }
+
+  async listAll(): Promise<PurchaseInfo[]> {
+    return [...this.byTransactionId.values()];
   }
 
   async deletePurchaseByTransactionId(transactionId: string): Promise<boolean> {
