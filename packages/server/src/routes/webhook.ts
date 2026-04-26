@@ -25,6 +25,7 @@ import {
   isGoogleGracePeriodNotification,
   isGoogleOnHoldNotification,
   isGooglePausedNotification,
+  isGooglePriceChangeConfirmedNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
@@ -429,6 +430,11 @@ export function createWebhookRouter(
         finalStatus = SUBSCRIPTION_STATUS.ON_HOLD;
       } else if (isGooglePausedNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.PAUSED;
+      } else if (isGooglePriceChangeConfirmedNotification(notificationType)) {
+        // User accepted a developer-initiated price change. Subscription stays
+        // active; the new price kicks in at the next renewal. Host can hook
+        // onPriceChangeConfirmed below to log/notify.
+        finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
       } else if (isGoogleCanceledNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.CANCELED;
       } else if (isGoogleExpiredNotification(notificationType)) {
@@ -438,6 +444,19 @@ export function createWebhookRouter(
         // re-fetch from Play API will correct the status (subscriptionsv2 returns
         // SUBSCRIPTION_STATE_PAUSED etc. directly).
         finalStatus = SUBSCRIPTION_STATUS.ACTIVE; // optimistic; re-fetch below will correct it
+      }
+
+      // Fire-and-forget hook for PRICE_CHANGE_CONFIRMED — happens before store
+      // save so the hook still runs even if save errors out (the host's
+      // analytics/notification side effect shouldn't block on DB issues).
+      if (
+        isGooglePriceChangeConfirmedNotification(notificationType) &&
+        config.google?.onPriceChangeConfirmed
+      ) {
+        const hook = config.google.onPriceChangeConfirmed;
+        void Promise.resolve()
+          .then(() => hook({ purchaseToken, subscriptionId, packageName }))
+          .catch((err) => log.warn('[onesub/webhook/google] onPriceChangeConfirmed hook failed:', err));
       }
 
       if (existing) {

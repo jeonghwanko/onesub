@@ -122,6 +122,15 @@ export interface AppleConsumptionContext {
   environment: 'Production' | 'Sandbox';
 }
 
+/** Context passed to the Google onPriceChangeConfirmed hook. */
+export interface GooglePriceChangeContext {
+  /** purchaseToken — the same id stored as originalTransactionId for Google subs. */
+  purchaseToken: string;
+  /** Subscription productId (Google: subscriptionId). */
+  subscriptionId: string;
+  packageName: string;
+}
+
 /** Google RTDN (Real-Time Developer Notification) */
 export interface GoogleNotificationPayload {
   message: {
@@ -196,6 +205,17 @@ export interface OneSubServerConfig {
      * receipt string pattern. **NEVER enable in production.**
      */
     mockMode?: boolean;
+    /**
+     * Called when a SUBSCRIPTION_PRICE_CHANGE_CONFIRMED RTDN arrives — the
+     * user has agreed to the price change and the new price applies on the
+     * next renewal. Useful for analytics / in-app notifications / audit logs.
+     *
+     * Fire-and-forget: failures are logged, never thrown — the webhook still
+     * 200s. Receives only the routing context; for the actual new price,
+     * call purchases.subscriptionsv2 directly (the lineItem's
+     * autoRenewingPlan.priceChangeDetails carries newPrice + chargeTime).
+     */
+    onPriceChangeConfirmed?: (ctx: GooglePriceChangeContext) => void | Promise<void>;
   };
   database: {
     url: string;
