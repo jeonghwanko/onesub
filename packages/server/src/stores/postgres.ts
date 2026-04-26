@@ -61,8 +61,8 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     await pool.query(
       `INSERT INTO onesub_subscriptions
          (original_transaction_id, user_id, product_id, platform, status,
-          expires_at, purchased_at, will_renew, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+          expires_at, purchased_at, will_renew, linked_purchase_token, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
        ON CONFLICT (original_transaction_id) DO UPDATE SET
          user_id    = EXCLUDED.user_id,
          product_id = EXCLUDED.product_id,
@@ -71,6 +71,7 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
          expires_at = EXCLUDED.expires_at,
          purchased_at = EXCLUDED.purchased_at,
          will_renew = EXCLUDED.will_renew,
+         linked_purchase_token = EXCLUDED.linked_purchase_token,
          updated_at = NOW()`,
       [
         sub.originalTransactionId,
@@ -81,6 +82,7 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
         sub.expiresAt,
         sub.purchasedAt,
         sub.willRenew,
+        sub.linkedPurchaseToken ?? null,
       ]
     );
   }
@@ -301,6 +303,7 @@ interface DbRow {
   expires_at: Date;
   purchased_at: Date;
   will_renew: boolean;
+  linked_purchase_token: string | null;
 }
 
 function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
@@ -313,6 +316,7 @@ function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
     expiresAt: row.expires_at.toISOString(),
     purchasedAt: row.purchased_at.toISOString(),
     willRenew: row.will_renew,
+    linkedPurchaseToken: row.linked_purchase_token ?? undefined,
   };
 }
 

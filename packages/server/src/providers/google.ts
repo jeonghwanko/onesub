@@ -496,6 +496,9 @@ export async function validateGoogleReceipt(
     originalTransactionId: purchase.latestOrderId ?? receipt.slice(0, 64),
     purchasedAt,
     willRenew,
+    // Surface the linked token so host apps (and our webhook userId-continuity
+    // logic) can follow upgrade/downgrade chains.
+    linkedPurchaseToken: purchase.linkedPurchaseToken,
   };
 }
 

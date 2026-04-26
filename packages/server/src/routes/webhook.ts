@@ -488,8 +488,24 @@ export function createWebhookRouter(
         if (config.google?.serviceAccountKey) {
           const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
           if (fresh) {
-            // userId is unknown at webhook time — use purchaseToken as placeholder
-            fresh.userId = purchaseToken;
+            // Upgrade/downgrade continuity: if the v2 response carries a
+            // linkedPurchaseToken pointing at a previous subscription we know
+            // about, inherit the userId from it so the same person doesn't
+            // appear as a brand-new placeholder after a plan change.
+            if (fresh.linkedPurchaseToken) {
+              const previous = await store.getByTransactionId(fresh.linkedPurchaseToken);
+              if (previous) {
+                fresh.userId = previous.userId;
+                log.info(
+                  `[onesub/webhook/google] inherited userId ${previous.userId} from linkedPurchaseToken ${fresh.linkedPurchaseToken} → new token ${purchaseToken}`,
+                );
+              } else {
+                fresh.userId = purchaseToken;
+              }
+            } else {
+              // userId is unknown at webhook time — use purchaseToken as placeholder
+              fresh.userId = purchaseToken;
+            }
             await store.save(fresh);
           }
         } else {

@@ -58,6 +58,13 @@ export interface SubscriptionInfo {
   originalTransactionId: string;
   purchasedAt: string;
   willRenew: boolean;
+  /**
+   * Google-only. The previous purchaseToken in an upgrade/downgrade/replace
+   * chain — set when this subscription was started by replacing another one.
+   * Lets the host follow user identity across plan changes (Google issues a
+   * new token per plan change). Null/undefined for first-purchase or Apple.
+   */
+  linkedPurchaseToken?: string;
 }
 
 /** Subscription status check response */
