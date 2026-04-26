@@ -703,3 +703,11 @@ export function isGoogleOnHoldNotification(notificationType: GoogleNotificationT
 export function isGooglePausedNotification(notificationType: GoogleNotificationType): boolean {
   return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_PAUSED;
 }
+
+/**
+ * User agreed to a developer-initiated price change. The new price applies
+ * on the next renewal. Subscription remains active in the meantime.
+ */
+export function isGooglePriceChangeConfirmedNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_PRICE_CHANGE_CONFIRMED;
+}
