@@ -9,23 +9,51 @@ import {
 type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
 
 /**
- * Google Play Developer API v3 — SubscriptionPurchase resource (partial).
- * https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptions
+ * Google Play Developer API v3 — SubscriptionPurchaseV2 resource (partial).
+ * https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2/get
+ *
+ * V2 differences from the deprecated V1 (purchases.subscriptions):
+ *   - URL doesn't take productId — one token can map to multiple lineItems
+ *   - subscriptionState is a string enum (explicit grace/hold/paused) instead
+ *     of being inferred from expiryTime
+ *   - lineItems[] carries per-product productId + expiryTime + autoRenewingPlan
+ *   - linkedPurchaseToken first-class (upgrade/downgrade chain tracking)
+ *   - latestOrderId replaces orderId as the canonical transaction id
  */
-interface GoogleSubscriptionPurchase {
-  kind?: string;                   // 'androidpublisher#subscriptionPurchase'
-  startTimeMillis?: string;
-  expiryTimeMillis?: string;
-  autoRenewing?: boolean;
-  priceCurrencyCode?: string;
-  priceAmountMicros?: string;
-  cancelReason?: number;           // 0=User, 1=System, 2=Replaced, 3=Developer
-  paymentState?: number;           // 0=Pending, 1=Received, 2=Free trial, 3=Deferred
-  cancelSurveyResult?: unknown;
-  purchaseType?: number;           // 0=Test, 1=Promo
-  acknowledgementState?: number;   // 0=Yet to be acknowledged, 1=Acknowledged
-  orderId?: string;
+interface GoogleSubscriptionPurchaseV2 {
+  kind?: string;                   // 'androidpublisher#subscriptionPurchaseV2'
+  startTime?: string;              // RFC3339 (ISO 8601)
+  regionCode?: string;
+  lineItems?: Array<{
+    productId?: string;
+    expiryTime?: string;           // RFC3339
+    autoRenewingPlan?: {
+      autoRenewEnabled?: boolean;
+      priceChangeDetails?: unknown;
+    };
+    prepaidPlan?: {
+      allowExtendAfterTime?: string;
+    };
+    offerDetails?: unknown;
+  }>;
+  subscriptionState?:
+    | 'SUBSCRIPTION_STATE_UNSPECIFIED'
+    | 'SUBSCRIPTION_STATE_PENDING'
+    | 'SUBSCRIPTION_STATE_ACTIVE'
+    | 'SUBSCRIPTION_STATE_PAUSED'
+    | 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD'
+    | 'SUBSCRIPTION_STATE_ON_HOLD'
+    | 'SUBSCRIPTION_STATE_CANCELED'
+    | 'SUBSCRIPTION_STATE_EXPIRED';
+  latestOrderId?: string;
   linkedPurchaseToken?: string;
+  acknowledgementState?:
+    | 'ACKNOWLEDGEMENT_STATE_UNSPECIFIED'
+    | 'ACKNOWLEDGEMENT_STATE_PENDING'
+    | 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED';
+  pausedStateContext?: { autoResumeTime?: string };
+  canceledStateContext?: unknown;
+  testPurchase?: unknown;
   [key: string]: unknown;
 }
 
@@ -186,15 +214,20 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
 }
 
 /**
- * Fetch a subscription purchase from the Google Play Developer API.
+ * Fetch a subscription purchase from the Google Play Developer API
+ * (purchases.subscriptionsv2.get). The v2 endpoint takes only the purchaseToken
+ * — the productId comes back in lineItems, which lets one token represent a
+ * multi-product subscription.
  */
-async function fetchSubscriptionPurchase(
+async function fetchSubscriptionPurchaseV2(
   packageName: string,
-  productId: string,
   purchaseToken: string,
-  accessToken: string
-): Promise<GoogleSubscriptionPurchase> {
-  const url = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/purchases/subscriptions/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(purchaseToken)}`;
+  accessToken: string,
+): Promise<GoogleSubscriptionPurchaseV2> {
+  const url =
+    `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/` +
+    `${encodeURIComponent(packageName)}/purchases/subscriptionsv2/tokens/` +
+    `${encodeURIComponent(purchaseToken)}`;
 
   const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -202,10 +235,10 @@ async function fetchSubscriptionPurchase(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`[onesub/google] Play API error ${resp.status}: ${body}`);
+    throw new Error(`[onesub/google] Play API v2 error ${resp.status}: ${body}`);
   }
 
-  return resp.json() as Promise<GoogleSubscriptionPurchase>;
+  return resp.json() as Promise<GoogleSubscriptionPurchaseV2>;
 }
 
 /**
@@ -367,28 +400,47 @@ export async function consumeGoogleProductReceipt(
 }
 
 /**
- * Derive a SubscriptionStatus from a Google Play purchase resource.
+ * Map a v2 subscriptionState string to onesub SubscriptionStatus.
+ *
+ * Returns null when the state is unrecognised or PENDING (initial purchase
+ * not yet settled — entitlement should not be granted yet).
+ *
+ * Note: SUBSCRIPTION_STATE_PAUSED currently maps to on_hold (entitlement
+ * revoked). When a dedicated `paused` lifecycle state lands, switch this case.
  */
-function deriveStatus(purchase: GoogleSubscriptionPurchase): SubscriptionInfo['status'] {
-  const now = Date.now();
-  const expiryMs = purchase.expiryTimeMillis ? parseInt(purchase.expiryTimeMillis, 10) : 0;
-
-  if (expiryMs > now) {
-    // paymentState 0 = pending (grace period treated as active)
-    return SUBSCRIPTION_STATUS.ACTIVE;
+function deriveStatusV2(
+  state: GoogleSubscriptionPurchaseV2['subscriptionState'],
+): SubscriptionInfo['status'] | null {
+  switch (state) {
+    case 'SUBSCRIPTION_STATE_ACTIVE':
+      return SUBSCRIPTION_STATUS.ACTIVE;
+    case 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD':
+      return SUBSCRIPTION_STATUS.GRACE_PERIOD;
+    case 'SUBSCRIPTION_STATE_ON_HOLD':
+    case 'SUBSCRIPTION_STATE_PAUSED':
+      return SUBSCRIPTION_STATUS.ON_HOLD;
+    case 'SUBSCRIPTION_STATE_CANCELED':
+      return SUBSCRIPTION_STATUS.CANCELED;
+    case 'SUBSCRIPTION_STATE_EXPIRED':
+      return SUBSCRIPTION_STATUS.EXPIRED;
+    case 'SUBSCRIPTION_STATE_PENDING':
+    case 'SUBSCRIPTION_STATE_UNSPECIFIED':
+    default:
+      return null;
   }
-
-  if (purchase.cancelReason !== undefined) return SUBSCRIPTION_STATUS.CANCELED;
-
-  return SUBSCRIPTION_STATUS.EXPIRED;
 }
 
 /**
- * Validate a Google Play purchase token.
+ * Validate a Google Play purchase token via purchases.subscriptionsv2.get.
  *
- * @param receipt  - The purchaseToken from the client (Google Play Billing)
- * @param productId - The subscription product ID
- * @param config   - Google config with packageName and optional serviceAccountKey
+ * The productId argument is used to pick the matching `lineItems` entry. If
+ * the response has no lineItem with that productId, validation fails — the
+ * token does not entitle the caller to that product. (For multi-product
+ * subscriptions, callers can read other lineItems out of the API directly.)
+ *
+ * @param receipt    The purchaseToken from the client (Google Play Billing)
+ * @param productId  Expected subscription productId — must match a lineItem
+ * @param config     Google config with packageName + optional serviceAccountKey
  */
 export async function validateGoogleReceipt(
   receipt: string,
@@ -401,28 +453,51 @@ export async function validateGoogleReceipt(
     return null;
   }
 
-  let purchase: GoogleSubscriptionPurchase;
+  let purchase: GoogleSubscriptionPurchaseV2;
   try {
     const token = await getCachedAccessToken(config.serviceAccountKey);
-    purchase = await fetchSubscriptionPurchase(config.packageName, productId, receipt, token);
+    purchase = await fetchSubscriptionPurchaseV2(config.packageName, receipt, token);
   } catch (err) {
     log.error('[onesub/google] Receipt validation failed:', err);
     return null;
   }
 
-  const status = deriveStatus(purchase);
-  const expiryMs = purchase.expiryTimeMillis ? parseInt(purchase.expiryTimeMillis, 10) : Date.now();
-  const startMs = purchase.startTimeMillis ? parseInt(purchase.startTimeMillis, 10) : Date.now();
+  const status = deriveStatusV2(purchase.subscriptionState);
+  if (!status) {
+    log.warn(
+      '[onesub/google] Unrecognised or pending subscriptionState — rejecting:',
+      purchase.subscriptionState,
+    );
+    return null;
+  }
+
+  // Pick the lineItem matching the requested productId. v2 supports multi-product
+  // subscriptions so the same token can carry several lineItems; we only entitle
+  // the caller for the productId they explicitly asked about.
+  const lineItem = purchase.lineItems?.find((item) => item.productId === productId);
+  if (!lineItem) {
+    log.warn(
+      '[onesub/google] productId not found in subscription lineItems:',
+      productId,
+      'available:',
+      purchase.lineItems?.map((i) => i.productId).join(', ') ?? '(none)',
+    );
+    return null;
+  }
+
+  const expiresAt = lineItem.expiryTime ?? new Date().toISOString();
+  const purchasedAt = purchase.startTime ?? new Date().toISOString();
+  const willRenew = lineItem.autoRenewingPlan?.autoRenewEnabled ?? false;
 
   return {
     userId: '',  // caller fills this in
     productId,
     platform: 'google',
     status,
-    expiresAt: new Date(expiryMs).toISOString(),
-    originalTransactionId: purchase.orderId ?? receipt.slice(0, 64),
-    purchasedAt: new Date(startMs).toISOString(),
-    willRenew: purchase.autoRenewing ?? false,
+    expiresAt,
+    originalTransactionId: purchase.latestOrderId ?? receipt.slice(0, 64),
+    purchasedAt,
+    willRenew,
   };
 }
 
