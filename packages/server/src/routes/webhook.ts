@@ -9,7 +9,12 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { SubscriptionStore, PurchaseStore } from '../store.js';
-import { decodeAppleNotification, decodeJws, sendAppleConsumptionResponse } from '../providers/apple.js';
+import {
+  decodeAppleNotification,
+  decodeJws,
+  sendAppleConsumptionResponse,
+  fetchAppleSubscriptionStatus,
+} from '../providers/apple.js';
 import {
   decodeGoogleNotification,
   decodeGoogleVoidedNotification,
@@ -268,11 +273,29 @@ export function createWebhookRouter(
           expiresAt: expiresAt ?? existing.expiresAt,
         };
         await store.save(updated);
+      } else if (config.apple?.issuerId && config.apple?.keyId && config.apple?.privateKey) {
+        // No local record but App Store Server API credentials are present —
+        // fetch the canonical state from Apple. This recovers from missed
+        // webhooks (server downtime, queue truncation) and bootstraps
+        // subscriptions purchased before this server existed.
+        // userId is unknown at webhook time — store under originalTransactionId
+        // as placeholder so a later /onesub/validate call can claim ownership.
+        const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, config.apple, {
+          sandbox: environment === 'Sandbox',
+        });
+        if (fresh) {
+          fresh.userId = originalTransactionId;
+          await store.save(fresh);
+        } else {
+          log.warn(
+            '[onesub/webhook/apple] Unknown transaction and Status API returned no record:',
+            originalTransactionId,
+          );
+        }
       } else {
-        // We have no record of this transaction — log and acknowledge.
-        // This can happen for purchases made before the server started.
+        // No local record and no API credentials to re-fetch — log and ack.
         log.warn(
-          '[onesub/webhook/apple] Received notification for unknown transaction:',
+          '[onesub/webhook/apple] Received notification for unknown transaction (no API creds to recover):',
           originalTransactionId
         );
       }

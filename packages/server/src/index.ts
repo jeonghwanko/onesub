@@ -104,7 +104,7 @@ export type { SubscriptionStore, PurchaseStore } from './store.js';
 export { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postgres.js';
 
 // Provider functions for direct (non-HTTP) usage
-export { validateAppleReceipt } from './providers/apple.js';
+export { validateAppleReceipt, fetchAppleSubscriptionStatus } from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
 
 // Logger plumbing — expose so non-middleware callers (direct provider use)
