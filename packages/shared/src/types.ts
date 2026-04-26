@@ -1,7 +1,25 @@
 import type { OneSubErrorCode } from './constants.js';
 
-/** Subscription status */
-export type SubscriptionStatus = 'active' | 'expired' | 'canceled' | 'none';
+/** Subscription status.
+ *
+ * Lifecycle states:
+ *   - active        — paid period, entitlement valid
+ *   - grace_period  — payment failed but Apple/Google grants temporary access
+ *                     while retrying. Treat as entitled.
+ *   - on_hold       — payment failed, retry window expired or grace ended.
+ *                     Entitlement REVOKED until the user fixes payment.
+ *                     (Apple "billing retry"; Google "on hold".)
+ *   - expired       — subscription ended without renewal
+ *   - canceled      — refunded or revoked by store
+ *   - none          — no record
+ */
+export type SubscriptionStatus =
+  | 'active'
+  | 'grace_period'
+  | 'on_hold'
+  | 'expired'
+  | 'canceled'
+  | 'none';
 
 /** Store platform */
 export type Platform = 'apple' | 'google';
@@ -51,7 +69,51 @@ export interface AppleNotificationPayload {
   data: {
     signedTransactionInfo: string;
     signedRenewalInfo: string;
+    environment?: string;  // 'Production' | 'Sandbox'
+    bundleId?: string;
   };
+}
+
+/**
+ * Apple App Store Server API ConsumptionRequest body — the response Apple
+ * expects when it sends a CONSUMPTION_REQUEST notification asking whether to
+ * grant or decline a consumable refund.
+ *
+ * https://developer.apple.com/documentation/appstoreserverapi/consumptionrequest
+ */
+export interface AppleConsumptionRequest {
+  /** REQUIRED — must be true; if false, Apple ignores the response. */
+  customerConsented: boolean;
+  /** 0 = undeclared, 1 = not consumed, 2 = partially consumed, 3 = fully consumed */
+  consumptionStatus: 0 | 1 | 2 | 3;
+  /** 0 = undeclared, 1 = delivered & working, 2 = quality issue, 3 = wrong item, 4 = server outage, 5 = currency change */
+  deliveryStatus: 0 | 1 | 2 | 3 | 4 | 5;
+  /** 0 = undeclared, 1 = grant refund, 2 = decline, 3 = no preference */
+  refundPreference?: 0 | 1 | 2 | 3;
+  /** 0 = undeclared, 1 = active, 2 = suspended, 3 = terminated, 4 = limited */
+  userStatus?: 0 | 1 | 2 | 3 | 4;
+  /** 0 = undeclared, 1 = <3 days, 2 = 3-10d, 3 = 10-30d, 4 = 30-90d, 5 = >90d */
+  accountTenure?: 0 | 1 | 2 | 3 | 4 | 5;
+  /** 0 = undeclared, 1 = <5min, 2 = 5-60min, 3 = 1-6h, 4 = 6-24h, 5 = 1-4d, 6 = >4d */
+  playTime?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  /** 0 = undeclared, 1 = $0, 2 = $0.01-$49.99, ... 7 = >$1999.99 */
+  lifetimeDollarsPurchased?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  /** Same buckets as lifetimeDollarsPurchased */
+  lifetimeDollarsRefunded?: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  /** 0 = undeclared, 1 = Apple, 2 = Non-Apple */
+  platform?: 0 | 1 | 2;
+  sampleContentProvided?: boolean;
+  /** UUID — same value the client passed via setAppAccountToken */
+  appAccountToken?: string;
+}
+
+/** Context passed to the consumptionInfoProvider hook for a CONSUMPTION_REQUEST notification. */
+export interface AppleConsumptionContext {
+  transactionId: string;
+  originalTransactionId: string;
+  productId: string;
+  bundleId: string;
+  environment: 'Production' | 'Sandbox';
 }
 
 /** Google RTDN (Real-Time Developer Notification) */
@@ -93,6 +155,21 @@ export interface OneSubServerConfig {
      * real App Store Connect credentials. **NEVER enable in production.**
      */
     mockMode?: boolean;
+    /**
+     * Hook to provide consumption info when Apple sends a CONSUMPTION_REQUEST
+     * notification (consumable refund review).
+     *
+     * If set, the webhook handler calls this with the refunded transaction's
+     * context and PUTs the returned ConsumptionRequest to Apple's
+     * /inApps/v1/transactions/consumption/{txId} endpoint. Without this hook,
+     * Apple has no usage signal and tends to grant the refund.
+     *
+     * Requires keyId, issuerId, and privateKey to be configured (the API call
+     * is JWT-authenticated). Return null to skip this particular request.
+     */
+    consumptionInfoProvider?: (
+      ctx: AppleConsumptionContext,
+    ) => Promise<AppleConsumptionRequest | null>;
   };
   google?: {
     packageName: string;

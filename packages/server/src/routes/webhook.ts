@@ -9,7 +9,7 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { SubscriptionStore, PurchaseStore } from '../store.js';
-import { decodeAppleNotification, decodeJws } from '../providers/apple.js';
+import { decodeAppleNotification, decodeJws, sendAppleConsumptionResponse } from '../providers/apple.js';
 import {
   decodeGoogleNotification,
   decodeGoogleVoidedNotification,
@@ -17,6 +17,8 @@ import {
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
+  isGoogleGracePeriodNotification,
+  isGoogleOnHoldNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
@@ -79,11 +81,42 @@ const APPLE_CANCELED_TYPES = new Set([
 
 /**
  * Apple V2 notification types that indicate expiry.
+ * Pure EXPIRED only — GRACE_PERIOD_EXPIRED is handled separately as on_hold
+ * because billing retry continues after the grace window ends.
  */
 const APPLE_EXPIRED_TYPES = new Set([
   'EXPIRED',
-  'GRACE_PERIOD_EXPIRED',
 ]);
+
+/**
+ * Map an Apple notification (notificationType + optional subtype) to a
+ * lifecycle state. Returns null if the notification doesn't carry an explicit
+ * lifecycle signal (in which case the caller falls back to the JWS-derived status).
+ *
+ * Apple references:
+ *   DID_FAIL_TO_RENEW + subtype GRACE_PERIOD  → GRACE_PERIOD
+ *   DID_FAIL_TO_RENEW (no subtype)            → ON_HOLD (billing retry, no grace)
+ *   GRACE_PERIOD_EXPIRED                      → ON_HOLD (grace ended, retry continues)
+ *   EXPIRED                                   → EXPIRED (terminal, no further retries)
+ *   SUBSCRIBED / DID_RENEW / DID_RECOVER /
+ *     OFFER_REDEEMED                          → ACTIVE
+ *   REVOKE / REFUND / CONSUMPTION_REQUEST     → CANCELED
+ */
+function mapAppleNotificationStatus(
+  notificationType: string,
+  subtype: string | undefined,
+): SubscriptionInfo['status'] | null {
+  if (notificationType === 'DID_FAIL_TO_RENEW') {
+    return subtype === 'GRACE_PERIOD'
+      ? SUBSCRIPTION_STATUS.GRACE_PERIOD
+      : SUBSCRIPTION_STATUS.ON_HOLD;
+  }
+  if (notificationType === 'GRACE_PERIOD_EXPIRED') return SUBSCRIPTION_STATUS.ON_HOLD;
+  if (APPLE_CANCELED_TYPES.has(notificationType)) return SUBSCRIPTION_STATUS.CANCELED;
+  if (APPLE_EXPIRED_TYPES.has(notificationType)) return SUBSCRIPTION_STATUS.EXPIRED;
+  if (APPLE_ACTIVE_TYPES.has(notificationType)) return SUBSCRIPTION_STATUS.ACTIVE;
+  return null;
+}
 
 /**
  * Retry / durability semantics.
@@ -150,15 +183,55 @@ export function createWebhookRouter(
       return;
     }
 
-    const { originalTransactionId, transactionId, type, status, willRenew, expiresAt } = decoded;
+    const {
+      originalTransactionId,
+      transactionId,
+      type,
+      productId,
+      bundleId,
+      environment,
+      status,
+      willRenew,
+      expiresAt,
+    } = decoded;
     const notificationType = payload.notificationType;
+    const subtype = payload.subtype;
 
-    // Derive final status from the notification type (overrides the JWS-derived status
-    // when there is an explicit signal like REVOKE or EXPIRED).
-    let finalStatus: SubscriptionInfo['status'] = status;
-    if (APPLE_CANCELED_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.CANCELED;
-    else if (APPLE_EXPIRED_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
-    else if (APPLE_ACTIVE_TYPES.has(notificationType)) finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    // Derive final status from the notification type + subtype (overrides the
+    // JWS-derived status when there is an explicit lifecycle signal).
+    const mapped = mapAppleNotificationStatus(notificationType, subtype);
+    const finalStatus: SubscriptionInfo['status'] = mapped ?? status;
+
+    // CONSUMPTION_REQUEST — Apple is asking whether to grant a consumable
+    // refund. If the host app provided a consumptionInfoProvider, call it and
+    // PUT the response. Failures are logged; the webhook still 200s.
+    if (
+      notificationType === 'CONSUMPTION_REQUEST' &&
+      config.apple?.consumptionInfoProvider &&
+      transactionId &&
+      productId
+    ) {
+      const provider = config.apple.consumptionInfoProvider;
+      const appleConfig = config.apple;
+      void (async () => {
+        try {
+          const info = await provider({
+            transactionId,
+            originalTransactionId,
+            productId,
+            bundleId: bundleId ?? appleConfig.bundleId,
+            environment,
+          });
+          if (info) {
+            await sendAppleConsumptionResponse(transactionId, info, appleConfig, {
+              sandbox: environment === 'Sandbox',
+            });
+          }
+        } catch (err) {
+          log.warn('[onesub/webhook/apple] consumptionInfoProvider failed:', err);
+        }
+      })();
+    }
 
     // IAP refund / revoke for one-time purchases (consumable / non-consumable).
     // Apple sends REFUND notifications for both subscriptions and IAP — the
@@ -310,6 +383,10 @@ export function createWebhookRouter(
       let finalStatus: SubscriptionInfo['status'];
       if (isGoogleActiveNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
+      } else if (isGoogleGracePeriodNotification(notificationType)) {
+        finalStatus = SUBSCRIPTION_STATUS.GRACE_PERIOD;
+      } else if (isGoogleOnHoldNotification(notificationType)) {
+        finalStatus = SUBSCRIPTION_STATUS.ON_HOLD;
       } else if (isGoogleCanceledNotification(notificationType)) {
         finalStatus = SUBSCRIPTION_STATUS.CANCELED;
       } else if (isGoogleExpiredNotification(notificationType)) {
@@ -326,9 +403,16 @@ export function createWebhookRouter(
         if (config.google?.serviceAccountKey) {
           const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
           if (fresh) {
+            // Notification-derived grace_period/on_hold are authoritative — the
+            // expiry-based deriveStatus() in the provider can't observe these
+            // states (paymentState heuristics are unreliable), so trust the
+            // RTDN signal over the API-derived status for those two cases.
+            const preserveNotificationStatus =
+              finalStatus === SUBSCRIPTION_STATUS.GRACE_PERIOD ||
+              finalStatus === SUBSCRIPTION_STATUS.ON_HOLD;
             updated = {
               ...existing,
-              status: fresh.status,
+              status: preserveNotificationStatus ? finalStatus : fresh.status,
               expiresAt: fresh.expiresAt,
               willRenew: fresh.willRenew,
             };

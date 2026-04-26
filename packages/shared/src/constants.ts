@@ -14,6 +14,10 @@ export const DEFAULT_PORT = 4100;
 /** Subscription status values */
 export const SUBSCRIPTION_STATUS = {
   ACTIVE: 'active',
+  /** Payment failed but the store still grants access while retrying. Treat as entitled. */
+  GRACE_PERIOD: 'grace_period',
+  /** Payment failed; retry/grace window expired; entitlement REVOKED until user fixes payment. */
+  ON_HOLD: 'on_hold',
   EXPIRED: 'expired',
   CANCELED: 'canceled',
   NONE: 'none',

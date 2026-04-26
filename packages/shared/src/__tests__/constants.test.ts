@@ -31,6 +31,14 @@ describe('shared constants', () => {
       expect(SUBSCRIPTION_STATUS.ACTIVE).toBe('active');
     });
 
+    it('GRACE_PERIOD equals "grace_period"', () => {
+      expect(SUBSCRIPTION_STATUS.GRACE_PERIOD).toBe('grace_period');
+    });
+
+    it('ON_HOLD equals "on_hold"', () => {
+      expect(SUBSCRIPTION_STATUS.ON_HOLD).toBe('on_hold');
+    });
+
     it('EXPIRED equals "expired"', () => {
       expect(SUBSCRIPTION_STATUS.EXPIRED).toBe('expired');
     });
