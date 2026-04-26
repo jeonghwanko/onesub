@@ -282,6 +282,90 @@ describe('GET /onesub/metrics/expired', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// /onesub/metrics/{started,expired}?groupBy=day — daily bucketing
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('GET /onesub/metrics/started?groupBy=day', () => {
+  it('omits buckets when groupBy is not set (backwards compatible)', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ purchasedAt: '2026-04-15T00:00:00Z' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2026-04-01T00:00:00Z&to=2026-04-30T23:59:59Z',
+      AUTH,
+    );
+
+    expect(resp.body.total).toBe(1);
+    expect(resp.body.buckets).toBeUndefined();
+  });
+
+  it('returns one zero-filled bucket per UTC day across the window', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    // 3-day window: 2026-04-01 .. 2026-04-03 inclusive
+    await store.save(sub({ userId: 'a', purchasedAt: '2026-04-01T03:00:00Z', originalTransactionId: 't1' }));
+    await store.save(sub({ userId: 'b', purchasedAt: '2026-04-01T18:00:00Z', originalTransactionId: 't2' }));
+    await store.save(sub({ userId: 'c', purchasedAt: '2026-04-03T12:00:00Z', originalTransactionId: 't3' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2026-04-01T00:00:00Z&to=2026-04-03T23:59:59Z&groupBy=day',
+      AUTH,
+    );
+
+    expect(resp.body.total).toBe(3);
+    expect(resp.body.buckets).toEqual([
+      { date: '2026-04-01', count: 2 },
+      { date: '2026-04-02', count: 0 }, // gap day, zero-filled
+      { date: '2026-04-03', count: 1 },
+    ]);
+  });
+
+  it('snaps the first bucket to UTC midnight even when from is mid-day', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ purchasedAt: '2026-04-01T20:00:00Z' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      // from is 2026-04-01T15:00:00Z — same UTC day as the record
+      '/onesub/metrics/started?from=2026-04-01T15:00:00Z&to=2026-04-02T15:00:00Z&groupBy=day',
+      AUTH,
+    );
+
+    expect(resp.body.buckets?.[0]?.date).toBe('2026-04-01');
+    expect(resp.body.buckets?.[0]?.count).toBe(1);
+  });
+
+  it('400 when groupBy is not one of the allowed values', async () => {
+    const { server } = buildServer({ adminSecret: SECRET });
+    const resp = await server.get<{ errorCode: string }>(
+      '/onesub/metrics/started?from=2026-04-01T00:00:00Z&to=2026-04-02T00:00:00Z&groupBy=hour',
+      AUTH,
+    );
+    expect(resp.status).toBe(400);
+  });
+});
+
+describe('GET /onesub/metrics/expired?groupBy=day', () => {
+  it('buckets expired/canceled by expiresAt UTC date', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ userId: 'e1', status: 'expired', expiresAt: '2026-04-01T03:00:00Z', originalTransactionId: 'x1' }));
+    await store.save(sub({ userId: 'e2', status: 'canceled', expiresAt: '2026-04-03T20:00:00Z', originalTransactionId: 'x2' }));
+    // active record in window — not counted
+    await store.save(sub({ userId: 'a', status: 'active', expiresAt: '2026-04-02T00:00:00Z', originalTransactionId: 'x3' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/expired?from=2026-04-01T00:00:00Z&to=2026-04-03T23:59:59Z&groupBy=day',
+      AUTH,
+    );
+
+    expect(resp.body.total).toBe(2);
+    expect(resp.body.buckets).toEqual([
+      { date: '2026-04-01', count: 1 },
+      { date: '2026-04-02', count: 0 },
+      { date: '2026-04-03', count: 1 },
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Store listAll regression
 // ─────────────────────────────────────────────────────────────────────────────
 

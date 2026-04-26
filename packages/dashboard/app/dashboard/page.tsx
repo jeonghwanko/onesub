@@ -1,7 +1,10 @@
 import { requireClient } from '../../lib/auth';
 import { OneSubFetchError } from '../../lib/onesub-client';
+import { GrowthChart } from './_components/growth-chart';
 
 export const dynamic = 'force-dynamic';
+
+const GROWTH_WINDOW_DAYS = 30;
 
 interface StatCardProps {
   label: string;
@@ -54,9 +57,20 @@ function DistributionTable({ title, data, empty }: DistributionTableProps) {
 export default async function DashboardOverview() {
   const client = await requireClient();
 
+  // 30d rolling window — `to` is now, `from` is 29 days back so the chart
+  // shows 30 inclusive UTC buckets (today + 29 prior days).
+  const to = new Date();
+  const from = new Date(to.getTime() - (GROWTH_WINDOW_DAYS - 1) * 86_400_000);
+
   let metrics;
+  let started;
+  let expired;
   try {
-    metrics = await client.getActiveMetrics();
+    [metrics, started, expired] = await Promise.all([
+      client.getActiveMetrics(),
+      client.getStartedMetrics(from, to, { groupBy: 'day' }),
+      client.getExpiredMetrics(from, to, { groupBy: 'day' }),
+    ]);
   } catch (err) {
     // 401 from the upstream server means the cookie is stale — clear it and
     // bounce to login. (Edge middleware can't probe the upstream itself, so
@@ -102,6 +116,8 @@ export default async function DashboardOverview() {
           hint="lifetime products"
         />
       </div>
+
+      <GrowthChart started={started.buckets ?? []} expired={expired.buckets ?? []} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <DistributionTable

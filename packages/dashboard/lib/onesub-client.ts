@@ -12,13 +12,19 @@ import type {
   ListSubscriptionsResponse,
   MetricsActiveResponse,
   MetricsCountResponse,
+  MetricsGroupBy,
   SubscriptionInfo,
 } from '@onesub/shared';
 
+export interface MetricsRangeOptions {
+  /** When set, response includes a daily `buckets` array (zero-filled). */
+  groupBy?: MetricsGroupBy;
+}
+
 export interface OneSubClient {
   getActiveMetrics(): Promise<MetricsActiveResponse>;
-  getStartedMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
-  getExpiredMetrics(from: Date, to: Date): Promise<MetricsCountResponse>;
+  getStartedMetrics(from: Date, to: Date, opts?: MetricsRangeOptions): Promise<MetricsCountResponse>;
+  getExpiredMetrics(from: Date, to: Date, opts?: MetricsRangeOptions): Promise<MetricsCountResponse>;
   listSubscriptions(query: ListSubscriptionsQuery): Promise<ListSubscriptionsResponse>;
   /**
    * Fetch a single subscription record by `originalTransactionId`. Throws
@@ -55,16 +61,18 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
     return (await response.json()) as T;
   }
 
+  function rangePath(base: string, from: Date, to: Date, opts?: MetricsRangeOptions): string {
+    const params = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+    if (opts?.groupBy) params.set('groupBy', opts.groupBy);
+    return `${base}?${params.toString()}`;
+  }
+
   return {
     getActiveMetrics: () => get<MetricsActiveResponse>('/onesub/metrics/active'),
-    getStartedMetrics: (from, to) =>
-      get<MetricsCountResponse>(
-        `/onesub/metrics/started?from=${from.toISOString()}&to=${to.toISOString()}`,
-      ),
-    getExpiredMetrics: (from, to) =>
-      get<MetricsCountResponse>(
-        `/onesub/metrics/expired?from=${from.toISOString()}&to=${to.toISOString()}`,
-      ),
+    getStartedMetrics: (from, to, opts) =>
+      get<MetricsCountResponse>(rangePath('/onesub/metrics/started', from, to, opts)),
+    getExpiredMetrics: (from, to, opts) =>
+      get<MetricsCountResponse>(rangePath('/onesub/metrics/expired', from, to, opts)),
     listSubscriptions: (query) => {
       const params = new URLSearchParams();
       if (query.userId)    params.set('userId', query.userId);
