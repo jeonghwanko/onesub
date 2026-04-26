@@ -1,6 +1,6 @@
 {
   "name": "@onesub/cli",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "CLI scaffolding for onesub — `npx onesub init` bootstraps a server + Expo app.",
   "main": "dist/index.js",
   "type": "module",
@@ -35,8 +35,8 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@onesub/server": "0.11.0",
-    "@onesub/shared": "0.7.0",
+    "@onesub/server": "0.11.1",
+    "@onesub/shared": "0.7.1",
     "express": "^5.2.1"
   },
   "devDependencies": {
