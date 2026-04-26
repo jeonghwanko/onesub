@@ -17,6 +17,7 @@ import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { createWebhookRouter } from '../routes/webhook.js';
 import { createStatusRouter } from '../routes/status.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
+import { isLocalhostUrl } from './test-utils.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -288,13 +289,12 @@ describe('Apple webhook — CONSUMPTION_REQUEST', () => {
     const originalFetch = global.fetch;
     const fetchCalls: { url: string; method?: string; body?: unknown; headers?: Record<string, string> }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
       // Pass-through localhost — that's our own test server.
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
       fetchCalls.push({
-        url: urlStr,
+        url: String(url),
         method: init?.method,
         body: init?.body,
         headers: init?.headers as Record<string, string>,
@@ -367,10 +367,10 @@ describe('Apple webhook — CONSUMPTION_REQUEST', () => {
     const originalFetch = global.fetch;
     const fetchCalls: { url: string; method?: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
+      const urlStr = String(url);
       fetchCalls.push({ url: urlStr, method: init?.method });
       return { ok: true, json: async () => ({}), text: async () => '' } as Response;
     });
@@ -417,10 +417,10 @@ describe('Apple webhook — CONSUMPTION_REQUEST', () => {
     const originalFetch = global.fetch;
     const fetchCalls: { url: string; method?: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
+      const urlStr = String(url);
       fetchCalls.push({ url: urlStr, method: init?.method });
       return { ok: true, json: async () => ({}), text: async () => '' } as Response;
     });
@@ -461,10 +461,10 @@ describe('Apple webhook — CONSUMPTION_REQUEST', () => {
     const originalFetch = global.fetch;
     const outboundCalls: { url: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
+      const urlStr = String(url);
       outboundCalls.push({ url: urlStr });
       return { ok: true, json: async () => ({}), text: async () => '' } as Response;
     });
