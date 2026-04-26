@@ -207,6 +207,24 @@ export interface OneSubServerConfig {
    * (`pino`, `winston`, `bunyan`, `console`) works.
    */
   logger?: OneSubLogger;
+  /**
+   * How to handle subscription refunds (Apple REFUND/REVOKE, Google
+   * voidedPurchaseNotification productType=1).
+   *
+   * - `'immediate'` (default): mark `status` as `canceled` right away. The
+   *   user loses entitlement immediately on the next /onesub/status check.
+   *   Strict, fraud-resistant.
+   *
+   * - `'until_expiry'`: keep `status` and `expiresAt` untouched, only flip
+   *   `willRenew` to `false`. The user keeps entitlement until the original
+   *   expiry passes (status route's stale-record check then drops them
+   *   automatically). Better UX for goodwill refunds; heavier on fraud risk.
+   *
+   * One-time purchases (consumable / non-consumable) are NOT affected by
+   * this setting — those always revoke immediately on refund because they
+   * have no expiry concept.
+   */
+  refundPolicy?: 'immediate' | 'until_expiry';
 }
 
 /** Purchase type */

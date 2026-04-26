@@ -42,9 +42,18 @@ export function createStatusRouter(store: SubscriptionStore): Router {
       // Entitlement is valid during the store-granted grace period (Apple
       // GRACE_PERIOD subtype, Google IN_GRACE_PERIOD). on_hold is excluded —
       // the user must fix payment before they regain access.
-      const active =
+      //
+      // The expiresAt check guards two cases:
+      //   1. refundPolicy='until_expiry' lets a refunded record keep
+      //      status='active' until the original expiry passes — without this
+      //      check, the user would keep entitlement forever if Apple/Google
+      //      never sent the matching EXPIRED notification.
+      //   2. Stale records where the EXPIRED webhook was missed entirely.
+      const statusAllows =
         sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
         sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD;
+      const notYetExpired = new Date(sub.expiresAt).getTime() > Date.now();
+      const active = statusAllows && notYetExpired;
       const response: StatusResponse = { active, subscription: sub };
       res.status(200).json(response);
     } catch (err) {

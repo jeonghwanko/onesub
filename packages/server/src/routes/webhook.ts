@@ -264,14 +264,24 @@ export function createWebhookRouter(
 
       const existing = await store.getByTransactionId(originalTransactionId);
       if (existing) {
-        const updated: SubscriptionInfo = {
-          ...existing,
-          status: finalStatus,
-          willRenew,
-          // expiresAt may be absent on non-subscription payloads — keep the
-          // previously-stored value rather than overwriting with null/empty.
-          expiresAt: expiresAt ?? existing.expiresAt,
-        };
+        // refundPolicy='until_expiry' for subscription refunds: keep status +
+        // expiresAt untouched, only flip willRenew=false. The status route's
+        // stale-record check will drop the user automatically once expiresAt
+        // passes. Refer to OneSubServerConfig.refundPolicy for rationale.
+        const isSubscriptionRefund =
+          isRefundOrRevoke && !isOneTimePurchase && notificationType !== 'CONSUMPTION_REQUEST';
+        const keepEntitlement = isSubscriptionRefund && config.refundPolicy === 'until_expiry';
+
+        const updated: SubscriptionInfo = keepEntitlement
+          ? { ...existing, willRenew: false }
+          : {
+              ...existing,
+              status: finalStatus,
+              willRenew,
+              // expiresAt may be absent on non-subscription payloads — keep the
+              // previously-stored value rather than overwriting with null/empty.
+              expiresAt: expiresAt ?? existing.expiresAt,
+            };
         await store.save(updated);
       } else if (config.apple?.issuerId && config.apple?.keyId && config.apple?.privateKey) {
         // No local record but App Store Server API credentials are present —
@@ -352,7 +362,12 @@ export function createWebhookRouter(
           // Subscription refund — purchaseToken is stored as originalTransactionId.
           const existing = await store.getByTransactionId(voided.purchaseToken);
           if (existing) {
-            await store.save({ ...existing, status: SUBSCRIPTION_STATUS.CANCELED });
+            // refundPolicy='until_expiry' for subscription refunds: keep
+            // status + expiresAt, only flip willRenew. See OneSubServerConfig.
+            const updated = config.refundPolicy === 'until_expiry'
+              ? { ...existing, willRenew: false }
+              : { ...existing, status: SUBSCRIPTION_STATUS.CANCELED };
+            await store.save(updated);
           } else {
             log.warn(
               '[onesub/webhook/google] voided subscription for unknown purchaseToken:',
@@ -361,6 +376,7 @@ export function createWebhookRouter(
           }
         } else {
           // One-time product refund — orderId is stored as transactionId.
+          // Always immediate (refundPolicy doesn't apply — IAP has no expiry).
           const removed = await purchaseStore.deletePurchaseByTransactionId(voided.orderId);
           if (!removed) {
             log.warn(
