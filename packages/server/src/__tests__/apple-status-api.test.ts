@@ -19,6 +19,7 @@ import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
 import { createWebhookRouter } from '../routes/webhook.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
+import { isLocalhostUrl } from './test-utils.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -59,10 +60,10 @@ function mockAppleStatusFetch(responseBody: unknown, opts?: { status?: number })
   const originalFetch = global.fetch;
   const calls: { url: string; method?: string; headers?: Record<string, string> }[] = [];
   vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-    const urlStr = String(url);
-    if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+    if (isLocalhostUrl(url)) {
       return originalFetch(url, init);
     }
+    const urlStr = String(url);
     calls.push({
       url: urlStr,
       method: init?.method,
@@ -345,11 +346,10 @@ describe('Apple webhook — unknown originalTransactionId fallback', () => {
     const originalFetch = global.fetch;
     const outboundCalls: { url: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
-      outboundCalls.push({ url: urlStr });
+      outboundCalls.push({ url: String(url) });
       return { ok: true, status: 200, json: async () => ({}), text: async () => '' } as Response;
     });
 
@@ -369,11 +369,10 @@ describe('Apple webhook — unknown originalTransactionId fallback', () => {
     const originalFetch = global.fetch;
     const outboundCalls: { url: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
-      const urlStr = String(url);
-      if (urlStr.startsWith('http://127.0.0.1') || urlStr.startsWith('http://localhost')) {
+      if (isLocalhostUrl(url)) {
         return originalFetch(url, init);
       }
-      outboundCalls.push({ url: urlStr });
+      outboundCalls.push({ url: String(url) });
       return { ok: true, status: 200, json: async () => ({}), text: async () => '' } as Response;
     });
 

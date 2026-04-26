@@ -14,13 +14,14 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { generateKeyPairSync } from 'crypto';
 import { validateGoogleReceipt } from '../providers/google.js';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { urlHost } from './test-utils.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 let testPrivateKey: string;
 
 beforeAll(() => {
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   testPrivateKey = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 });
 
@@ -55,15 +56,14 @@ interface V2Response {
 function mockV2Fetch(responseBody: V2Response, opts?: { status?: number }) {
   const calls: { url: string }[] = [];
   vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-    const urlStr = String(url);
-    if (urlStr.includes('oauth2.googleapis.com')) {
+    if (urlHost(url) === 'oauth2.googleapis.com') {
       return {
         ok: true,
         json: async () => ({ access_token: 'tok', expires_in: 3600 }),
         text: async () => '',
       } as Response;
     }
-    calls.push({ url: urlStr });
+    calls.push({ url: String(url) });
     return {
       ok: (opts?.status ?? 200) < 400,
       status: opts?.status ?? 200,
@@ -96,7 +96,7 @@ describe('validateGoogleReceipt — v2 endpoint', () => {
 
     await validateGoogleReceipt('purchase_token_xyz', 'pro_monthly', makeGoogleConfig());
 
-    const apiCall = calls.find((c) => c.url.includes('androidpublisher.googleapis.com'));
+    const apiCall = calls.find((c) => urlHost(c.url) === 'androidpublisher.googleapis.com');
     expect(apiCall).toBeDefined();
     expect(apiCall?.url).toContain('/purchases/subscriptionsv2/tokens/purchase_token_xyz');
     expect(apiCall?.url).not.toContain('/purchases/subscriptions/');

@@ -11,6 +11,7 @@ import {
   acknowledgeGoogleSubscription,
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
+import { urlHost } from './test-utils.js';
 
 // ── Apple helpers ──────────────────────────────────────────────────────────
 
@@ -44,8 +45,8 @@ let testPrivateKey: string;
 
 beforeAll(() => {
   // Generate a real RSA key pair once — needed for the JWT assertion in getAccessToken().
-  // 1024-bit is sufficient for tests (not production).
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 1024 });
+  // 2048-bit (CodeQL minimum); generated once per suite so test-time cost is negligible.
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   testPrivateKey = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
 });
 
@@ -83,22 +84,22 @@ type MockProductPurchase = {
  */
 function mockGoogleFetch(productPurchase: MockProductPurchase) {
   vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-    const urlStr = String(url);
-    if (urlStr.includes('oauth2.googleapis.com')) {
+    const host = urlHost(url);
+    if (host === 'oauth2.googleapis.com') {
       return {
         ok: true,
         json: async () => ({ access_token: 'test_access_token', expires_in: 3600 }),
         text: async () => '',
       } as Response;
     }
-    if (urlStr.includes('androidpublisher.googleapis.com')) {
+    if (host === 'androidpublisher.googleapis.com') {
       return {
         ok: true,
         json: async () => productPurchase,
         text: async () => JSON.stringify(productPurchase),
       } as Response;
     }
-    throw new Error(`[test] Unexpected fetch URL: ${urlStr}`);
+    throw new Error(`[test] Unexpected fetch URL: ${String(url)}`);
   });
 }
 
@@ -332,8 +333,7 @@ describe('validateGoogleProductReceipt', () => {
 
   it('returns null when Play API returns an error response', async () => {
     vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const urlStr = String(url);
-      if (urlStr.includes('oauth2.googleapis.com')) {
+      if (urlHost(url) === 'oauth2.googleapis.com') {
         return {
           ok: true,
           json: async () => ({ access_token: 'tok', expires_in: 3600 }),
@@ -361,8 +361,7 @@ describe('acknowledgeGoogleSubscription', () => {
     const calls: { url: string; method?: string; body?: unknown }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
       calls.push({ url: String(url), method: init?.method, body: init?.body });
-      const urlStr = String(url);
-      if (urlStr.includes('oauth2.googleapis.com')) {
+      if (urlHost(url) === 'oauth2.googleapis.com') {
         return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
       }
       return { ok: true, json: async () => ({}), text: async () => '' } as Response;
@@ -379,8 +378,7 @@ describe('acknowledgeGoogleSubscription', () => {
 
   it('does not throw when Play API returns an error (fire-and-forget)', async () => {
     vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
-      const urlStr = String(url);
-      if (urlStr.includes('oauth2.googleapis.com')) {
+      if (urlHost(url) === 'oauth2.googleapis.com') {
         return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
       }
       return { ok: false, status: 500, json: async () => ({}), text: async () => 'oops' } as Response;
@@ -409,8 +407,7 @@ describe('acknowledgeGoogleProduct', () => {
     const calls: { url: string }[] = [];
     vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
       calls.push({ url: String(url) });
-      const urlStr = String(url);
-      if (urlStr.includes('oauth2.googleapis.com')) {
+      if (urlHost(url) === 'oauth2.googleapis.com') {
         return { ok: true, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '' } as Response;
       }
       return { ok: true, json: async () => ({}), text: async () => '' } as Response;
