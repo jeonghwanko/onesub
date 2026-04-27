@@ -20,13 +20,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           >
             Subscriptions
           </Link>
-          <span
-            aria-disabled
-            title="Coming in Phase 3"
-            className="block cursor-not-allowed rounded-md px-3 py-2 text-slate-400"
+          <Link
+            href="/dashboard/customers"
+            className="block rounded-md px-3 py-2 font-medium text-slate-700 hover:bg-slate-100"
           >
             Customers
-          </span>
+          </Link>
         </nav>
         <form action="/api/logout" method="post" className="mt-12">
           <button

@@ -57,9 +57,10 @@ export default async function SubscriptionDetailPage({ params }: PageProps) {
     throw err;
   }
 
-  // Pre-build the "all subs for this user" link so operators can pivot from
-  // one record back to the full per-user history.
-  const userSubsHref = `/dashboard/subscriptions?userId=${encodeURIComponent(sub.userId)}`;
+  // Pivot link to the per-customer view (subs + purchases + entitlements in one
+  // round-trip) — more useful than a filtered subs list when investigating
+  // a specific user's full state.
+  const customerHref = `/dashboard/customers/${encodeURIComponent(sub.userId)}`;
 
   return (
     <div className="space-y-6">
@@ -82,10 +83,10 @@ export default async function SubscriptionDetailPage({ params }: PageProps) {
           <Row label="userId">
             <span className="font-mono">{sub.userId}</span>
             <Link
-              href={userSubsHref}
+              href={customerHref}
               className="ml-2 text-xs text-brand-600 underline-offset-2 hover:underline"
             >
-              모두 보기
+              상세 보기
             </Link>
           </Row>
           <Row label="productId">{sub.productId}</Row>

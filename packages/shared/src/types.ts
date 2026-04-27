@@ -436,6 +436,24 @@ export interface ListSubscriptionsResponse {
 }
 
 /**
+ * Customer profile bundle — every record onesub knows about for a single
+ * `userId`. Returned by `GET /onesub/admin/customers/:userId`. Used by the
+ * dashboard's customer detail page so an operator can see subscriptions,
+ * purchases, and entitlements in one round-trip when handling support tickets.
+ *
+ * `entitlements` is `undefined` when the server has no `entitlements` config
+ * (the routes that depend on it return 503 ENTITLEMENTS_NOT_CONFIGURED).
+ * Hosts using only non-consumables / no entitlement abstraction will see this
+ * field omitted and should hide the entitlement panel.
+ */
+export interface CustomerProfileResponse {
+  userId: string;
+  subscriptions: SubscriptionInfo[];
+  purchases: PurchaseInfo[];
+  entitlements?: Record<string, EntitlementStatus>;
+}
+
+/**
  * One day in a `MetricsCountResponse.buckets` series. Date is ISO 8601
  * `YYYY-MM-DD` interpreted as UTC midnight; count is the number of records
  * whose anchor timestamp (purchasedAt for started, expiresAt for expired)

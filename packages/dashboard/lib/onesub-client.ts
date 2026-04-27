@@ -8,6 +8,7 @@
  */
 
 import type {
+  CustomerProfileResponse,
   ListSubscriptionsQuery,
   ListSubscriptionsResponse,
   MetricsActiveResponse,
@@ -32,6 +33,11 @@ export interface OneSubClient {
    * should branch on that to render a "not found" page.
    */
   getSubscription(transactionId: string): Promise<SubscriptionInfo>;
+  /**
+   * Fetch the full per-user profile (subs + purchases + entitlements when
+   * configured). Always 200 — unknown userIds return empty arrays.
+   */
+  getCustomer(userId: string): Promise<CustomerProfileResponse>;
 }
 
 export class OneSubFetchError extends Error {
@@ -86,5 +92,7 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
     },
     getSubscription: (transactionId) =>
       get<SubscriptionInfo>(`/onesub/admin/subscriptions/${encodeURIComponent(transactionId)}`),
+    getCustomer: (userId) =>
+      get<CustomerProfileResponse>(`/onesub/admin/customers/${encodeURIComponent(userId)}`),
   };
 }

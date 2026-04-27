@@ -149,14 +149,17 @@ export default async function SubscriptionsPage({ searchParams }: PageProps) {
             ) : (
               result.items.map((s) => {
                 const detailHref = `/dashboard/subscriptions/${encodeURIComponent(s.originalTransactionId)}`;
+                const customerHref = `/dashboard/customers/${encodeURIComponent(s.userId)}`;
                 return (
                   <tr
                     key={s.originalTransactionId}
                     className="border-t border-slate-100 hover:bg-slate-50"
                     title={s.expiresAt}
                   >
+                    {/* userId points at the per-user view; productId / txId stay on the
+                        per-subscription detail. Lets operators pivot to either drill-down. */}
                     <Td className="font-mono text-xs">
-                      <Link href={detailHref} className="hover:underline">{s.userId}</Link>
+                      <Link href={customerHref} className="hover:underline">{s.userId}</Link>
                     </Td>
                     <Td><Link href={detailHref} className="hover:underline">{s.productId}</Link></Td>
                     <Td><StatusBadge status={s.status} /></Td>

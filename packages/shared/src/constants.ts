@@ -14,6 +14,8 @@ export const ROUTES = {
   ADMIN_SUBSCRIPTIONS: '/onesub/admin/subscriptions',
   /** Single-record detail; takes :transactionId path param. */
   ADMIN_SUBSCRIPTION_DETAIL: '/onesub/admin/subscriptions/:transactionId',
+  /** Per-user profile bundle (subs + purchases + entitlements); takes :userId path param. */
+  ADMIN_CUSTOMER_DETAIL: '/onesub/admin/customers/:userId',
 } as const;
 
 /** Default server port */
