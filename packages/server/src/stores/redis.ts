@@ -6,6 +6,7 @@ import type {
   ListFilteredResult,
 } from '../store.js';
 import type { CacheAdapter } from '../cache.js';
+import type { WebhookEventStore } from '../webhook-events.js';
 
 type IORedis = import('ioredis').Redis;
 
@@ -47,6 +48,9 @@ type IORedis = import('ioredis').Redis;
 const SUB_TX_PREFIX = 'onesub:sub:tx:';
 const SUB_USER_PREFIX = 'onesub:sub:user:';
 const SUB_ALL = 'onesub:sub:all';
+// Global sorted set (score = save timestamp ms) — enables ordered listAll and
+// O(log n + limit) fast-path pagination when no secondary filters are applied.
+const SUB_ALL_SORTED = 'onesub:sub:all:sorted';
 
 const PUR_TX_PREFIX = 'onesub:purchase:tx:';
 const PUR_USER_PREFIX = 'onesub:purchase:user:';
@@ -61,14 +65,11 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     const txKey = SUB_TX_PREFIX + sub.originalTransactionId;
     const userKey = SUB_USER_PREFIX + sub.userId;
 
-    // Multi-key write — use a pipeline so the three commands are at least
-    // sent in one round-trip. Atomicity is best-effort; the only consistency
-    // hazard is a crash between commands, which leaves the user index without
-    // the new tx (recoverable: subsequent writes for the same tx fix it).
     const pipeline = this.redis.multi();
     pipeline.set(txKey, JSON.stringify(sub));
     pipeline.zadd(userKey, score, sub.originalTransactionId);
     pipeline.sadd(SUB_ALL, sub.originalTransactionId);
+    pipeline.zadd(SUB_ALL_SORTED, score, sub.originalTransactionId);
     await pipeline.exec();
   }
 
@@ -95,43 +96,55 @@ export class RedisSubscriptionStore implements SubscriptionStore {
   }
 
   async listAll(): Promise<SubscriptionInfo[]> {
-    const ids = await this.redis.smembers(SUB_ALL);
+    // ZREVRANGE on the sorted set gives newest-first order (vs random SMEMBERS).
+    const ids = await this.redis.zrevrange(SUB_ALL_SORTED, 0, -1);
     if (ids.length === 0) return [];
     const raws = await this.redis.mget(...ids.map((id) => SUB_TX_PREFIX + id));
     return raws.filter((r): r is string => r != null).map((r) => JSON.parse(r) as SubscriptionInfo);
   }
 
   async listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult> {
-    // Redis has no secondary indexes — for listFiltered we materialise the
-    // candidate set then apply filters in-process. Fine for small/medium data;
-    // for >100k rows pair this with Postgres or use Redis Stack with RediSearch.
     const limit = opts.limit ?? 50;
     const offset = opts.offset ?? 0;
+    const hasSecondaryFilters = !!(opts.status || opts.productId || opts.platform);
 
-    let candidates: SubscriptionInfo[];
     if (opts.userId) {
-      candidates = await this.getAllByUserId(opts.userId);
-    } else {
-      candidates = await this.listAll();
-      // Sort newest-first by purchasedAt as a stable proxy when no per-user
-      // sorted set is available. SubscriptionInfo doesn't carry updatedAt, so
-      // we fall back to expiresAt for a "freshest first" ordering.
-      candidates.sort((a, b) => Date.parse(b.expiresAt) - Date.parse(a.expiresAt));
+      // Per-user path — already O(log n) via per-user sorted set.
+      const candidates = await this.getAllByUserId(opts.userId);
+      const filtered = candidates.filter((s) => {
+        if (opts.status && s.status !== opts.status) return false;
+        if (opts.productId && s.productId !== opts.productId) return false;
+        if (opts.platform && s.platform !== opts.platform) return false;
+        return true;
+      });
+      return { items: filtered.slice(offset, offset + limit), total: filtered.length, limit, offset };
     }
 
-    const filtered = candidates.filter((s) => {
+    if (!hasSecondaryFilters) {
+      // Fast path: pure pagination with no filter — O(log n + limit) via sorted set.
+      const [ids, total] = await Promise.all([
+        this.redis.zrevrange(SUB_ALL_SORTED, offset, offset + limit - 1),
+        this.redis.zcard(SUB_ALL_SORTED),
+      ]);
+      if (ids.length === 0) return { items: [], total, limit, offset };
+      const raws = await this.redis.mget(...ids.map((id) => SUB_TX_PREFIX + id));
+      const items = raws.filter((r): r is string => r != null).map((r) => JSON.parse(r) as SubscriptionInfo);
+      return { items, total, limit, offset };
+    }
+
+    // Slow path: secondary filters require full scan. Results come in
+    // newest-first order. For >100k rows pair with Postgres or Redis Stack.
+    const allIds = await this.redis.zrevrange(SUB_ALL_SORTED, 0, -1);
+    if (allIds.length === 0) return { items: [], total: 0, limit, offset };
+    const raws = await this.redis.mget(...allIds.map((id) => SUB_TX_PREFIX + id));
+    const all = raws.filter((r): r is string => r != null).map((r) => JSON.parse(r) as SubscriptionInfo);
+    const filtered = all.filter((s) => {
       if (opts.status && s.status !== opts.status) return false;
       if (opts.productId && s.productId !== opts.productId) return false;
       if (opts.platform && s.platform !== opts.platform) return false;
       return true;
     });
-
-    return {
-      items: filtered.slice(offset, offset + limit),
-      total: filtered.length,
-      limit,
-      offset,
-    };
+    return { items: filtered.slice(offset, offset + limit), total: filtered.length, limit, offset };
   }
 }
 
@@ -271,5 +284,32 @@ export class RedisCacheAdapter implements CacheAdapter {
 
   async del(key: string): Promise<void> {
     await this.redis.del(this.prefix + key);
+  }
+}
+
+const WEBHOOK_EVENT_PREFIX = 'onesub:webhook:event:';
+const DEFAULT_WEBHOOK_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days — covers Apple's 3-day retry window
+
+/**
+ * Redis-backed webhook idempotency store.
+ *
+ * Uses `SET key '1' EX ttl NX` — a single atomic command that sets the key
+ * only if it does not already exist. Returns 'OK' (new event) or null
+ * (already seen), with no race between a GET and a subsequent SET.
+ *
+ * Prefer this over `CacheWebhookEventStore(new RedisCacheAdapter(...))` for
+ * production deployments; the cache-based variant is non-atomic under
+ * concurrent retries.
+ */
+export class RedisWebhookEventStore implements WebhookEventStore {
+  constructor(
+    private readonly redis: IORedis,
+    private readonly ttlSeconds = DEFAULT_WEBHOOK_TTL_SECONDS,
+  ) {}
+
+  async markIfNew(provider: 'apple' | 'google', eventId: string): Promise<boolean> {
+    const key = WEBHOOK_EVENT_PREFIX + provider + ':' + eventId;
+    const result = await this.redis.set(key, '1', 'EX', this.ttlSeconds, 'NX');
+    return result === 'OK';
   }
 }

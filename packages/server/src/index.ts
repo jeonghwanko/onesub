@@ -147,6 +147,7 @@ export {
   RedisSubscriptionStore,
   RedisPurchaseStore,
   RedisCacheAdapter,
+  RedisWebhookEventStore,
 } from './stores/redis.js';
 
 // Cache adapters

@@ -68,7 +68,3 @@ export function setDefaultCache(adapter: CacheAdapter): void {
   defaultAdapter = adapter;
 }
 
-/** Test helper — reset the default adapter to a fresh in-memory one. */
-export function __resetDefaultCacheForTests(): void {
-  defaultAdapter = new InMemoryCacheAdapter();
-}

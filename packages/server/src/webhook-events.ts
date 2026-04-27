@@ -57,15 +57,16 @@ export class InMemoryWebhookEventStore implements WebhookEventStore {
 }
 
 /**
- * Cache-backed implementation — works with any `CacheAdapter` (including
- * `RedisCacheAdapter`), so multi-instance deployments dedupe across nodes.
+ * Cache-backed implementation — works with any `CacheAdapter`.
  *
- * Uses the cache's atomic `set` semantics: we call `get` then `set` with TTL.
- * This is correct under low contention; for very high concurrency the
- * implementation may want a backend with native SETNX. RedisCacheAdapter's
- * `set` is idempotent, so concurrent first-writes converge — the behavior is
- * "at-most-twice" rather than "exactly once" in the worst race, which the
- * downstream store-level idempotency (`originalTransactionId` PK) catches.
+ * Uses a `get` → `set` sequence, which is **not** atomic under concurrent
+ * retries: two simultaneous calls for the same id can both read null and
+ * both return `true`. The downstream store PKs / BullMQ jobId dedup catch
+ * this worst case.
+ *
+ * For Redis deployments prefer `RedisWebhookEventStore` (from
+ * `@onesub/server`) which uses a single `SET NX` command and is fully
+ * atomic.
  */
 export class CacheWebhookEventStore implements WebhookEventStore {
   constructor(

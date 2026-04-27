@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import IORedisMock from 'ioredis-mock';
 import type { Redis } from 'ioredis';
-import { RedisSubscriptionStore, RedisPurchaseStore, RedisCacheAdapter } from '../stores/redis.js';
+import { RedisSubscriptionStore, RedisPurchaseStore, RedisCacheAdapter, RedisWebhookEventStore } from '../stores/redis.js';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
 
@@ -72,6 +72,33 @@ describe('RedisSubscriptionStore', () => {
     expect(result.total).toBe(1);
     expect(result.items[0].originalTransactionId).toBe('tx-a');
   });
+
+  it('listFiltered pure pagination fast path returns correct total + page', async () => {
+    for (let i = 0; i < 5; i++) {
+      await store.save({ ...baseSub, originalTransactionId: `tx-p${i}`, userId: `user${i}` });
+    }
+    const page1 = await store.listFiltered({ limit: 2, offset: 0 });
+    expect(page1.total).toBe(5);
+    expect(page1.items).toHaveLength(2);
+
+    const page2 = await store.listFiltered({ limit: 2, offset: 2 });
+    expect(page2.total).toBe(5);
+    expect(page2.items).toHaveLength(2);
+
+    // pages should not overlap
+    const ids1 = page1.items.map((s) => s.originalTransactionId);
+    const ids2 = page2.items.map((s) => s.originalTransactionId);
+    expect(ids1.filter((id) => ids2.includes(id))).toHaveLength(0);
+  });
+
+  it('listAll returns items newest-first', async () => {
+    await store.save({ ...baseSub, originalTransactionId: 'tx-old' });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.save({ ...baseSub, originalTransactionId: 'tx-new' });
+    const all = await store.listAll();
+    expect(all[0].originalTransactionId).toBe('tx-new');
+    expect(all[1].originalTransactionId).toBe('tx-old');
+  });
 });
 
 const basePurchase: PurchaseInfo = {
@@ -139,5 +166,31 @@ describe('RedisCacheAdapter', () => {
   it('returns null for missing keys', async () => {
     const cache = new RedisCacheAdapter(await makeRedis());
     expect(await cache.get('absent')).toBeNull();
+  });
+});
+
+describe('RedisWebhookEventStore', () => {
+  it('returns true on first sighting', async () => {
+    const store = new RedisWebhookEventStore(await makeRedis());
+    expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
+  });
+
+  it('returns false on duplicate (atomic SET NX)', async () => {
+    const store = new RedisWebhookEventStore(await makeRedis());
+    expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
+    expect(await store.markIfNew('apple', 'uuid-1')).toBe(false);
+  });
+
+  it('namespaces apple vs google so the same id does not collide', async () => {
+    const store = new RedisWebhookEventStore(await makeRedis());
+    expect(await store.markIfNew('apple', 'shared-id')).toBe(true);
+    expect(await store.markIfNew('google', 'shared-id')).toBe(true);
+  });
+
+  it('different event ids are independent', async () => {
+    const store = new RedisWebhookEventStore(await makeRedis());
+    expect(await store.markIfNew('google', 'msg-1')).toBe(true);
+    expect(await store.markIfNew('google', 'msg-2')).toBe(true);
+    expect(await store.markIfNew('google', 'msg-1')).toBe(false);
   });
 });
