@@ -29,6 +29,7 @@ import {
 } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
+import type { WebhookEventStore } from '../webhook-events.js';
 
 /**
  * Google's public JWKS endpoint used to verify Pub/Sub push JWT tokens.
@@ -150,6 +151,7 @@ export function createWebhookRouter(
   config: OneSubServerConfig,
   store: SubscriptionStore,
   purchaseStore: PurchaseStore,
+  webhookEventStore?: WebhookEventStore,
 ): Router {
   const router = Router();
 
@@ -181,6 +183,17 @@ export function createWebhookRouter(
       log.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
       sendError(res, 400, ONESUB_ERROR_CODE.INVALID_SIGNED_PAYLOAD, 'Invalid signedPayload');
       return;
+    }
+
+    // Idempotency — Apple's notificationUUID uniquely identifies each
+    // notification across retries. Skip if already processed.
+    if (webhookEventStore && typeof payload.notificationUUID === 'string') {
+      const fresh = await webhookEventStore.markIfNew('apple', payload.notificationUUID);
+      if (!fresh) {
+        log.info('[onesub/webhook/apple] dedupe: already processed', payload.notificationUUID);
+        res.status(200).json({ received: true, deduped: true });
+        return;
+      }
     }
 
     const decoded = await decodeAppleNotification(payload, config.apple?.skipJwsVerification);
@@ -341,6 +354,17 @@ export function createWebhookRouter(
     if (!body.message?.data) {
       sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');
       return;
+    }
+
+    // Idempotency — Pub/Sub guarantees `messageId` uniqueness per notification.
+    // Skip if already processed (Pub/Sub redelivers on any non-2xx).
+    if (webhookEventStore && typeof body.message.messageId === 'string') {
+      const fresh = await webhookEventStore.markIfNew('google', body.message.messageId);
+      if (!fresh) {
+        log.info('[onesub/webhook/google] dedupe: already processed', body.message.messageId);
+        res.status(200).json({ received: true, deduped: true });
+        return;
+      }
     }
 
     // voidedPurchaseNotification — Google's refund/chargeback signal for both

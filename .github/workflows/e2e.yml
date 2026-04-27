@@ -1,0 +1,54 @@
+name: e2e (Apple/Google sandbox)
+
+# Manual-dispatch only. Real Apple/Google sandbox round-trips need shared
+# secrets that mustn't run on every PR. Trigger from the Actions UI when
+# touching the receipt validation pipeline.
+on:
+  workflow_dispatch:
+    inputs:
+      apple:
+        description: 'Run Apple sandbox tests'
+        required: true
+        default: 'true'
+      google:
+        description: 'Run Google sandbox tests'
+        required: true
+        default: 'true'
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+      # Apple sandbox round-trip — signs a JWS with the configured
+      # ASC-issued key and posts it to /onesub/validate, asserting the
+      # response carries the expected subscription state.
+      - name: Apple sandbox JWS round-trip
+        if: ${{ github.event.inputs.apple == 'true' }}
+        run: npm run test:e2e:apple -w @onesub/server
+        env:
+          APPLE_BUNDLE_ID: ${{ secrets.APPLE_E2E_BUNDLE_ID }}
+          APPLE_KEY_ID: ${{ secrets.APPLE_E2E_KEY_ID }}
+          APPLE_ISSUER_ID: ${{ secrets.APPLE_E2E_ISSUER_ID }}
+          APPLE_PRIVATE_KEY: ${{ secrets.APPLE_E2E_PRIVATE_KEY }}
+          APPLE_E2E_TRANSACTION_ID: ${{ secrets.APPLE_E2E_TRANSACTION_ID }}
+
+      # Google sandbox — calls the Play Developer API with a real service
+      # account, then posts a synthetic Pub/Sub-shaped notification with the
+      # signed JWT in Authorization to exercise verifyGooglePushToken.
+      - name: Google sandbox notification round-trip
+        if: ${{ github.event.inputs.google == 'true' }}
+        run: npm run test:e2e:google -w @onesub/server
+        env:
+          GOOGLE_PACKAGE_NAME: ${{ secrets.GOOGLE_E2E_PACKAGE_NAME }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_E2E_SERVICE_ACCOUNT_KEY }}
+          GOOGLE_E2E_PURCHASE_TOKEN: ${{ secrets.GOOGLE_E2E_PURCHASE_TOKEN }}
+          GOOGLE_E2E_PUSH_AUDIENCE: ${{ secrets.GOOGLE_E2E_PUSH_AUDIENCE }}

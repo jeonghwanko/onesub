@@ -11,6 +11,10 @@ import { createAdminRouter } from './routes/admin.js';
 import { createEntitlementRouter } from './routes/entitlements.js';
 import { createMetricsRouter } from './routes/metrics.js';
 import { setLogger } from './logger.js';
+import type { CacheAdapter } from './cache.js';
+import { setDefaultCache } from './cache.js';
+import type { WebhookEventStore } from './webhook-events.js';
+import type { WebhookQueue } from './webhook-queue.js';
 
 /**
  * Extended config with optional pluggable stores.
@@ -27,6 +31,27 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
    * For production, provide a PostgreSQL backed implementation.
    */
   purchaseStore?: PurchaseStore;
+  /**
+   * Cache backend for short-lived secrets (Apple JWT, Google OAuth token).
+   * Default: in-memory, process-local. For multi-instance deployments pass a
+   * `RedisCacheAdapter` so all nodes share a single mint per TTL window.
+   */
+  cache?: CacheAdapter;
+  /**
+   * Webhook idempotency store. Default: none (rely on Apple/Google retry +
+   * downstream store PKs). For production strongly recommended — pass an
+   * `InMemoryWebhookEventStore` (single instance) or `CacheWebhookEventStore`
+   * backed by Redis (multi-instance) so duplicate notifications never apply
+   * twice.
+   */
+  webhookEventStore?: WebhookEventStore;
+  /**
+   * Async webhook queue. Default: in-process synchronous (legacy behavior —
+   * route latency = handler latency). For decoupled retries pass a
+   * `BullMQWebhookQueue`; the dead-letter list becomes accessible via
+   * `/onesub/admin/webhook-deadletters` and `/onesub/admin/webhook-replay/:id`.
+   */
+  webhookQueue?: WebhookQueue;
 }
 
 /**
@@ -62,6 +87,11 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   const store: SubscriptionStore = config.store ?? new InMemorySubscriptionStore();
   const purchaseStore: PurchaseStore = config.purchaseStore ?? new InMemoryPurchaseStore();
 
+  // Swap the global cache adapter once when middleware is created. This is
+  // the cheapest way to share a Redis-backed cache between all providers
+  // without threading the adapter through every internal call site.
+  if (config.cache) setDefaultCache(config.cache);
+
   const router = Router();
 
   // Parse JSON bodies for all OneSub routes (50 kb cap to prevent payload flooding)
@@ -69,11 +99,11 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
 
   router.use(createValidateRouter(config, store));
   router.use(createStatusRouter(store));
-  router.use(createWebhookRouter(config, store, purchaseStore));
+  router.use(createWebhookRouter(config, store, purchaseStore, config.webhookEventStore));
   router.use(createPurchaseRouter(config, purchaseStore));
 
   // Admin routes — only mounted when config.adminSecret is set
-  const adminRouter = createAdminRouter(config, purchaseStore, store);
+  const adminRouter = createAdminRouter(config, purchaseStore, store, config.webhookQueue);
   if (adminRouter) router.use(adminRouter);
 
   // Entitlement routes — only mounted when config.entitlements is set
@@ -113,6 +143,30 @@ export function createOneSubServer(config: OneSubMiddlewareConfig): ReturnType<t
 export { InMemorySubscriptionStore, InMemoryPurchaseStore } from './store.js';
 export type { SubscriptionStore, PurchaseStore } from './store.js';
 export { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postgres.js';
+export {
+  RedisSubscriptionStore,
+  RedisPurchaseStore,
+  RedisCacheAdapter,
+} from './stores/redis.js';
+
+// Cache adapters
+export type { CacheAdapter } from './cache.js';
+export { InMemoryCacheAdapter, getDefaultCache, setDefaultCache } from './cache.js';
+
+// Webhook hardening primitives
+export type { WebhookEventStore } from './webhook-events.js';
+export { InMemoryWebhookEventStore, CacheWebhookEventStore } from './webhook-events.js';
+export type { WebhookQueue, WebhookJob, WebhookHandler, DeadLetterRecord } from './webhook-queue.js';
+export { InProcessWebhookQueue, BullMQWebhookQueue } from './webhook-queue.js';
+
+// OpenAPI document — for hosts that want to expose `/openapi.json` and
+// generate clients from the spec.
+export { ONESUB_OPENAPI, openapiHandler } from './openapi.js';
+export type { OpenAPIDoc } from './openapi.js';
+
+// OpenTelemetry helpers — exposed so host apps can wrap their own
+// integrations in spans that inherit the same tracer config.
+export { withSpan } from './tracing.js';
 
 // Provider functions for direct (non-HTTP) usage
 export { validateAppleReceipt, fetchAppleSubscriptionStatus } from './providers/apple.js';

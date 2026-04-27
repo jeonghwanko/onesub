@@ -10,6 +10,7 @@ import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
 import { fetchWithTimeout } from '../http.js';
+import { getDefaultCache } from '../cache.js';
 import {
   mockValidateAppleSubscription,
   mockValidateAppleProduct,
@@ -403,16 +404,18 @@ export async function decodeAppleNotification(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Module-level JWT cache for the App Store Server API. Apple caps token TTL
- * at 20 minutes; we mint with that TTL and re-use until 60 seconds before
- * expiry (so long-running webhook bursts don't pay the ECDSA-sign cost on
- * every request). Promise dedup prevents thundering-herd JWT mints when many
- * concurrent callers race the cache miss.
+ * JWT cache for the App Store Server API. Apple caps token TTL at 20 minutes;
+ * we mint with that TTL and re-use until 60 seconds before expiry (so
+ * long-running webhook bursts don't pay the ECDSA-sign cost on every request).
+ *
+ * Cache backend: `getDefaultCache()` (in-memory by default, swappable with
+ * Redis / Memcached via `setDefaultCache()`). When the cache is shared across
+ * cluster nodes only one node mints per TTL window.
  *
  * Keyed by `${issuerId}|${keyId}` since rotating either invalidates the JWT.
+ * Concurrent mints inside a single process are deduped via `appleJwtMintPromises`.
  */
-let cachedAppleJwt: { token: string; expiresAt: number; key: string } | null = null;
-let appleJwtMintPromise: Promise<string> | null = null;
+const appleJwtMintPromises = new Map<string, Promise<string>>();
 
 const APPLE_JWT_TTL_MS = 20 * 60 * 1000;
 const APPLE_JWT_REFRESH_BEFORE_MS = 60 * 1000;
@@ -428,42 +431,47 @@ async function makeAppleApiJwt(config: AppleConfig): Promise<string> {
     throw new Error('[onesub/apple] App Store Server API requires issuerId, keyId, and privateKey');
   }
 
-  const cacheKey = `${issuerId}|${keyId}`;
+  const cache = getDefaultCache();
+  const cacheKey = `apple:jwt:${issuerId}|${keyId}`;
   const now = Date.now();
 
-  if (
-    cachedAppleJwt &&
-    cachedAppleJwt.key === cacheKey &&
-    cachedAppleJwt.expiresAt - now > APPLE_JWT_REFRESH_BEFORE_MS
-  ) {
-    return cachedAppleJwt.token;
+  const cached = await cache.get<{ token: string; expiresAt: number }>(cacheKey);
+  if (cached && cached.expiresAt - now > APPLE_JWT_REFRESH_BEFORE_MS) {
+    return cached.token;
   }
 
-  if (!appleJwtMintPromise) {
-    appleJwtMintPromise = (async () => {
-      const key = await importPKCS8(privateKey, 'ES256');
-      const issuedAt = Math.floor(Date.now() / 1000);
-      const token = await new SignJWT({ bid: bundleId })
-        .setProtectedHeader({ alg: 'ES256', kid: keyId, typ: 'JWT' })
-        .setIssuer(issuerId)
-        .setAudience('appstoreconnect-v1')
-        .setIssuedAt(issuedAt)
-        .setExpirationTime(issuedAt + Math.floor(APPLE_JWT_TTL_MS / 1000))
-        .sign(key);
-      cachedAppleJwt = { token, expiresAt: Date.now() + APPLE_JWT_TTL_MS, key: cacheKey };
-      return token;
-    })().finally(() => {
-      appleJwtMintPromise = null;
-    });
-  }
+  const inflight = appleJwtMintPromises.get(cacheKey);
+  if (inflight) return inflight;
 
-  return appleJwtMintPromise;
+  const promise = (async () => {
+    const key = await importPKCS8(privateKey, 'ES256');
+    const issuedAt = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({ bid: bundleId })
+      .setProtectedHeader({ alg: 'ES256', kid: keyId, typ: 'JWT' })
+      .setIssuer(issuerId)
+      .setAudience('appstoreconnect-v1')
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(issuedAt + Math.floor(APPLE_JWT_TTL_MS / 1000))
+      .sign(key);
+    const expiresAt = Date.now() + APPLE_JWT_TTL_MS;
+    // TTL slightly under the 20m spec so cache eviction matches token expiry.
+    await cache.set(cacheKey, { token, expiresAt }, 19 * 60);
+    return token;
+  })().finally(() => {
+    appleJwtMintPromises.delete(cacheKey);
+  });
+  appleJwtMintPromises.set(cacheKey, promise);
+  return promise;
 }
 
-/** Test-only: clear the module-level Apple JWT cache. Not exported. */
+/** Test-only: clear the Apple JWT cache. Not exported. */
 function clearAppleJwtCacheForTests(): void {
-  cachedAppleJwt = null;
-  appleJwtMintPromise = null;
+  const cache = getDefaultCache();
+  // Best-effort wipe — tests use the in-memory adapter, which exposes clear().
+  if ('clear' in cache && typeof (cache as { clear?: () => void }).clear === 'function') {
+    (cache as { clear: () => void }).clear();
+  }
+  appleJwtMintPromises.clear();
 }
 // Expose for the test suite without polluting the public API surface.
 export const __testing = { clearAppleJwtCacheForTests };

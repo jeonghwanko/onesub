@@ -1,17 +1,19 @@
 /**
- * onesub server example — minimal Express app with receipt validation.
+ * onesub server example — Express app with receipt validation.
+ *
+ * Wires up every production hardening primitive when the matching env var is
+ * present. Falls back to in-memory defaults for a one-command demo.
+ *
+ *   - DATABASE_URL → Postgres subscription + purchase stores
+ *   - REDIS_URL    → Redis cache adapter (cluster-shared JWT/OAuth caches)
+ *                  + Redis subscription/purchase store
+ *                  + Cache-backed webhook idempotency
+ *                  + BullMQ webhook queue (durable retries + dead-letter)
  *
  * Usage:
  *   cp .env.example .env   # fill in your Apple/Google credentials
  *   npm install
  *   npm start              # http://localhost:4100
- *
- * Endpoints created automatically:
- *   POST /onesub/validate          — verify Apple/Google receipt
- *   GET  /onesub/status?userId=    — check subscription status
- *   POST /onesub/webhook/apple     — App Store Server Notifications V2
- *   POST /onesub/webhook/google    — Google Real-Time Developer Notifications
- *   GET  /health                   — health check
  */
 
 import 'dotenv/config';
@@ -19,23 +21,55 @@ import express from 'express';
 import {
   createOneSubMiddleware,
   PostgresSubscriptionStore,
+  PostgresPurchaseStore,
   InMemorySubscriptionStore,
+  InMemoryPurchaseStore,
+  RedisSubscriptionStore,
+  RedisPurchaseStore,
+  RedisCacheAdapter,
+  CacheWebhookEventStore,
+  BullMQWebhookQueue,
 } from '@onesub/server';
 
 const app = express();
 const port = parseInt(process.env.PORT || '4100', 10);
 
-// ── Choose a subscription store ──────────────────────────────────────────────
-// PostgreSQL for production, in-memory for development
-const store = process.env.DATABASE_URL
-  ? new PostgresSubscriptionStore(process.env.DATABASE_URL)
-  : new InMemorySubscriptionStore();
+// ── Stores ───────────────────────────────────────────────────────────────────
+// Pick by env var. The Postgres/Redis modules use dynamic imports so you only
+// need the underlying npm package installed when the env var is set.
+let store;
+let purchaseStore;
+let cache;
+let webhookEventStore;
+let webhookQueue;
 
-if (store instanceof PostgresSubscriptionStore) {
-  await store.initSchema(); // creates table if not exists
-  console.log('[onesub] Using PostgreSQL store');
-} else {
-  console.log('[onesub] Using in-memory store (data lost on restart)');
+if (process.env.REDIS_URL) {
+  const { default: IORedis } = await import('ioredis');
+  const redis = new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null });
+  cache = new RedisCacheAdapter(redis);
+  webhookEventStore = new CacheWebhookEventStore(cache);
+  webhookQueue = new BullMQWebhookQueue({ connection: redis });
+  store = new RedisSubscriptionStore(redis);
+  purchaseStore = new RedisPurchaseStore(redis);
+  console.log('[onesub] Redis enabled — shared cache, idempotency, queue');
+}
+
+if (process.env.DATABASE_URL) {
+  // Postgres takes precedence as the durable store of record. Redis stays as
+  // the cache + queue layer above it.
+  const subStore = new PostgresSubscriptionStore(process.env.DATABASE_URL);
+  const pStore = new PostgresPurchaseStore(process.env.DATABASE_URL);
+  await subStore.initSchema();
+  await pStore.initSchema();
+  store = subStore;
+  purchaseStore = pStore;
+  console.log('[onesub] Postgres enabled — durable subscription + purchase store');
+}
+
+if (!store) {
+  store = new InMemorySubscriptionStore();
+  purchaseStore = new InMemoryPurchaseStore();
+  console.log('[onesub] In-memory stores (data lost on restart)');
 }
 
 // ── Mount onesub middleware ──────────────────────────────────────────────────
@@ -45,6 +79,9 @@ app.use(
       ? {
           bundleId: process.env.APPLE_BUNDLE_ID,
           sharedSecret: process.env.APPLE_SHARED_SECRET,
+          keyId: process.env.APPLE_KEY_ID,
+          issuerId: process.env.APPLE_ISSUER_ID,
+          privateKey: process.env.APPLE_PRIVATE_KEY,
         }
       : undefined,
     google: process.env.GOOGLE_PACKAGE_NAME
@@ -54,17 +91,24 @@ app.use(
         }
       : undefined,
     database: { url: process.env.DATABASE_URL ?? '' },
+    adminSecret: process.env.ADMIN_SECRET,
     store,
+    purchaseStore,
+    cache,
+    webhookEventStore,
+    webhookQueue,
   }),
 );
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', store: store.constructor.name });
+  res.json({
+    status: 'ok',
+    store: store.constructor.name,
+    cache: cache?.constructor.name ?? 'in-memory',
+    queue: webhookQueue?.constructor.name ?? 'in-process',
+  });
 });
-
-// ── Your own routes go here ──────────────────────────────────────────────────
-// app.get('/api/premium-content', requireAuth, (req, res) => { ... });
 
 // ── Start ────────────────────────────────────────────────────────────────────
 app.listen(port, () => {
@@ -74,4 +118,7 @@ app.listen(port, () => {
   console.log(`  GET  http://localhost:${port}/onesub/status?userId=USER_ID`);
   console.log(`  POST http://localhost:${port}/onesub/webhook/apple`);
   console.log(`  POST http://localhost:${port}/onesub/webhook/google`);
+  if (process.env.ADMIN_SECRET && webhookQueue?.listDeadLetters) {
+    console.log(`  GET  http://localhost:${port}/onesub/admin/webhook-deadletters  (X-Admin-Secret)`);
+  }
 });

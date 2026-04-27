@@ -87,6 +87,12 @@ export interface StatusResponse {
 export interface AppleNotificationPayload {
   notificationType: string;
   subtype?: string;
+  /**
+   * UUID Apple stamps on each notification. Stable across retries — used as
+   * the idempotency key in `WebhookEventStore`.
+   * https://developer.apple.com/documentation/appstoreservernotifications/responsebodyv2decodedpayload
+   */
+  notificationUUID?: string;
   data: {
     signedTransactionInfo: string;
     signedRenewalInfo: string;

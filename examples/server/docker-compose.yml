@@ -25,6 +25,22 @@ services:
       timeout: 3s
       retries: 10
 
+  # Redis — backs the cluster-aware cache (Apple JWT / Google OAuth tokens),
+  # webhook idempotency store, and BullMQ webhook queue. Optional: single-
+  # instance deployments can omit this service and stick with the default
+  # in-memory adapters.
+  redis:
+    image: redis:7-alpine
+    container_name: onesub-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # onesub example server.
   #
   # Uses the local workspace packages via bind mount so edits in
@@ -36,12 +52,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     working_dir: /workspace/examples/server
     command: sh -c "npm install --no-audit --no-fund && npm start"
     environment:
       NODE_ENV: development
       PORT: '4100'
       DATABASE_URL: postgresql://onesub:onesub@db:5432/onesub
+      REDIS_URL: redis://redis:6379
       # Credentials — copy from .env or override in your shell.
       APPLE_BUNDLE_ID: ${APPLE_BUNDLE_ID:-}
       APPLE_SHARED_SECRET: ${APPLE_SHARED_SECRET:-}

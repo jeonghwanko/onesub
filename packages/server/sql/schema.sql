@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS onesub_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_user_id
   ON onesub_subscriptions (user_id, updated_at DESC);
 
+-- Filter-helper indexes for /onesub/admin/subscriptions. Each filter column
+-- is paired with updated_at DESC so the planner can serve "latest matching"
+-- without sorting the full table once row count grows.
+CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_status_updated
+  ON onesub_subscriptions (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_platform_updated
+  ON onesub_subscriptions (platform, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_product
+  ON onesub_subscriptions (product_id, updated_at DESC);
+
 -- Backfill columns for installs that already created the table from an older
 -- schema. Safe to re-run.
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS linked_purchase_token TEXT;

@@ -1,0 +1,56 @@
+name: bench
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Tuesday 03:00 UTC — keep weekly results for regression spotting.
+    - cron: '0 3 * * 2'
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+
+      - name: Boot example server (in-memory)
+        run: |
+          (cd examples/server && nohup node server.js > server.log 2>&1 &)
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:4100/health > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "server failed to come up" >&2
+          tail -n 50 examples/server/server.log
+          exit 1
+        env:
+          PORT: '4100'
+
+      - name: Install k6
+        run: |
+          curl -fsSL https://dl.k6.io/key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: Run status benchmark
+        run: k6 run --summary-export=status-summary.json bench/status.k6.js
+        env:
+          BASE_URL: http://localhost:4100
+
+      - name: Run webhook benchmark
+        run: k6 run --summary-export=webhook-summary.json bench/webhook.k6.js
+        env:
+          BASE_URL: http://localhost:4100
+
+      - name: Upload summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summaries
+          path: '*-summary.json'

@@ -14,6 +14,7 @@ import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { evaluateEntitlement } from './entitlements.js';
 import { sendError, sendZodError } from '../errors.js';
+import type { WebhookQueue } from '../webhook-queue.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -47,6 +48,7 @@ export function createAdminRouter(
   config: OneSubServerConfig,
   purchaseStore: PurchaseStore,
   store: SubscriptionStore,
+  webhookQueue?: WebhookQueue,
 ): Router | null {
   if (!config.adminSecret) return null;
 
@@ -267,6 +269,41 @@ export function createAdminRouter(
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'customer error');
     }
   });
+
+  // GET /onesub/admin/webhook-deadletters
+  // POST /onesub/admin/webhook-replay/:id
+  // Only mounted when the configured queue supports dead-letter inspection
+  // (the default in-process queue does not — Apple/Google retries are the
+  // durability layer for that mode).
+  if (webhookQueue?.listDeadLetters) {
+    router.get('/onesub/admin/webhook-deadletters', async (_req: Request, res: Response) => {
+      try {
+        const items = await webhookQueue.listDeadLetters!();
+        res.status(200).json({ items });
+      } catch (err) {
+        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'list error');
+      }
+    });
+  }
+
+  if (webhookQueue?.replayDeadLetter) {
+    const replayParamsSchema = z.object({ id: z.string().min(1).max(256) });
+    router.post('/onesub/admin/webhook-replay/:id', async (req: Request, res: Response) => {
+      let params;
+      try {
+        params = replayParamsSchema.parse(req.params);
+      } catch {
+        sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'id required');
+        return;
+      }
+      try {
+        await webhookQueue.replayDeadLetter!(params.id);
+        res.status(200).json({ ok: true });
+      } catch (err) {
+        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'replay error');
+      }
+    });
+  }
 
   return router;
 }

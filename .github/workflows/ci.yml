@@ -25,3 +25,5 @@ jobs:
         run: npm run build  # tsc per-workspace — fails on type errors
       - name: Test
         run: npm test
+      - name: Bundle size check
+        run: npm run size -w @onesub/server

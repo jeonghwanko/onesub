@@ -2,6 +2,7 @@ import type { SubscriptionInfo, GoogleNotificationPayload, OneSubServerConfig } 
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { log } from '../logger.js';
 import { fetchWithTimeout } from '../http.js';
+import { getDefaultCache } from '../cache.js';
 import {
   mockValidateGoogleSubscription,
   mockValidateGoogleProduct,
@@ -122,35 +123,66 @@ interface GoogleProductPurchase {
 const MAX_PRODUCT_RECEIPT_AGE_MS = 72 * 60 * 60 * 1000;
 
 /**
- * Module-level token cache. Keyed by the raw serviceAccountKey string so that
- * different service accounts (rare but possible) are cached independently.
+ * Per-key in-flight token mint promises. Used to deduplicate concurrent
+ * refreshes inside a single process — the cluster-wide cache layer sits in
+ * `getDefaultCache()` underneath. Without this map every concurrent caller in
+ * the same process would fire a separate network refresh while waiting for
+ * the new value to land in Redis / memory.
  */
-let cachedToken: { token: string; expiresAt: number; key: string } | null = null;
-let refreshPromise: Promise<string> | null = null;
+const refreshPromises = new Map<string, Promise<string>>();
+
+/**
+ * Build the cache key for a given service account.
+ *
+ * Hashing the key (instead of using it raw) keeps the key length bounded for
+ * cache backends that have key-size limits, and avoids leaking partial JSON
+ * into log lines that print cache keys.
+ */
+function googleTokenCacheKey(serviceAccountKey: string): string {
+  let hash = 0;
+  for (let i = 0; i < serviceAccountKey.length; i++) {
+    hash = (hash * 31 + serviceAccountKey.charCodeAt(i)) | 0;
+  }
+  return `google:oauth:${hash}`;
+}
 
 /**
  * Obtain a Google OAuth2 access token, returning a cached token if it has more
  * than 60 seconds of remaining validity. Google tokens are valid for 3600 seconds,
  * so this avoids a network round-trip on every API call.
  *
- * Promise deduplication prevents a thundering herd: concurrent callers that
- * arrive while the token is being refreshed all await the same in-flight
- * request instead of each issuing their own.
+ * Cache layer: `getDefaultCache()` (in-memory by default, swappable with
+ * Redis / Memcached via `setDefaultCache()`). When the cache is shared across
+ * cluster nodes only one node refreshes per TTL window.
+ *
+ * Promise deduplication prevents a thundering herd inside a single process:
+ * concurrent callers that arrive while the token is being refreshed all await
+ * the same in-flight request instead of each issuing their own.
  */
 async function getCachedAccessToken(serviceAccountKey: string): Promise<string> {
-  const now = Date.now();
-  if (cachedToken && cachedToken.key === serviceAccountKey && cachedToken.expiresAt - now > 60_000) {
-    return cachedToken.token;
+  const cache = getDefaultCache();
+  const cacheKey = googleTokenCacheKey(serviceAccountKey);
+
+  const cached = await cache.get<{ token: string; expiresAt: number }>(cacheKey);
+  if (cached && cached.expiresAt - Date.now() > 60_000) {
+    return cached.token;
   }
-  if (!refreshPromise) {
-    refreshPromise = getAccessToken(serviceAccountKey)
-      .then((token) => {
-        cachedToken = { token, expiresAt: Date.now() + 3_600_000, key: serviceAccountKey };
-        return token;
-      })
-      .finally(() => { refreshPromise = null; });
-  }
-  return refreshPromise;
+
+  const inflight = refreshPromises.get(cacheKey);
+  if (inflight) return inflight;
+
+  const promise = getAccessToken(serviceAccountKey)
+    .then(async (token) => {
+      const expiresAt = Date.now() + 3_600_000;
+      // TTL slightly under the 1h Google validity — cache eviction matches token expiry.
+      await cache.set(cacheKey, { token, expiresAt }, 3_540);
+      return token;
+    })
+    .finally(() => {
+      refreshPromises.delete(cacheKey);
+    });
+  refreshPromises.set(cacheKey, promise);
+  return promise;
 }
 
 /**
