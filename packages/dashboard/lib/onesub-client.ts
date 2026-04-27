@@ -14,6 +14,9 @@ import type {
   MetricsActiveResponse,
   MetricsCountResponse,
   MetricsGroupBy,
+  Platform,
+  PurchaseInfo,
+  PurchaseType,
   SubscriptionInfo,
 } from '@onesub/shared';
 
@@ -44,6 +47,32 @@ export interface OneSubClient {
    * configured). Always 200 — unknown userIds return empty arrays.
    */
   getCustomer(userId: string): Promise<CustomerProfileResponse>;
+  /**
+   * Manually grant a purchase row (typically non-consumable). Skips store
+   * receipt verification entirely — only meaningful for CS workflows where
+   * the operator has decided the user is entitled (refund recovery, gift,
+   * issue compensation). Generates a synthetic transactionId if none provided.
+   */
+  grantPurchase(input: GrantPurchaseInput): Promise<{ ok: true; purchase: PurchaseInfo }>;
+  /**
+   * Reassign a transactionId's owner to a new userId — for legitimate device
+   * migrations / account merges. Server returns 404 TRANSACTION_NOT_FOUND if
+   * the transactionId doesn't exist.
+   */
+  transferPurchase(transactionId: string, newUserId: string): Promise<{ ok: true; purchase: PurchaseInfo }>;
+  /**
+   * Delete every purchase row matching `userId + productId`. Used to let a
+   * user re-test a non-consumable flow. Returns the number of rows deleted.
+   */
+  deletePurchases(userId: string, productId: string): Promise<{ ok: true; deleted: number }>;
+}
+
+export interface GrantPurchaseInput {
+  userId: string;
+  productId: string;
+  platform: Platform;
+  type?: PurchaseType;
+  transactionId?: string;
 }
 
 export class OneSubFetchError extends Error {
@@ -69,6 +98,20 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
     });
     if (!response.ok) {
       throw new OneSubFetchError(response.status, `${path} → ${response.status} ${response.statusText}`);
+    }
+    return (await response.json()) as T;
+  }
+
+  async function send<T>(method: 'POST' | 'DELETE', path: string, body?: unknown): Promise<T> {
+    const response = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      cache: 'no-store',
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new OneSubFetchError(response.status, `${method} ${path} → ${response.status} ${text || response.statusText}`);
     }
     return (await response.json()) as T;
   }
@@ -102,5 +145,17 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
       get<SubscriptionInfo>(`/onesub/admin/subscriptions/${encodeURIComponent(transactionId)}`),
     getCustomer: (userId) =>
       get<CustomerProfileResponse>(`/onesub/admin/customers/${encodeURIComponent(userId)}`),
+    grantPurchase: (input) =>
+      send<{ ok: true; purchase: PurchaseInfo }>('POST', '/onesub/purchase/admin/grant', input),
+    transferPurchase: (transactionId, newUserId) =>
+      send<{ ok: true; purchase: PurchaseInfo }>('POST', '/onesub/purchase/admin/transfer', {
+        transactionId,
+        newUserId,
+      }),
+    deletePurchases: (userId, productId) =>
+      send<{ ok: true; deleted: number }>(
+        'DELETE',
+        `/onesub/purchase/admin/${encodeURIComponent(userId)}/${encodeURIComponent(productId)}`,
+      ),
   };
 }

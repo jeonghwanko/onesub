@@ -8,6 +8,8 @@ import type {
 } from '@onesub/shared';
 import { requireClient, clearAdminSecret } from '../../../../lib/auth';
 import { OneSubFetchError } from '../../../../lib/onesub-client';
+import { GrantForm } from './_components/grant-form';
+import { PurchaseActions } from './_components/purchase-actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,6 +77,8 @@ export default async function CustomerDetailPage({ params }: PageProps) {
         </div>
       ) : null}
 
+      <GrantForm userId={profile.userId} />
+
       {profile.entitlements ? <EntitlementsCard entitlements={profile.entitlements} /> : null}
 
       {profile.subscriptions.length > 0 ? (
@@ -82,7 +86,7 @@ export default async function CustomerDetailPage({ params }: PageProps) {
       ) : null}
 
       {profile.purchases.length > 0 ? (
-        <PurchasesCard purchases={profile.purchases} />
+        <PurchasesCard purchases={profile.purchases} currentUserId={profile.userId} />
       ) : null}
     </div>
   );
@@ -176,7 +180,7 @@ function SubscriptionsCard({ subscriptions }: { subscriptions: SubscriptionInfo[
   );
 }
 
-function PurchasesCard({ purchases }: { purchases: PurchaseInfo[] }) {
+function PurchasesCard({ purchases, currentUserId }: { purchases: PurchaseInfo[]; currentUserId: string }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">
@@ -191,6 +195,7 @@ function PurchasesCard({ purchases }: { purchases: PurchaseInfo[] }) {
             <Th>quantity</Th>
             <Th>purchasedAt</Th>
             <Th>transactionId</Th>
+            <Th>actions</Th>
           </tr>
         </thead>
         <tbody>
@@ -204,6 +209,7 @@ function PurchasesCard({ purchases }: { purchases: PurchaseInfo[] }) {
                 {p.purchasedAt.slice(0, 10)} <span className="text-slate-400">({relativeFromNow(p.purchasedAt)})</span>
               </Td>
               <Td className="font-mono text-xs text-slate-500">{p.transactionId}</Td>
+              <Td><PurchaseActions purchase={p} currentUserId={currentUserId} /></Td>
             </tr>
           ))}
         </tbody>
