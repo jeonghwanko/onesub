@@ -406,6 +406,13 @@ export interface MetricsActiveResponse {
   nonConsumablePurchases: number;
   /** Subscription product distribution. Counted from activeSubscriptions only. */
   byProduct: Record<string, number>;
+  /**
+   * Non-consumable purchase product distribution. Separate from `byProduct`
+   * (which is subs-only) so the dashboard can render two distinct panels for
+   * lifetime products vs subscriptions. Hosts that don't sell non-consumables
+   * see this as an empty object.
+   */
+  byProductPurchases: Record<string, number>;
   /** 'apple' | 'google' counts across both subs and purchases. */
   byPlatform: Record<string, number>;
 }
@@ -433,6 +440,24 @@ export interface ListSubscriptionsResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+/**
+ * Customer profile bundle — every record onesub knows about for a single
+ * `userId`. Returned by `GET /onesub/admin/customers/:userId`. Used by the
+ * dashboard's customer detail page so an operator can see subscriptions,
+ * purchases, and entitlements in one round-trip when handling support tickets.
+ *
+ * `entitlements` is `undefined` when the server has no `entitlements` config
+ * (the routes that depend on it return 503 ENTITLEMENTS_NOT_CONFIGURED).
+ * Hosts using only non-consumables / no entitlement abstraction will see this
+ * field omitted and should hide the entitlement panel.
+ */
+export interface CustomerProfileResponse {
+  userId: string;
+  subscriptions: SubscriptionInfo[];
+  purchases: PurchaseInfo[];
+  entitlements?: Record<string, EntitlementStatus>;
 }
 
 /**

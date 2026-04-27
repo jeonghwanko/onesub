@@ -1,6 +1,7 @@
 import { requireClient } from '../../lib/auth';
 import { OneSubFetchError } from '../../lib/onesub-client';
 import { GrowthChart } from './_components/growth-chart';
+import { PurchasesChart } from './_components/purchases-chart';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,11 +66,13 @@ export default async function DashboardOverview() {
   let metrics;
   let started;
   let expired;
+  let purchasesStarted;
   try {
-    [metrics, started, expired] = await Promise.all([
+    [metrics, started, expired, purchasesStarted] = await Promise.all([
       client.getActiveMetrics(),
       client.getStartedMetrics(from, to, { groupBy: 'day' }),
       client.getExpiredMetrics(from, to, { groupBy: 'day' }),
+      client.getPurchasesStartedMetrics(from, to, { groupBy: 'day' }),
     ]);
   } catch (err) {
     // 401 from the upstream server means the cookie is stale — clear it and
@@ -117,13 +120,21 @@ export default async function DashboardOverview() {
         />
       </div>
 
-      <GrowthChart started={started.buckets ?? []} expired={expired.buckets ?? []} />
-
       <div className="grid gap-6 lg:grid-cols-2">
+        <GrowthChart started={started.buckets ?? []} expired={expired.buckets ?? []} />
+        <PurchasesChart buckets={purchasesStarted.buckets ?? []} />
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-3">
         <DistributionTable
           title="By product (active subscriptions)"
           data={metrics.byProduct}
           empty="활성 구독이 없습니다"
+        />
+        <DistributionTable
+          title="By product (non-consumable)"
+          data={metrics.byProductPurchases}
+          empty="lifetime 구매가 없습니다"
         />
         <DistributionTable
           title="By platform (subs + non-consumable)"

@@ -2,6 +2,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type {
+  CustomerProfileResponse,
+  EntitlementStatus,
   OneSubServerConfig,
   PurchaseInfo,
   ListSubscriptionsResponse,
@@ -10,6 +12,7 @@ import type {
 } from '@onesub/shared';
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
+import { evaluateEntitlement } from './entitlements.js';
 import { sendError, sendZodError } from '../errors.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
@@ -35,6 +38,10 @@ const ADMIN_SECRET_HEADER = 'x-admin-secret';
  *
  *   GET /onesub/admin/subscriptions/:transactionId
  *     → single subscription record by originalTransactionId (dashboard detail page)
+ *
+ *   GET /onesub/admin/customers/:userId
+ *     → bundle of every record onesub knows for one user (subs + purchases +
+ *       entitlements when configured). Backs the dashboard customer detail page.
  */
 export function createAdminRouter(
   config: OneSubServerConfig,
@@ -212,6 +219,52 @@ export function createAdminRouter(
       res.status(200).json(sub);
     } catch (err) {
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'detail error');
+    }
+  });
+
+  // GET /onesub/admin/customers/:userId — full per-user profile. Combines the
+  // store calls a CS dashboard makes for "show me everything about this user"
+  // into a single round-trip.
+  //
+  // Always returns 200 (even for unknown userIds) — empty arrays + no
+  // entitlements means "we have no record of this user", which is a valid
+  // signal for the dashboard to render rather than an error condition.
+  const customerParamsSchema = z.object({
+    userId: z.string().min(1).max(256),
+  });
+  router.get('/onesub/admin/customers/:userId', async (req: Request, res: Response) => {
+    let params;
+    try {
+      params = customerParamsSchema.parse(req.params);
+    } catch {
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId required');
+      return;
+    }
+    try {
+      const [subscriptions, purchases] = await Promise.all([
+        store.getAllByUserId(params.userId),
+        purchaseStore.getPurchasesByUserId(params.userId),
+      ]);
+
+      // Evaluate entitlements only when configured. Hosts that don't use the
+      // entitlement abstraction get the field omitted (dashboard hides panel).
+      let entitlements: Record<string, EntitlementStatus> | undefined;
+      if (config.entitlements && Object.keys(config.entitlements).length > 0) {
+        entitlements = {};
+        for (const [id, def] of Object.entries(config.entitlements)) {
+          entitlements[id] = await evaluateEntitlement(params.userId, def, store, purchaseStore);
+        }
+      }
+
+      const response: CustomerProfileResponse = {
+        userId: params.userId,
+        subscriptions,
+        purchases,
+        ...(entitlements ? { entitlements } : {}),
+      };
+      res.status(200).json(response);
+    } catch (err) {
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'customer error');
     }
   });
 

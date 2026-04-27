@@ -11,9 +11,13 @@ export const ROUTES = {
   METRICS_ACTIVE: '/onesub/metrics/active',
   METRICS_STARTED: '/onesub/metrics/started',
   METRICS_EXPIRED: '/onesub/metrics/expired',
+  /** Non-consumable purchases started in the window (purchasedAt-based). */
+  METRICS_PURCHASES_STARTED: '/onesub/metrics/purchases/started',
   ADMIN_SUBSCRIPTIONS: '/onesub/admin/subscriptions',
   /** Single-record detail; takes :transactionId path param. */
   ADMIN_SUBSCRIPTION_DETAIL: '/onesub/admin/subscriptions/:transactionId',
+  /** Per-user profile bundle (subs + purchases + entitlements); takes :userId path param. */
+  ADMIN_CUSTOMER_DETAIL: '/onesub/admin/customers/:userId',
 } as const;
 
 /** Default server port */
