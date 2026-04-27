@@ -101,7 +101,8 @@ function EntitlementsCard({ entitlements }: { entitlements: Record<string, Entit
       <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">
         Entitlements
       </div>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] text-sm">
         <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
           <tr>
             <Th>id</Th>
@@ -133,6 +134,7 @@ function EntitlementsCard({ entitlements }: { entitlements: Record<string, Entit
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -143,7 +145,8 @@ function SubscriptionsCard({ subscriptions }: { subscriptions: SubscriptionInfo[
       <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">
         Subscriptions <span className="ml-1 text-xs font-normal text-slate-400">({subscriptions.length})</span>
       </div>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] text-sm">
         <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
           <tr>
             <Th>productId</Th>
@@ -176,6 +179,7 @@ function SubscriptionsCard({ subscriptions }: { subscriptions: SubscriptionInfo[
           })}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
@@ -186,7 +190,8 @@ function PurchasesCard({ purchases, currentUserId }: { purchases: PurchaseInfo[]
       <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">
         Purchases <span className="ml-1 text-xs font-normal text-slate-400">({purchases.length})</span>
       </div>
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full min-w-[640px] text-sm">
         <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
           <tr>
             <Th>productId</Th>
@@ -214,6 +219,7 @@ function PurchasesCard({ purchases, currentUserId }: { purchases: PurchaseInfo[]
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }
