@@ -406,6 +406,13 @@ export interface MetricsActiveResponse {
   nonConsumablePurchases: number;
   /** Subscription product distribution. Counted from activeSubscriptions only. */
   byProduct: Record<string, number>;
+  /**
+   * Non-consumable purchase product distribution. Separate from `byProduct`
+   * (which is subs-only) so the dashboard can render two distinct panels for
+   * lifetime products vs subscriptions. Hosts that don't sell non-consumables
+   * see this as an empty object.
+   */
+  byProductPurchases: Record<string, number>;
   /** 'apple' | 'google' counts across both subs and purchases. */
   byPlatform: Record<string, number>;
 }

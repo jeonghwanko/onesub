@@ -78,6 +78,7 @@ export function createMetricsRouter(
       const now = Date.now();
 
       const byProduct: Record<string, number> = {};
+      const byProductPurchases: Record<string, number> = {};
       const byPlatform: Record<string, number> = {};
       let activeSubscriptions = 0;
       let gracePeriodSubscriptions = 0;
@@ -96,7 +97,10 @@ export function createMetricsRouter(
       for (const p of purchases) {
         if (p.type !== PURCHASE_TYPE.NON_CONSUMABLE) continue;
         nonConsumablePurchases++;
-        // Don't add to byProduct (subscription-only metric for product distribution)
+        // byProductPurchases is purchase-only; byProduct (subs-only) stays clean
+        // so dashboards can render distinct "subscription mix" vs "lifetime mix"
+        // panels without untangling them client-side.
+        bump(byProductPurchases, p.productId);
         bump(byPlatform, p.platform);
       }
 
@@ -106,6 +110,7 @@ export function createMetricsRouter(
         gracePeriodSubscriptions,
         nonConsumablePurchases,
         byProduct,
+        byProductPurchases,
         byPlatform,
       };
       res.status(200).json(response);
@@ -259,6 +264,59 @@ export function createMetricsRouter(
       res.status(200).json(response);
     } catch (err) {
       log.error('[onesub/metrics/expired] error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
+    }
+  });
+
+  // ── GET /onesub/metrics/purchases/started?from=&to=&groupBy= ─────────────
+  // Counts non-consumable purchases (lifetime products) by purchasedAt within
+  // the window. Backs the dashboard's Purchases timeseries chart so hosts that
+  // sell only lifetime products (e.g. coffee's Welcome Pass) get a meaningful
+  // growth signal even when they have no subscription data.
+  //
+  // Consumables are excluded — they grant a one-time resource (coins, lives),
+  // not an ongoing entitlement, and would dominate the count noisily.
+  router.get(ROUTES.METRICS_PURCHASES_STARTED, async (req: Request, res: Response) => {
+    const range = parseRange(req);
+    if ('error' in range) {
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, range.error);
+      return;
+    }
+    try {
+      const purchases = await purchaseStore.listAll();
+      const byProduct: Record<string, number> = {};
+      const byPlatform: Record<string, number> = {};
+      let total = 0;
+
+      const buckets =
+        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
+      const bucketIndex =
+        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
+
+      for (const p of purchases) {
+        if (p.type !== PURCHASE_TYPE.NON_CONSUMABLE) continue;
+        const purchasedMs = new Date(p.purchasedAt).getTime();
+        if (purchasedMs < range.fromMs || purchasedMs > range.toMs) continue;
+        total++;
+        bump(byProduct, p.productId);
+        bump(byPlatform, p.platform);
+        if (buckets && bucketIndex) {
+          const idx = bucketIndex.get(utcDateKey(purchasedMs));
+          if (idx !== undefined) buckets[idx]!.count++;
+        }
+      }
+
+      const response: MetricsCountResponse = {
+        from: req.query['from'] as string,
+        to: req.query['to'] as string,
+        total,
+        byProduct,
+        byPlatform,
+        ...(buckets ? { buckets } : {}),
+      };
+      res.status(200).json(response);
+    } catch (err) {
+      log.error('[onesub/metrics/purchases/started] error:', err);
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });

@@ -123,6 +123,7 @@ describe('GET /onesub/metrics/active', () => {
       gracePeriodSubscriptions: 0,
       nonConsumablePurchases: 0,
       byProduct: {},
+      byProductPurchases: {},
       byPlatform: {},
     });
   });
@@ -357,6 +358,86 @@ describe('GET /onesub/metrics/expired?groupBy=day', () => {
     );
 
     expect(resp.body.total).toBe(2);
+    expect(resp.body.buckets).toEqual([
+      { date: '2026-04-01', count: 1 },
+      { date: '2026-04-02', count: 0 },
+      { date: '2026-04-03', count: 1 },
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /onesub/metrics/active — byProductPurchases regression
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('GET /onesub/metrics/active byProductPurchases', () => {
+  it('reports non-consumable purchases under byProductPurchases (separate from byProduct)', async () => {
+    const { store, purchaseStore, server } = buildServer({ adminSecret: SECRET });
+    // Active subscription — should land in byProduct (subs-only)
+    await store.save(sub({ userId: 'a', productId: 'pro_monthly', status: 'active' }));
+    // Non-consumable purchases — must land in byProductPurchases, NOT byProduct
+    await purchaseStore.savePurchase(purchase({ userId: 'b', productId: 'lifetime_pass', transactionId: 'p1' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'c', productId: 'lifetime_pass', transactionId: 'p2' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'd', productId: 'event_pack',    transactionId: 'p3' }));
+    // Consumable — must NOT show in byProductPurchases (consumables aren't entitlement-relevant)
+    await purchaseStore.savePurchase(purchase({ userId: 'e', productId: 'coin_500', type: 'consumable', transactionId: 'p4' }));
+
+    const resp = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+
+    expect(resp.body.byProduct).toEqual({ pro_monthly: 1 });
+    expect(resp.body.byProductPurchases).toEqual({ lifetime_pass: 2, event_pack: 1 });
+  });
+
+  it('byProductPurchases empty when there are no non-consumable purchases', async () => {
+    const { server } = buildServer({ adminSecret: SECRET });
+    const resp = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+    expect(resp.body.byProductPurchases).toEqual({});
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /onesub/metrics/purchases/started — non-consumable purchase timeseries
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('GET /onesub/metrics/purchases/started', () => {
+  it('counts non-consumable purchases with purchasedAt in window', async () => {
+    const { purchaseStore, server } = buildServer({ adminSecret: SECRET });
+    await purchaseStore.savePurchase(purchase({ userId: 'a', purchasedAt: '2026-03-15T00:00:00Z', transactionId: 'before' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'b', purchasedAt: '2026-04-10T00:00:00Z', transactionId: 'in1' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'c', purchasedAt: '2026-04-20T00:00:00Z', transactionId: 'in2' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/purchases/started?from=2026-04-01T00:00:00Z&to=2026-04-30T23:59:59Z',
+      AUTH,
+    );
+
+    expect(resp.body.total).toBe(2);
+  });
+
+  it('excludes consumables (entitlement-irrelevant)', async () => {
+    const { purchaseStore, server } = buildServer({ adminSecret: SECRET });
+    await purchaseStore.savePurchase(purchase({ userId: 'a', type: 'non_consumable', purchasedAt: '2026-04-10T00:00:00Z', transactionId: 'nc1' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'b', type: 'consumable',     purchasedAt: '2026-04-15T00:00:00Z', transactionId: 'co1' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/purchases/started?from=2026-04-01T00:00:00Z&to=2026-04-30T23:59:59Z',
+      AUTH,
+    );
+
+    expect(resp.body.total).toBe(1);
+    expect(resp.body.byProduct).toEqual({ lifetime_pass: 1 });
+  });
+
+  it('returns zero-filled buckets with groupBy=day', async () => {
+    const { purchaseStore, server } = buildServer({ adminSecret: SECRET });
+    await purchaseStore.savePurchase(purchase({ userId: 'a', purchasedAt: '2026-04-01T05:00:00Z', transactionId: 't1' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'b', purchasedAt: '2026-04-03T18:00:00Z', transactionId: 't2' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/purchases/started?from=2026-04-01T00:00:00Z&to=2026-04-03T23:59:59Z&groupBy=day',
+      AUTH,
+    );
+
     expect(resp.body.buckets).toEqual([
       { date: '2026-04-01', count: 1 },
       { date: '2026-04-02', count: 0 },

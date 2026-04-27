@@ -26,6 +26,12 @@ export interface OneSubClient {
   getActiveMetrics(): Promise<MetricsActiveResponse>;
   getStartedMetrics(from: Date, to: Date, opts?: MetricsRangeOptions): Promise<MetricsCountResponse>;
   getExpiredMetrics(from: Date, to: Date, opts?: MetricsRangeOptions): Promise<MetricsCountResponse>;
+  /**
+   * Non-consumable purchases started in the window. Use for the dashboard's
+   * Purchases timeseries — equivalent to getStartedMetrics but counts
+   * lifetime products instead of subscriptions.
+   */
+  getPurchasesStartedMetrics(from: Date, to: Date, opts?: MetricsRangeOptions): Promise<MetricsCountResponse>;
   listSubscriptions(query: ListSubscriptionsQuery): Promise<ListSubscriptionsResponse>;
   /**
    * Fetch a single subscription record by `originalTransactionId`. Throws
@@ -79,6 +85,8 @@ export function createClient(serverUrl: string, adminSecret: string): OneSubClie
       get<MetricsCountResponse>(rangePath('/onesub/metrics/started', from, to, opts)),
     getExpiredMetrics: (from, to, opts) =>
       get<MetricsCountResponse>(rangePath('/onesub/metrics/expired', from, to, opts)),
+    getPurchasesStartedMetrics: (from, to, opts) =>
+      get<MetricsCountResponse>(rangePath('/onesub/metrics/purchases/started', from, to, opts)),
     listSubscriptions: (query) => {
       const params = new URLSearchParams();
       if (query.userId)    params.set('userId', query.userId);
