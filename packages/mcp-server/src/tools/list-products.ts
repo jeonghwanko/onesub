@@ -1,18 +1,10 @@
 import { z } from 'zod';
-import type { AppleListOpts, AppleProduct, GoogleListOpts, GoogleProduct } from '../types.js';
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const appleConnect = require('../../providers/apple-connect.js') as {
-  createAppleSubscription: (opts: unknown) => Promise<unknown>;
-  listAppleProducts: (opts: AppleListOpts) => Promise<AppleProduct[]>;
-};
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const googlePlay = require('../../providers/google-play.js') as {
-  createGoogleSubscription: (opts: unknown) => Promise<unknown>;
-  listGoogleProducts: (opts: GoogleListOpts) => Promise<GoogleProduct[]>;
-};
-
+import {
+  listAppleProducts,
+  listGoogleProducts,
+  type AppleProductRecord,
+  type GoogleProductRecord,
+} from '@onesub/providers';
 
 export const listProductsInputSchema = {
   platform: z.enum(['apple', 'google', 'both']).default('both'),
@@ -41,23 +33,18 @@ export async function runListProducts(
   const needsApple = platform === 'apple' || platform === 'both';
   const needsGoogle = platform === 'google' || platform === 'both';
 
-  let appleProducts: AppleProduct[] | null = null;
-  let googleProducts: GoogleProduct[] | null = null;
+  let appleProducts: AppleProductRecord[] | null = null;
+  let googleProducts: GoogleProductRecord[] | null = null;
   let appleError: string | null = null;
   let googleError: string | null = null;
 
   if (needsApple) {
-    if (
-      !args.appleKeyId ||
-      !args.appleIssuerId ||
-      !args.applePrivateKey ||
-      !args.appleAppId
-    ) {
+    if (!args.appleKeyId || !args.appleIssuerId || !args.applePrivateKey || !args.appleAppId) {
       appleError =
         'Missing required Apple credentials: appleKeyId, appleIssuerId, applePrivateKey, appleAppId';
     } else {
       try {
-        appleProducts = await appleConnect.listAppleProducts({
+        appleProducts = await listAppleProducts({
           keyId: args.appleKeyId,
           issuerId: args.appleIssuerId,
           privateKey: args.applePrivateKey,
@@ -75,7 +62,7 @@ export async function runListProducts(
         'Missing required Google credentials: googlePackageName, googleServiceAccountKey';
     } else {
       try {
-        googleProducts = await googlePlay.listGoogleProducts({
+        googleProducts = await listGoogleProducts({
           packageName: args.googlePackageName,
           serviceAccountKey: args.googleServiceAccountKey,
         });
@@ -100,22 +87,21 @@ export async function runListProducts(
 function buildListOutput(opts: {
   needsApple: boolean;
   needsGoogle: boolean;
-  appleProducts: AppleProduct[] | null;
-  googleProducts: GoogleProduct[] | null;
+  appleProducts: AppleProductRecord[] | null;
+  googleProducts: GoogleProductRecord[] | null;
   appleError: string | null;
   googleError: string | null;
 }): string {
-  const { needsApple, needsGoogle, appleProducts, googleProducts, appleError, googleError } =
-    opts;
+  const { needsApple, needsGoogle, appleProducts, googleProducts, appleError, googleError } = opts;
 
-  const lines: string[] = ['# Subscription Products', ''];
+  const lines: string[] = ['# IAP Products', ''];
 
   if (needsApple) {
     lines.push('## Apple App Store Connect', '');
     if (appleError) {
       lines.push(`**Error:** ${appleError}`, '');
     } else if (!appleProducts || appleProducts.length === 0) {
-      lines.push('No subscription products found.', '');
+      lines.push('No products found.', '');
     } else {
       lines.push(`Found **${appleProducts.length}** product(s).`, '');
       lines.push('| Product ID | Name | Type | Status | Price |');
@@ -141,7 +127,7 @@ function buildListOutput(opts: {
     if (googleError) {
       lines.push(`**Error:** ${googleError}`, '');
     } else if (!googleProducts || googleProducts.length === 0) {
-      lines.push('No subscription products found.', '');
+      lines.push('No products found.', '');
     } else {
       lines.push(`Found **${googleProducts.length}** product(s).`, '');
       lines.push('| Product ID | Name | Type | Status | Price |');
@@ -164,7 +150,7 @@ function buildListOutput(opts: {
 
   lines.push('---', '');
   lines.push(
-    'Use `onesub_create_product` to add new products, or `onesub_check_status` to verify a specific user\'s subscription.',
+    'Use `onesub_create_product` to add new products, `onesub_manage_product` to update or delete, or `onesub_check_status` to verify a user\'s subscription.',
   );
 
   return lines.join('\n');

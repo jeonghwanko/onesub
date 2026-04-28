@@ -11,7 +11,9 @@ import { createProductInputSchema, runCreateProduct } from './tools/create-produ
 import { listProductsInputSchema, runListProducts } from './tools/list-products.js';
 import { viewSubscribersInputSchema, runViewSubscribers } from './tools/view-subscribers.js';
 import { simulatePurchaseInputSchema, runSimulatePurchase } from './tools/simulate-purchase.js';
+import { simulateWebhookInputSchema, runSimulateWebhook } from './tools/simulate-webhook.js';
 import { inspectStateInputSchema, runInspectState } from './tools/inspect-state.js';
+import { manageProductInputSchema, runManageProduct } from './tools/manage-product.js';
 
 const server = new McpServer({
   name: 'onesub-mcp',
@@ -83,14 +85,16 @@ server.tool(
 
 server.tool(
   'onesub_create_product',
-  'Create a subscription product on Apple App Store Connect and/or Google Play Console. Accepts either appleAppId (numeric) or appleBundleId (e.g. "gg.pryzm.carrot") for Apple — the App ID is resolved automatically from the bundle ID. Automatically sets the price and adds Korean localization for KRW products.',
+  'Create a subscription, consumable, or non-consumable IAP product on Apple App Store Connect and/or Google Play Console. Accepts either appleAppId (numeric) or appleBundleId for Apple. Automatically sets the price and adds Korean localization for KRW products. Use productType to select subscription (default), consumable, or non_consumable.',
   {
     platform: createProductInputSchema.platform,
     productId: createProductInputSchema.productId,
     name: createProductInputSchema.name,
     price: createProductInputSchema.price,
     currency: createProductInputSchema.currency,
+    productType: createProductInputSchema.productType,
     period: createProductInputSchema.period,
+    extraRegions: createProductInputSchema.extraRegions,
     appleKeyId: createProductInputSchema.appleKeyId,
     appleIssuerId: createProductInputSchema.appleIssuerId,
     applePrivateKey: createProductInputSchema.applePrivateKey,
@@ -106,7 +110,7 @@ server.tool(
 
 server.tool(
   'onesub_list_products',
-  'List subscription products registered on Apple App Store Connect and/or Google Play Console',
+  'List all IAP products (subscriptions, consumables, non-consumables) registered on Apple App Store Connect and/or Google Play Console',
   {
     platform: listProductsInputSchema.platform,
     appleKeyId: listProductsInputSchema.appleKeyId,
@@ -150,6 +154,25 @@ server.tool(
 );
 
 server.tool(
+  'onesub_simulate_webhook',
+  "Send a simulated Apple or Google webhook notification to an onesub server to test lifecycle transitions without real store credentials. Builds a fake (unsigned) payload and POSTs it to /onesub/webhook/apple or /onesub/webhook/google. Requires the server to have skipJwsVerification: true (set automatically by `npx @onesub/cli dev`). Apple types: SUBSCRIBED, DID_RENEW, DID_RECOVER, OFFER_REDEEMED, DID_FAIL_TO_RENEW, GRACE_PERIOD_EXPIRED, EXPIRED, REFUND, REVOKE. Google types: purchased, renewed, recovered, restarted, canceled, revoked, expired, on_hold, grace_period, paused, price_change_confirmed.",
+  {
+    serverUrl: simulateWebhookInputSchema.serverUrl,
+    platform: simulateWebhookInputSchema.platform,
+    notificationType: simulateWebhookInputSchema.notificationType,
+    transactionId: simulateWebhookInputSchema.transactionId,
+    productId: simulateWebhookInputSchema.productId,
+    subtype: simulateWebhookInputSchema.subtype,
+    bundleId: simulateWebhookInputSchema.bundleId,
+    packageName: simulateWebhookInputSchema.packageName,
+    expiresInDays: simulateWebhookInputSchema.expiresInDays,
+  },
+  async (args) => {
+    return runSimulateWebhook(args);
+  },
+);
+
+server.tool(
   'onesub_inspect_state',
   "Read the current subscription + one-time purchase state for a user from the onesub server in one call. Useful after simulating purchases to confirm the server recorded them, or when debugging 'isActive' mismatches.",
   {
@@ -158,6 +181,28 @@ server.tool(
   },
   async (args) => {
     return runInspectState(args);
+  },
+);
+
+server.tool(
+  'onesub_manage_product',
+  'Update or delete an existing IAP product on Apple App Store Connect and/or Google Play Console. Use action="update" to rename a product, or action="delete" to remove it. Note: Apple products that are already approved (READY_FOR_SALE) cannot be deleted via the API — use App Store Connect to remove them manually.',
+  {
+    action: manageProductInputSchema.action,
+    platform: manageProductInputSchema.platform,
+    productId: manageProductInputSchema.productId,
+    productType: manageProductInputSchema.productType,
+    name: manageProductInputSchema.name,
+    appleKeyId: manageProductInputSchema.appleKeyId,
+    appleIssuerId: manageProductInputSchema.appleIssuerId,
+    applePrivateKey: manageProductInputSchema.applePrivateKey,
+    appleAppId: manageProductInputSchema.appleAppId,
+    appleBundleId: manageProductInputSchema.appleBundleId,
+    googlePackageName: manageProductInputSchema.googlePackageName,
+    googleServiceAccountKey: manageProductInputSchema.googleServiceAccountKey,
+  },
+  async (args) => {
+    return runManageProduct(args);
   },
 );
 

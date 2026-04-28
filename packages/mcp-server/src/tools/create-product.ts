@@ -1,71 +1,18 @@
 import { z } from 'zod';
-import type { AppleListOpts, AppleProduct, GoogleListOpts, GoogleProduct } from '../types.js';
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const appleConnect = require('../../providers/apple-connect.js') as {
-  createAppleSubscription: (opts: AppleCreateOpts) => Promise<AppleCreateResult>;
-  listAppleProducts: (opts: AppleListOpts) => Promise<AppleProduct[]>;
-  resolveAppId: (config: AppleConnectConfig, bundleId: string) => Promise<string | null>;
-};
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const googlePlay = require('../../providers/google-play.js') as {
-  createGoogleSubscription: (opts: GoogleCreateOpts) => Promise<GoogleCreateResult>;
-  listGoogleProducts: (opts: GoogleListOpts) => Promise<GoogleProduct[]>;
-};
-
-interface AppleConnectConfig {
-  keyId: string;
-  issuerId: string;
-  privateKey: string;
-}
-
-interface PricePointMatch {
-  id: string;
-  price: string;
-}
-
-interface AppleCreateOpts {
-  productId: string;
-  name: string;
-  price: number;
-  currency: string;
-  period: 'monthly' | 'yearly';
-  keyId: string;
-  issuerId: string;
-  privateKey: string;
-  appId?: string;
-  bundleId?: string;
-}
-
-interface AppleCreateResult {
-  success: boolean;
-  productId?: string;
-  subscriptionId?: string;
-  priceSet?: boolean;
-  priceNearest?: PricePointMatch[];
-  localizationAdded?: boolean;
-  error?: string;
-  errorType?: 'DUPLICATE' | 'AUTH' | 'RELATIONSHIP' | 'PRICE_NOT_FOUND' | 'UNKNOWN';
-}
-
-
-interface GoogleCreateOpts {
-  productId: string;
-  name: string;
-  price: number;
-  currency: string;
-  period: 'monthly' | 'yearly';
-  packageName: string;
-  serviceAccountKey: string;
-}
-
-interface GoogleCreateResult {
-  success: boolean;
-  productId?: string;
-  error?: string;
-}
-
+import {
+  createAppleSubscription,
+  createAppleOneTimePurchase,
+  listAppleProducts,
+  resolveAppleAppId,
+  createGoogleSubscription,
+  createGoogleOneTimePurchase,
+  type AppleCreateSubscriptionResult,
+  type AppleCreateOneTimePurchaseResult,
+  type AppleProductRecord,
+  type GoogleCreateSubscriptionResult,
+  type GoogleCreateOneTimePurchaseResult,
+  type RegionPrice,
+} from '@onesub/providers';
 
 export const createProductInputSchema = {
   platform: z.enum(['apple', 'google', 'both']).describe('Target platform'),
@@ -75,10 +22,18 @@ export const createProductInputSchema = {
     .number()
     .describe('Price in the smallest unit (e.g. 499 for $4.99, 4900 for ₩4,900)'),
   currency: z.string().default('USD').describe('Currency code (USD, KRW, etc.)'),
+  productType: z
+    .enum(['subscription', 'consumable', 'non_consumable'])
+    .default('subscription')
+    .describe('Product type: subscription (auto-renewable), consumable (can be bought multiple times), or non_consumable (one-time purchase)'),
   period: z
     .enum(['monthly', 'yearly'])
     .default('monthly')
-    .describe('Billing period'),
+    .describe('Billing period — only applies to subscriptions'),
+  extraRegions: z
+    .array(z.object({ currency: z.string(), price: z.number() }))
+    .optional()
+    .describe('Additional region prices, e.g. [{ currency: "KRW", price: 4900 }, { currency: "JPY", price: 600 }]'),
   appleKeyId: z.string().optional().describe('App Store Connect API Key ID'),
   appleIssuerId: z.string().optional().describe('App Store Connect Issuer ID'),
   applePrivateKey: z.string().optional().describe('P8 private key contents'),
@@ -103,7 +58,9 @@ type CreateProductArgs = {
   name: string;
   price: number;
   currency?: string;
+  productType?: 'subscription' | 'consumable' | 'non_consumable';
   period?: 'monthly' | 'yearly';
+  extraRegions?: RegionPrice[];
   appleKeyId?: string;
   appleIssuerId?: string;
   applePrivateKey?: string;
@@ -113,11 +70,16 @@ type CreateProductArgs = {
   googleServiceAccountKey?: string;
 };
 
+type AppleCreateResult = AppleCreateSubscriptionResult | AppleCreateOneTimePurchaseResult;
+type GoogleCreateResult = GoogleCreateSubscriptionResult | GoogleCreateOneTimePurchaseResult;
+
 export async function runCreateProduct(
   args: CreateProductArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const currency = args.currency ?? 'USD';
+  const productType = args.productType ?? 'subscription';
   const period = args.period ?? 'monthly';
+  const extraRegions = args.extraRegions ?? [];
 
   const needsApple = args.platform === 'apple' || args.platform === 'both';
   const needsGoogle = args.platform === 'google' || args.platform === 'both';
@@ -126,7 +88,6 @@ export async function runCreateProduct(
   let googleResult: GoogleCreateResult | null = null;
   let appleConfigError: string | null = null;
   let googleConfigError: string | null = null;
-  // Resolved appId (may come from bundleId lookup — used for listing existing products on DUPLICATE)
   let resolvedAppleAppId: string | undefined = args.appleAppId;
 
   if (needsApple) {
@@ -137,37 +98,29 @@ export async function runCreateProduct(
       appleConfigError =
         'Missing required Apple config: provide either appleAppId (numeric App Store Connect ID) or appleBundleId (e.g. "gg.pryzm.carrot")';
     } else {
-      // If only bundleId was provided, resolve it first so we have the ID for
-      // listing existing products if a DUPLICATE error occurs
       if (!args.appleAppId && args.appleBundleId) {
         try {
-          const config: AppleConnectConfig = {
-            keyId: args.appleKeyId,
-            issuerId: args.appleIssuerId,
-            privateKey: args.applePrivateKey,
-          };
-          const resolved = await appleConnect.resolveAppId(config, args.appleBundleId);
-          if (resolved) {
-            resolvedAppleAppId = resolved;
-          }
-        } catch {
-          // Non-fatal — createAppleSubscription will handle the resolution again
-        }
+          const resolved = await resolveAppleAppId(
+            { keyId: args.appleKeyId, issuerId: args.appleIssuerId, privateKey: args.applePrivateKey },
+            args.appleBundleId,
+          );
+          if (resolved) resolvedAppleAppId = resolved;
+        } catch { /* non-fatal */ }
       }
 
       try {
-        appleResult = await appleConnect.createAppleSubscription({
-          productId: args.productId,
-          name: args.name,
-          price: args.price,
-          currency,
-          period,
+        const creds = {
           keyId: args.appleKeyId,
           issuerId: args.appleIssuerId,
           privateKey: args.applePrivateKey,
           appId: args.appleAppId,
           bundleId: args.appleBundleId,
-        });
+        };
+        if (productType === 'subscription') {
+          appleResult = await createAppleSubscription({ ...creds, productId: args.productId, name: args.name, price: args.price, currency, period, extraRegions });
+        } else {
+          appleResult = await createAppleOneTimePurchase({ ...creds, productId: args.productId, name: args.name, price: args.price, currency, type: productType, extraRegions });
+        }
       } catch (err: unknown) {
         appleResult = {
           success: false,
@@ -178,8 +131,7 @@ export async function runCreateProduct(
     }
   }
 
-  // For DUPLICATE errors, try to fetch the existing product list for context
-  let existingAppleProducts: AppleProduct[] | null = null;
+  let existingAppleProducts: AppleProductRecord[] | null = null;
   if (
     needsApple &&
     appleResult?.errorType === 'DUPLICATE' &&
@@ -189,15 +141,13 @@ export async function runCreateProduct(
     args.applePrivateKey
   ) {
     try {
-      existingAppleProducts = await appleConnect.listAppleProducts({
+      existingAppleProducts = await listAppleProducts({
         keyId: args.appleKeyId,
         issuerId: args.appleIssuerId,
         privateKey: args.applePrivateKey,
         appId: resolvedAppleAppId,
       });
-    } catch {
-      // Non-fatal — we just won't show the list
-    }
+    } catch { /* non-fatal */ }
   }
 
   if (needsGoogle) {
@@ -206,15 +156,29 @@ export async function runCreateProduct(
         'Missing required Google config: googlePackageName, googleServiceAccountKey';
     } else {
       try {
-        googleResult = await googlePlay.createGoogleSubscription({
-          productId: args.productId,
-          name: args.name,
-          price: args.price,
-          currency,
-          period,
-          packageName: args.googlePackageName,
-          serviceAccountKey: args.googleServiceAccountKey,
-        });
+        if (productType === 'subscription') {
+          googleResult = await createGoogleSubscription({
+            productId: args.productId,
+            name: args.name,
+            price: args.price,
+            currency,
+            period,
+            extraRegions,
+            packageName: args.googlePackageName,
+            serviceAccountKey: args.googleServiceAccountKey,
+          });
+        } else {
+          googleResult = await createGoogleOneTimePurchase({
+            productId: args.productId,
+            name: args.name,
+            price: args.price,
+            currency,
+            type: productType,
+            extraRegions,
+            packageName: args.googlePackageName,
+            serviceAccountKey: args.googleServiceAccountKey,
+          });
+        }
       } catch (err: unknown) {
         googleResult = {
           success: false,
@@ -229,6 +193,7 @@ export async function runCreateProduct(
     name: args.name,
     price: args.price,
     currency,
+    productType,
     period,
     needsApple,
     needsGoogle,
@@ -247,6 +212,7 @@ function buildCreateOutput(opts: {
   name: string;
   price: number;
   currency: string;
+  productType: string;
   period: string;
   needsApple: boolean;
   needsGoogle: boolean;
@@ -254,29 +220,27 @@ function buildCreateOutput(opts: {
   googleResult: GoogleCreateResult | null;
   appleConfigError: string | null;
   googleConfigError: string | null;
-  existingAppleProducts: AppleProduct[] | null;
+  existingAppleProducts: AppleProductRecord[] | null;
 }): string {
   const {
-    productId,
-    name,
-    price,
-    currency,
-    period,
-    needsApple,
-    needsGoogle,
-    appleResult,
-    googleResult,
-    appleConfigError,
-    googleConfigError,
+    productId, name, price, currency, productType, period,
+    needsApple, needsGoogle,
+    appleResult, googleResult,
+    appleConfigError, googleConfigError,
     existingAppleProducts,
   } = opts;
 
+  const typeLabel = productType === 'subscription'
+    ? `subscription / ${period}`
+    : productType === 'consumable' ? 'consumable (one-time)' : 'non-consumable (one-time)';
+
   const lines: string[] = [
-    '# Create Subscription Product',
+    '# Create IAP Product',
     '',
     `**Product ID:** \`${productId}\``,
     `**Name:** ${name}`,
-    `**Price:** ${price} ${currency} / ${period}`,
+    `**Type:** ${typeLabel}`,
+    `**Price:** ${price} ${currency}`,
     `**Platforms configured:** ${[needsApple && 'Apple', needsGoogle && 'Google'].filter(Boolean).join(', ')}`,
     '',
     '---',
@@ -297,39 +261,45 @@ function buildCreateOutput(opts: {
       if (appleResult.success) {
         lines.push('', `**Status:** Success`);
         lines.push(`**Created product ID:** \`${appleResult.productId ?? productId}\``);
-        if (appleResult.subscriptionId) {
-          lines.push(`**Subscription ID:** \`${appleResult.subscriptionId}\``);
+        if ('internalId' in appleResult && appleResult.internalId) {
+          lines.push(`**Internal ID:** \`${appleResult.internalId}\``);
         }
 
-        // Price outcome
         if (appleResult.priceSet) {
           lines.push(`**Price:** Set automatically (${price} ${currency})`);
         } else if (appleResult.priceNearest && appleResult.priceNearest.length > 0) {
           lines.push('');
-          lines.push(`**Price:** Not set — ₩${price.toLocaleString()} is not an Apple price tier.`);
+          lines.push(`**Price:** Not set — ${price.toLocaleString()} ${currency} is not an Apple price tier.`);
           lines.push('Apple uses fixed price tiers. Nearest available options:');
           for (const p of appleResult.priceNearest) {
-            lines.push(`  - ₩${parseFloat(p.price).toLocaleString()} (price point ID: \`${p.id}\`)`);
+            lines.push(`  - ${parseFloat(p.price).toLocaleString()} ${currency} (price point ID: \`${p.id}\`)`);
           }
           lines.push('');
-          lines.push('Set the price manually in [App Store Connect](https://appstoreconnect.apple.com) → your app → Subscriptions → (your subscription) → Pricing.');
+          lines.push('Set the price manually in [App Store Connect](https://appstoreconnect.apple.com).');
         } else {
           lines.push('**Price:** Not set automatically — set manually in App Store Connect.');
         }
 
-        // Localization outcome
-        if (appleResult.localizationAdded) {
+        if ('extraRegionsSet' in appleResult && appleResult.extraRegionsSet && appleResult.extraRegionsSet.length > 0) {
+          lines.push(`**Extra regions set:** ${appleResult.extraRegionsSet.join(', ')}`);
+        }
+
+        if ('localizationAdded' in appleResult && appleResult.localizationAdded) {
           lines.push('**Korean localization:** Added');
         }
 
         lines.push('', '**Next steps:**');
-        if (!appleResult.priceSet) {
-          lines.push('1. Set the subscription price in App Store Connect (see pricing note above).');
-          lines.push('2. Add localized descriptions and screenshots if required.');
-          lines.push('3. Submit the subscription for App Review before going live.');
+        if (productType === 'subscription') {
+          if (!appleResult.priceSet) {
+            lines.push('1. Set the subscription price in App Store Connect.');
+          }
+          lines.push(`${!appleResult.priceSet ? '2' : '1'}. Add localized descriptions in App Store Connect if required.`);
+          lines.push(`${!appleResult.priceSet ? '3' : '2'}. Submit the subscription for App Review before going live.`);
         } else {
-          lines.push('1. Add localized descriptions and screenshots in App Store Connect if required.');
-          lines.push('2. Submit the subscription for App Review before going live.');
+          if (!appleResult.priceSet) {
+            lines.push('1. Set the product price in App Store Connect.');
+          }
+          lines.push(`${!appleResult.priceSet ? '2' : '1'}. Add a localized description in App Store Connect if required.`);
         }
       } else {
         lines.push('', `**Status:** Failed`);
@@ -337,7 +307,7 @@ function buildCreateOutput(opts: {
 
         switch (appleResult.errorType) {
           case 'DUPLICATE':
-            lines.push('', '**This product ID already exists.** Here are your options:');
+            lines.push('', '**This product ID already exists.** Options:');
             lines.push('- Choose a different `productId` and retry.');
             lines.push('- Use `onesub_list_products` to see all existing products.');
             if (existingAppleProducts && existingAppleProducts.length > 0) {
@@ -348,26 +318,21 @@ function buildCreateOutput(opts: {
               }
             }
             break;
-
           case 'AUTH':
             lines.push('', '**How to fix:**');
             lines.push('1. Go to [App Store Connect → Users and Access → Keys](https://appstoreconnect.apple.com/access/api).');
             lines.push('2. Verify the key is active and has not been revoked.');
             lines.push('3. Ensure the key role is "App Manager" or higher.');
-            lines.push('4. Re-download the .p8 file if necessary and update `applePrivateKey`.');
-            lines.push('5. Confirm `appleKeyId` and `appleIssuerId` match the key shown in App Store Connect.');
+            lines.push('4. Confirm `appleKeyId` and `appleIssuerId` match the key in App Store Connect.');
             break;
-
           case 'RELATIONSHIP':
             lines.push('', '**Troubleshooting tips:**');
-            lines.push('- Verify `appleAppId` (or `appleBundleId`) points to the correct app in App Store Connect.');
+            lines.push('- Verify `appleAppId` (or `appleBundleId`) points to the correct app.');
             lines.push('- Ensure the API key has access to the target app.');
             break;
-
           default:
             lines.push('', '**Troubleshooting tips:**');
             lines.push('- Verify the API key has the "App Manager" or higher role in App Store Connect.');
-            lines.push('- Ensure the private key has not been revoked.');
             lines.push('- Check that `appleAppId` matches the app in App Store Connect.');
         }
       }
@@ -387,10 +352,14 @@ function buildCreateOutput(opts: {
         lines.push('', `**Status:** Success`);
         lines.push(`**Created product ID:** \`${googleResult.productId ?? productId}\``);
         lines.push('', '**Next steps:**');
-        lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → Subscriptions.');
-        lines.push('2. Locate the subscription and **activate the base plan** (required before purchases work).');
-        lines.push('3. Add pricing for each target country/region.');
-        lines.push('4. Set up Real-Time Developer Notifications (RTDN) via Google Cloud Pub/Sub.');
+        if (productType === 'subscription') {
+          lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → Subscriptions.');
+          lines.push('2. Locate the subscription and **activate the base plan** (required before purchases work).');
+          lines.push('3. Set up Real-Time Developer Notifications (RTDN) via Google Cloud Pub/Sub.');
+        } else {
+          lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → In-app products.');
+          lines.push('2. Verify the product is active and pricing is correct.');
+        }
       } else {
         lines.push('', `**Status:** Failed`);
         lines.push(`**Error:** ${googleResult.error ?? 'Unknown error'}`);
@@ -413,7 +382,7 @@ function buildCreateOutput(opts: {
     (needsGoogle && (!!googleConfigError || googleResult?.success === false));
 
   if (allSucceeded) {
-    lines.push('**All platforms configured successfully.** Use `onesub_list_products` to verify the products are visible.');
+    lines.push('**All platforms configured successfully.** Use `onesub_list_products` to verify.');
   } else if (anyFailed) {
     lines.push('**One or more platforms encountered errors.** Review the details above and retry with corrected credentials.');
   }

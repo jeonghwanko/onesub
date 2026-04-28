@@ -1,0 +1,47 @@
+{
+  "name": "@onesub/providers",
+  "version": "0.1.0",
+  "description": "App Store Connect & Google Play API wrappers for onesub — create, update, delete, and list IAP products",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "type-check": "tsc --noEmit"
+  },
+  "keywords": [
+    "onesub",
+    "app-store-connect",
+    "google-play",
+    "iap",
+    "in-app-purchase",
+    "subscription"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jeonghwanko/onesub.git",
+    "directory": "packages/providers"
+  },
+  "homepage": "https://github.com/jeonghwanko/onesub",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
