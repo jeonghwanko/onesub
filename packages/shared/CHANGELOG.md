@@ -1,5 +1,18 @@
 # @onesub/shared
 
+## 0.7.6
+
+### Patch Changes
+
+- fix: make google.packageName optional in OneSubServerConfig
+
+  Previously required, but the webhook handler already treated it as optional
+  at runtime (skips package name check when unset). Type now matches behavior.
+
+  Server google provider gains packageName guards in all five API call sites
+  (acknowledgeSubscription, acknowledgeProduct, consumeProduct, validateReceipt,
+  validateProductReceipt) to handle the relaxed type safely.
+
 ## 0.7.5
 
 ### Patch Changes
