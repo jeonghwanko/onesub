@@ -4,6 +4,86 @@ Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases wi
 
 ---
 
+## `@onesub/server` 0.11.x → 0.12.0
+
+**Zero breaking changes.** All new options are optional — existing code works unchanged after `npm update @onesub/server`.
+
+### What's new (all opt-in)
+
+#### 1. Redis-backed stores (multi-instance)
+
+```bash
+npm install ioredis
+```
+
+```ts
+import Redis from 'ioredis';
+import {
+  RedisSubscriptionStore,
+  RedisPurchaseStore,
+  RedisCacheAdapter,
+  RedisWebhookEventStore,
+} from '@onesub/server';
+
+const redis = new Redis(process.env.REDIS_URL!);
+
+app.use(createOneSubMiddleware({
+  // ...existing config unchanged...
+  store:             new RedisSubscriptionStore(redis),
+  purchaseStore:     new RedisPurchaseStore(redis),
+  cache:             new RedisCacheAdapter(redis),
+  webhookEventStore: new RedisWebhookEventStore(redis),
+}));
+```
+
+- `cache` — shares Apple JWT assertions and Google OAuth tokens across cluster nodes so each node doesn't mint independently.
+- `webhookEventStore` — deduplicates Apple `notificationUUID` and Google `messageId` with an atomic Redis `SET NX` before any state mutation.
+
+#### 2. Durable webhook queue (BullMQ)
+
+```bash
+npm install bullmq ioredis
+```
+
+```ts
+import { BullMQWebhookQueue } from '@onesub/server';
+import Redis from 'ioredis';
+
+const connection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+
+app.use(createOneSubMiddleware({
+  // ...
+  webhookQueue: new BullMQWebhookQueue({ connection }),
+  adminSecret: process.env.ADMIN_SECRET,
+}));
+```
+
+Adds two admin endpoints (require `adminSecret`):
+- `GET  /onesub/admin/webhook-deadletters`
+- `POST /onesub/admin/webhook-replay/:id`
+
+#### 3. OpenAPI document
+
+```ts
+import { ONESUB_OPENAPI, openapiHandler } from '@onesub/server';
+
+app.get('/openapi.json', openapiHandler());
+```
+
+#### 4. OpenTelemetry tracing
+
+Install `@opentelemetry/api` alongside any OTel SDK — spans appear automatically. Zero overhead when the package is absent.
+
+#### 5. Dual ESM + CJS build
+
+`dist/index.js` (ESM) and `dist/index.cjs` (CJS) are now both published. The `exports` map in `package.json` routes `import` and `require` correctly — no host-side change needed.
+
+### `@onesub/shared` 0.7.4 → 0.7.5
+
+`AppleNotificationPayload` now exposes `notificationUUID?: string` — the top-level field Apple stamps on every App Store Server Notification. Used internally by `RedisWebhookEventStore` / `CacheWebhookEventStore` for dedup.
+
+---
+
 ## `@onesub/server` 0.7.x → 0.9.x
 
 Two minor releases in one window. Almost no host code change; the visible changes are **new lifecycle states**, **new opt-in config options**, and **two auto-backfilled Postgres columns**.
