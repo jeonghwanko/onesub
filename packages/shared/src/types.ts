@@ -208,7 +208,7 @@ export interface OneSubServerConfig {
     ) => Promise<AppleConsumptionRequest | null>;
   };
   google?: {
-    packageName: string;
+    packageName?: string;
     serviceAccountKey?: string;
     /**
      * Expected `aud` claim for incoming Pub/Sub push JWT tokens.

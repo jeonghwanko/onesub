@@ -316,6 +316,7 @@ export async function acknowledgeGoogleSubscription(
 ): Promise<void> {
   if (config.mockMode) return;
   if (!config.serviceAccountKey) return;
+  if (!config.packageName) return;
 
   let accessToken: string;
   try {
@@ -359,6 +360,7 @@ export async function acknowledgeGoogleProduct(
 ): Promise<void> {
   if (config.mockMode) return;
   if (!config.serviceAccountKey) return;
+  if (!config.packageName) return;
 
   let accessToken: string;
   try {
@@ -403,6 +405,7 @@ export async function consumeGoogleProductReceipt(
   config: GoogleConfig,
 ): Promise<void> {
   if (!config.serviceAccountKey) return;
+  if (!config.packageName) return;
 
   let accessToken: string;
   try {
@@ -481,6 +484,10 @@ export async function validateGoogleReceipt(
   if (config.mockMode) return mockValidateGoogleSubscription(receipt, productId);
   if (!config.serviceAccountKey) {
     log.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API');
+    return null;
+  }
+  if (!config.packageName) {
+    log.warn('[onesub/google] No packageName provided — cannot call Play API');
     return null;
   }
 
@@ -572,6 +579,10 @@ export async function validateGoogleProductReceipt(
   if (config.mockMode) return mockValidateGoogleProduct(purchaseToken, productId);
   if (!config.serviceAccountKey) {
     log.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
+    return null;
+  }
+  if (!config.packageName) {
+    log.warn('[onesub/google] No packageName — cannot validate product receipt');
     return null;
   }
 
