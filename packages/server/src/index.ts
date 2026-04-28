@@ -181,9 +181,6 @@ export { evaluateEntitlement } from './routes/entitlements.js';
 // can still redirect logs.
 export { setLogger, log } from './logger.js';
 
-// Default export: the middleware factory
-export default createOneSubMiddleware;
-
 // Allow running directly: node dist/index.js
 // Reads config from environment variables for quick local testing.
 const isMain =

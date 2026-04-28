@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ROUTES } from '@onesub/shared';
 import type { StatusResponse } from '@onesub/shared';
+import { normalizeUrl, fetchJson } from '../utils.js';
 
 export const checkStatusInputSchema = {
   serverUrl: z
@@ -14,39 +15,18 @@ export async function runCheckStatus(args: {
   serverUrl: string;
   userId: string;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const url = `${args.serverUrl.replace(/\/$/, '')}${ROUTES.STATUS}?userId=${encodeURIComponent(args.userId)}`;
+  const url = `${normalizeUrl(args.serverUrl)}${ROUTES.STATUS}?userId=${encodeURIComponent(args.userId)}`;
 
-  let data: StatusResponse;
-  let httpStatus: number;
-  let rawBody: string;
+  const result = await fetchJson<StatusResponse>(url);
 
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    httpStatus = response.status;
-    rawBody = await response.text();
-
-    if (!response.ok) {
-      const text = buildErrorOutput({
-        url,
-        userId: args.userId,
-        httpStatus,
-        rawBody,
-      });
-      return { content: [{ type: 'text', text }] };
-    }
-
-    data = JSON.parse(rawBody) as StatusResponse;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    const text = buildNetworkErrorOutput({ url, userId: args.userId, message });
+  if (!result.ok) {
+    const text = result.httpStatus > 0
+      ? buildErrorOutput({ url, userId: args.userId, httpStatus: result.httpStatus, rawBody: result.raw ?? result.error })
+      : buildNetworkErrorOutput({ url, userId: args.userId, message: result.error });
     return { content: [{ type: 'text', text }] };
   }
 
-  const text = buildSuccessOutput({ url, userId: args.userId, data });
+  const text = buildSuccessOutput({ url, userId: args.userId, data: result.data });
   return { content: [{ type: 'text', text }] };
 }
 

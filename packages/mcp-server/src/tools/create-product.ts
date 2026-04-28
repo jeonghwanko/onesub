@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AppleListOpts, AppleProduct, GoogleListOpts, GoogleProduct } from '../types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const appleConnect = require('../../providers/apple-connect.js') as {
@@ -48,17 +49,6 @@ interface AppleCreateResult {
   errorType?: 'DUPLICATE' | 'AUTH' | 'RELATIONSHIP' | 'PRICE_NOT_FOUND' | 'UNKNOWN';
 }
 
-interface AppleListOpts {
-  keyId: string;
-  issuerId: string;
-  privateKey: string;
-  appId: string;
-}
-
-interface AppleProduct {
-  productId: string;
-  name?: string;
-}
 
 interface GoogleCreateOpts {
   productId: string;
@@ -76,15 +66,6 @@ interface GoogleCreateResult {
   error?: string;
 }
 
-interface GoogleListOpts {
-  packageName: string;
-  serviceAccountKey: string;
-}
-
-interface GoogleProduct {
-  productId: string;
-  name?: string;
-}
 
 export const createProductInputSchema = {
   platform: z.enum(['apple', 'google', 'both']).describe('Target platform'),

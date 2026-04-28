@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { ROUTES } from '@onesub/shared';
+import type { StatusResponse } from '@onesub/shared';
+import { normalizeUrl, fetchJson } from '../utils.js';
 
 export const viewSubscribersInputSchema = {
   serverUrl: z.string().url().describe('onesub server URL'),
@@ -13,19 +16,6 @@ type ViewSubscribersArgs = {
   userId?: string;
 };
 
-interface StatusResponse {
-  active: boolean;
-  subscription: {
-    productId: string;
-    platform: string;
-    status: string;
-    willRenew: boolean;
-    purchasedAt: string;
-    expiresAt: string;
-    originalTransactionId: string;
-  } | null;
-}
-
 export async function runViewSubscribers(
   args: ViewSubscribersArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
@@ -34,40 +24,24 @@ export async function runViewSubscribers(
     return { content: [{ type: 'text', text }] };
   }
 
-  const baseUrl = args.serverUrl.replace(/\/$/, '');
-  const url = `${baseUrl}/onesub/status?userId=${encodeURIComponent(args.userId)}`;
+  const baseUrl = normalizeUrl(args.serverUrl);
+  const url = `${baseUrl}${ROUTES.STATUS}?userId=${encodeURIComponent(args.userId)}`;
 
-  let data: StatusResponse;
-  let httpStatus: number;
-  let rawBody: string;
+  const result = await fetchJson<StatusResponse>(url);
 
-  try {
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    httpStatus = response.status;
-    rawBody = await response.text();
-
-    if (!response.ok) {
-      const text = buildHttpErrorOutput({ url, userId: args.userId, httpStatus, rawBody });
-      return { content: [{ type: 'text', text }] };
-    }
-
-    data = JSON.parse(rawBody) as StatusResponse;
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    const text = buildNetworkErrorOutput({ url, userId: args.userId, message });
+  if (!result.ok) {
+    const text = result.httpStatus > 0
+      ? buildHttpErrorOutput({ url, userId: args.userId, httpStatus: result.httpStatus, rawBody: result.raw ?? result.error })
+      : buildNetworkErrorOutput({ url, userId: args.userId, message: result.error });
     return { content: [{ type: 'text', text }] };
   }
 
-  const text = buildUserStatusOutput({ url, userId: args.userId, data });
+  const text = buildUserStatusOutput({ url, userId: args.userId, data: result.data });
   return { content: [{ type: 'text', text }] };
 }
 
 function buildNoUserIdOutput(serverUrl: string): string {
-  const baseUrl = serverUrl.replace(/\/$/, '');
+  const baseUrl = normalizeUrl(serverUrl);
 
   const lines: string[] = [
     '# Subscriber Summary',

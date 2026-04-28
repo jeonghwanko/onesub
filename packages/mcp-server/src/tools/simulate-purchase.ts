@@ -6,6 +6,7 @@ import {
   type PurchaseType,
   type Platform,
 } from '@onesub/shared';
+import { normalizeUrl, fetchJson } from '../utils.js';
 
 export const simulatePurchaseInputSchema = {
   serverUrl: z
@@ -42,7 +43,7 @@ export async function runSimulatePurchase(args: {
   type: 'subscription' | 'consumable' | 'non_consumable';
   scenario: 'new' | 'revoked' | 'expired' | 'invalid' | 'network_error' | 'sandbox';
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const base = args.serverUrl.replace(/\/$/, '');
+  const base = normalizeUrl(args.serverUrl);
   const receipt = `${SCENARIO_PREFIX[args.scenario]}_${args.productId}_${Date.now()}`;
 
   const isSubscription = args.type === 'subscription';
@@ -60,21 +61,17 @@ export async function runSimulatePurchase(args: {
       args.type === 'consumable' ? PURCHASE_TYPE.CONSUMABLE : PURCHASE_TYPE.NON_CONSUMABLE;
   }
 
-  let httpStatus = 0;
-  let rawBody = '';
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10_000),
-    });
-    httpStatus = res.status;
-    rawBody = await res.text();
-  } catch (err) {
-    return { content: [{ type: 'text', text: buildNetworkErrorOutput(url, err) }] };
+  const result = await fetchJson(url, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+  if (!result.ok && result.httpStatus === 0) {
+    return { content: [{ type: 'text', text: buildNetworkErrorOutput(url, new Error(result.error)) }] };
   }
 
+  const httpStatus = result.httpStatus;
+  const rawBody = result.ok ? JSON.stringify(result.data) : (result.raw ?? result.error);
   return { content: [{ type: 'text', text: buildOutput({ url, body, httpStatus, rawBody, scenario: args.scenario }) }] };
 }
 

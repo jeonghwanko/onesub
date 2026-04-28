@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { AppleListOpts, AppleProduct, GoogleListOpts, GoogleProduct } from '../types.js';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const appleConnect = require('../../providers/apple-connect.js') as {
@@ -12,35 +13,6 @@ const googlePlay = require('../../providers/google-play.js') as {
   listGoogleProducts: (opts: GoogleListOpts) => Promise<GoogleProduct[]>;
 };
 
-interface AppleListOpts {
-  keyId: string;
-  issuerId: string;
-  privateKey: string;
-  appId: string;
-}
-
-interface AppleProduct {
-  productId: string;
-  name?: string;
-  status?: string;
-  type?: string;
-  price?: number;
-  currency?: string;
-}
-
-interface GoogleListOpts {
-  packageName: string;
-  serviceAccountKey: string;
-}
-
-interface GoogleProduct {
-  productId: string;
-  name?: string;
-  status?: string;
-  type?: string;
-  price?: number;
-  currency?: string;
-}
 
 export const listProductsInputSchema = {
   platform: z.enum(['apple', 'google', 'both']).default('both'),

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ROUTES, type StatusResponse, type PurchaseStatusResponse } from '@onesub/shared';
+import { normalizeUrl, fetchJson, type FetchJsonResult } from '../utils.js';
 
 export const inspectStateInputSchema = {
   serverUrl: z
@@ -14,7 +15,7 @@ export async function runInspectState(args: {
   serverUrl: string;
   userId: string;
 }): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const base = args.serverUrl.replace(/\/$/, '');
+  const base = normalizeUrl(args.serverUrl);
   const userParam = encodeURIComponent(args.userId);
 
   const [subRes, purRes] = await Promise.all([
@@ -27,32 +28,7 @@ export async function runInspectState(args: {
   };
 }
 
-async function fetchJson(url: string): Promise<
-  | { ok: true; httpStatus: number; data: unknown }
-  | { ok: false; httpStatus: number; error: string; raw?: string }
-> {
-  try {
-    const res = await fetch(url, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    const raw = await res.text();
-    if (!res.ok) {
-      return { ok: false, httpStatus: res.status, error: `HTTP ${res.status}`, raw };
-    }
-    try {
-      return { ok: true, httpStatus: res.status, data: JSON.parse(raw) };
-    } catch {
-      return { ok: false, httpStatus: res.status, error: 'invalid JSON', raw };
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, httpStatus: 0, error: msg };
-  }
-}
-
-type FetchResult = Awaited<ReturnType<typeof fetchJson>>;
+type FetchResult = FetchJsonResult;
 
 function buildOutput(
   args: { serverUrl: string; userId: string },

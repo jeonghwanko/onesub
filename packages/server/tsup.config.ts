@@ -25,11 +25,6 @@ export default defineConfig({
   splitting: false,
   treeshake: true,
   target: 'node20',
-  // Note: rollup emits a MIXED_EXPORTS warning for the CJS build because
-  // index.ts has both named exports and `export default createOneSubMiddleware`.
-  // This is intentional — CJS consumers use `.default`, ESM consumers use the
-  // named export. The warning is benign and cannot be suppressed via tsup's
-  // rollupOptions (tsup intercepts onwarn before forwarding to rollup).
   external: [
     '@onesub/shared',
     'express',
