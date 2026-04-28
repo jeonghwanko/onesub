@@ -70,26 +70,21 @@ export async function runSimulatePurchase(args: {
     return { content: [{ type: 'text', text: buildNetworkErrorOutput(url, new Error(result.error)) }] };
   }
 
-  const httpStatus = result.httpStatus;
-  const rawBody = result.ok ? JSON.stringify(result.data) : (result.raw ?? result.error);
-  return { content: [{ type: 'text', text: buildOutput({ url, body, httpStatus, rawBody, scenario: args.scenario }) }] };
+  // Pass the already-parsed object (or raw error string) directly — avoids a
+  // JSON.stringify → JSON.parse round-trip that was previously needed to fit
+  // the old rawBody: string parameter.
+  const response: unknown = result.ok ? result.data : (result.raw ?? result.error);
+  return { content: [{ type: 'text', text: buildOutput({ url, body, httpStatus: result.httpStatus, response, scenario: args.scenario }) }] };
 }
 
 function buildOutput(opts: {
   url: string;
   body: Record<string, unknown>;
   httpStatus: number;
-  rawBody: string;
+  response: unknown;
   scenario: string;
 }): string {
-  const { url, body, httpStatus, rawBody, scenario } = opts;
-
-  let parsed: unknown = rawBody;
-  try {
-    parsed = JSON.parse(rawBody);
-  } catch {
-    /* leave as raw text */
-  }
+  const { url, body, httpStatus, response, scenario } = opts;
 
   const ok = httpStatus >= 200 && httpStatus < 300;
   const lines: string[] = [
@@ -104,13 +99,13 @@ function buildOutput(opts: {
     '',
     '## Response',
     '```json',
-    typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2),
+    typeof response === 'string' ? response : JSON.stringify(response, null, 2),
     '```',
     '',
   ];
 
   const parsedObj =
-    parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    response && typeof response === 'object' ? (response as Record<string, unknown>) : null;
   if (parsedObj) {
     if (parsedObj['errorCode']) {
       lines.push(

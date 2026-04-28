@@ -26,9 +26,10 @@ export async function fetchJson<T = unknown>(
 ): Promise<FetchJsonResult<T>> {
   try {
     const res = await fetch(url, {
-      headers: JSON_HEADERS,
       signal: AbortSignal.timeout(MCP_FETCH_TIMEOUT_MS),
       ...options,
+      // Merge headers so callers can add Authorization etc. without losing Content-Type.
+      headers: { ...JSON_HEADERS, ...(options?.headers as Record<string, string> | undefined) },
     });
     const raw = await res.text();
     if (!res.ok) {
