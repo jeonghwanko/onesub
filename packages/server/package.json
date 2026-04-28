@@ -1,6 +1,6 @@
 {
   "name": "@onesub/server",
-  "version": "0.11.4",
+  "version": "0.12.0",
   "description": "Server-side receipt validation middleware for react-native-iap. Apple StoreKit 2 + Google Play Billing. One line.",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -53,7 +53,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@onesub/shared": "0.7.4",
+    "@onesub/shared": "0.7.5",
     "jose": "^6.2.2",
     "zod": "^4.3.6"
   },

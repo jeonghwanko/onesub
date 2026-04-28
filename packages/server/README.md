@@ -9,11 +9,17 @@ npm install @onesub/server
 ## Requirements
 
 - Node.js **>= 20**
-- **Express** as a peer dependency — `^4.17.0 || ^5.0.0`. Install in your app:
+- **Express** as a peer dependency — `^4.17.0 || ^5.0.0`:
   ```bash
   npm install @onesub/server express
   ```
-- PostgreSQL **12+** (optional, for production stores)
+- Optional peer dependencies (install only what you use):
+  ```bash
+  npm install ioredis        # Redis stores, cache, webhook idempotency
+  npm install bullmq         # Durable webhook queue with dead-letter list
+  npm install pg             # Postgres stores
+  npm install @opentelemetry/api   # Distributed tracing
+  ```
 
 ## Quick start
 
@@ -59,6 +65,9 @@ app.listen(4100);
 | `DELETE /onesub/purchase/admin/:userId/:productId` | Wipe a non-consumable (requires `adminSecret`) |
 | `POST /onesub/purchase/admin/grant` | Manually grant a purchase (requires `adminSecret`) |
 | `POST /onesub/purchase/admin/transfer` | Reassign a `transactionId` to a new `userId` (requires `adminSecret`) |
+| `GET  /onesub/admin/webhook-deadletters` | List failed webhook jobs in DLQ (requires `adminSecret` + BullMQ) |
+| `POST /onesub/admin/webhook-replay/:id` | Replay a dead-letter job (requires `adminSecret` + BullMQ) |
+| `GET  /openapi.json` | OpenAPI 3.1 spec (opt-in via `openapiHandler()`) |
 
 ## Lifecycle states (`0.4.0+`)
 
@@ -132,6 +141,114 @@ google: {
     await analytics.track('price_change_confirmed', ctx);
   },
 }
+```
+
+## Multi-instance deployments (`0.12.0+`)
+
+By default every option uses in-process memory — zero config, zero infra. For multi-node clusters, swap in the Redis-backed equivalents:
+
+```ts
+import Redis from 'ioredis';
+import {
+  createOneSubMiddleware,
+  RedisSubscriptionStore,
+  RedisPurchaseStore,
+  RedisCacheAdapter,
+  RedisWebhookEventStore,
+} from '@onesub/server';
+
+const redis = new Redis(process.env.REDIS_URL!);
+
+app.use(createOneSubMiddleware({
+  // ...apple / google / database config...
+  store:              new RedisSubscriptionStore(redis),
+  purchaseStore:      new RedisPurchaseStore(redis),
+  cache:              new RedisCacheAdapter(redis),      // share Apple JWT + Google OAuth tokens across nodes
+  webhookEventStore:  new RedisWebhookEventStore(redis), // atomic SET NX dedup — one node handles each event
+}));
+```
+
+| Class | Replaces | What it does |
+|-------|----------|--------------|
+| `RedisSubscriptionStore` | `InMemorySubscriptionStore` | Sorted-set index, newest-first pagination |
+| `RedisPurchaseStore` | `InMemoryPurchaseStore` | Cross-node purchase ownership |
+| `RedisCacheAdapter` | `InMemoryCacheAdapter` | Shared Apple JWT / Google OAuth token cache |
+| `RedisWebhookEventStore` | `InMemoryWebhookEventStore` | Atomic `SET NX` dedup (no get→set race) |
+
+### Webhook queue with durable retries
+
+Replace the default in-process queue with BullMQ for decoupled retries and a dead-letter list:
+
+```ts
+import { BullMQWebhookQueue } from '@onesub/server';
+import Redis from 'ioredis';
+
+const connection = new Redis(process.env.REDIS_URL!, { maxRetriesPerRequest: null });
+const webhookQueue = new BullMQWebhookQueue({ connection });
+
+app.use(createOneSubMiddleware({
+  // ...
+  webhookQueue,
+  adminSecret: process.env.ADMIN_SECRET, // required for DLQ endpoints
+}));
+```
+
+The webhook route 200s immediately once the job is enqueued. The BullMQ worker retries up to 5× (exponential backoff, 1 s base) before moving the job to the dead-letter list. Inspect and replay via the admin endpoints above.
+
+## Cache adapter (`0.12.0+`)
+
+The `cache` option controls how Apple JWT assertions and Google OAuth access tokens are cached between requests. Default is `InMemoryCacheAdapter` (process-local). Shared Redis cache prevents every cluster node from minting its own token:
+
+```ts
+import { InMemoryCacheAdapter, RedisCacheAdapter } from '@onesub/server';
+
+// single instance (default — no config needed)
+cache: new InMemoryCacheAdapter()
+
+// multi-instance
+cache: new RedisCacheAdapter(redis)
+cache: new RedisCacheAdapter(redis, 'myapp:cache:') // custom key prefix
+```
+
+You can also pass any object implementing `CacheAdapter`:
+
+```ts
+export interface CacheAdapter {
+  get<T>(key: string): Promise<T | null>;
+  set<T>(key: string, value: T, ttlSeconds?: number): Promise<void>;
+  del(key: string): Promise<void>;
+}
+```
+
+## OpenAPI (`0.12.0+`)
+
+The full OpenAPI 3.1 document is exported as `ONESUB_OPENAPI`. Self-host it on your existing Express app:
+
+```ts
+import { openapiHandler } from '@onesub/server';
+
+app.get('/openapi.json', openapiHandler());
+```
+
+Or import the spec directly for client generation:
+
+```ts
+import { ONESUB_OPENAPI } from '@onesub/server';
+// use with openapi-typescript, swagger-ui-express, etc.
+```
+
+## OpenTelemetry tracing (`0.12.0+`)
+
+Install `@opentelemetry/api` alongside an OTel SDK and spans appear automatically for receipt validation and webhook processing. The helper is zero-overhead when the package is absent — no `require` error, no performance hit.
+
+You can wrap your own code in the same tracer:
+
+```ts
+import { withSpan } from '@onesub/server';
+
+const result = await withSpan('my-operation', { 'user.id': userId }, async () => {
+  return await doWork();
+});
 ```
 
 ## Schema
