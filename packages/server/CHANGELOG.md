@@ -1,5 +1,23 @@
 # @onesub/server
 
+## 0.13.0
+
+### Minor Changes
+
+- Add Apple Family Sharing support, Transaction History API, Promotional Offer signing, and Google oneTimeProductNotification handling.
+
+  - **Apple Family Sharing**: `decodeAppleNotification` now returns `appAccountToken` and `inAppOwnershipType`; webhook uses `appAccountToken` as `userId` when available, corrects existing records whose userId was set to `originalTransactionId` fallback
+  - **Apple Transaction History**: new `fetchAppleTransactionHistory()` — paginates GET /inApps/v2/history and returns decoded `AppleTransactionRecord[]`
+  - **Apple Promotional Offer signing**: new `signApplePromotionalOffer()` + `POST /onesub/apple/offer-signature` endpoint (requires `config.apple.offerKeyId` + `offerPrivateKey`; protected by admin secret when configured)
+  - **Google oneTimeProductNotification**: `decodeGoogleOneTimeProductNotification` + webhook handler that acknowledges PURCHASED tokens to prevent the 3-day auto-refund window
+  - **Admin sync**: `POST /onesub/admin/sync-apple/:originalTransactionId` re-fetches subscription state from Apple Status API (sandbox-aware via `?sandbox=true` or existing record's environment)
+  - **shared**: new `ADMIN_SYNC_APPLE` and `APPLE_OFFER_SIGNATURE` route constants; new `offerKeyId` and `offerPrivateKey` fields on `OneSubServerConfig.apple`
+
+### Patch Changes
+
+- Updated dependencies
+  - @onesub/shared@0.8.0
+
 ## 0.12.1
 
 ### Patch Changes

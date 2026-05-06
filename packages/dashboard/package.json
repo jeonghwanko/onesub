@@ -1,6 +1,6 @@
 {
   "name": "@onesub/dashboard",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "description": "Self-hosted dashboard for onesub — view active subscriptions, metrics, and operational state. Connects to a running @onesub/server instance with adminSecret.",
   "type": "module",
@@ -12,7 +12,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@onesub/shared": "0.7.6",
+    "@onesub/shared": "0.8.0",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
