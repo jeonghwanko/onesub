@@ -32,7 +32,7 @@ export default async function CustomersPage({ searchParams }: PageProps) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
         <p className="mt-1 text-sm text-slate-500">
-          userId로 검색해 그 유저의 모든 구독·구매·entitlement을 한 화면에 봅니다.
+          Look up a user's full state — subscriptions, purchases, and entitlements — in one view.
         </p>
       </div>
 
@@ -58,9 +58,9 @@ export default async function CustomersPage({ searchParams }: PageProps) {
       </form>
 
       <div className="rounded-lg border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">
-        검색해 사용자 상세를 열어주세요. <br />
+        Search for a user to open their detail view. <br />
         <Link href="/dashboard/subscriptions" className="mt-2 inline-block text-slate-500 underline-offset-2 hover:underline">
-          또는 구독 리스트에서 userId 클릭
+          Or click a userId in the subscription list
         </Link>
       </div>
     </div>

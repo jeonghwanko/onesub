@@ -73,7 +73,7 @@ export default async function CustomerDetailPage({ params }: PageProps) {
 
       {isEmpty ? (
         <div className="rounded-lg border border-dashed border-slate-200 bg-white p-8 text-center text-sm text-slate-400">
-          이 userId로 등록된 구독·구매가 없습니다.
+          No subscriptions or purchases found for this user.
         </div>
       ) : null}
 

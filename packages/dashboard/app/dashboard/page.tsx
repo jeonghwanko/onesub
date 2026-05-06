@@ -38,7 +38,7 @@ function DistributionTable({ title, data, empty }: DistributionTableProps) {
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-5 py-3 text-sm font-semibold text-slate-700">{title}</div>
       {entries.length === 0 ? (
-        <div className="px-5 py-6 text-center text-sm text-slate-400">{empty ?? '데이터 없음'}</div>
+        <div className="px-5 py-6 text-center text-sm text-slate-400">{empty ?? 'No data'}</div>
       ) : (
         <table className="w-full text-sm">
           <tbody>
@@ -92,7 +92,7 @@ export default async function DashboardOverview() {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Overview</h1>
         <p className="mt-1 text-sm text-slate-500">
-          실시간 entitled 수 + 그룹별 분포. 새로고침하면 다시 집계됩니다.
+          Live entitled count and group distribution. Refreshes on each load.
         </p>
       </div>
 
@@ -129,17 +129,17 @@ export default async function DashboardOverview() {
         <DistributionTable
           title="By product (active subscriptions)"
           data={metrics.byProduct}
-          empty="활성 구독이 없습니다"
+          empty="No active subscriptions"
         />
         <DistributionTable
           title="By product (non-consumable)"
           data={metrics.byProductPurchases}
-          empty="lifetime 구매가 없습니다"
+          empty="No lifetime purchases"
         />
         <DistributionTable
           title="By platform (subs + non-consumable)"
           data={metrics.byPlatform}
-          empty="데이터 없음"
+          empty="No data"
         />
       </div>
     </div>

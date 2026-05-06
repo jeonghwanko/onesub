@@ -100,7 +100,7 @@ export default async function SubscriptionsPage({ searchParams }: PageProps) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Subscriptions</h1>
         <p className="mt-1 text-sm text-slate-500">
-          모든 구독 record. URL params로 필터 + 페이지네이션이 sync됩니다.
+          All subscription records. Filters and pagination sync with URL params.
         </p>
       </div>
 
@@ -143,7 +143,7 @@ export default async function SubscriptionsPage({ searchParams }: PageProps) {
             {result.items.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-5 py-8 text-center text-slate-400">
-                  조건과 일치하는 구독이 없습니다.
+                  No subscriptions match the current filters.
                 </td>
               </tr>
             ) : (

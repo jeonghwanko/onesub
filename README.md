@@ -313,6 +313,7 @@ A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`
 | [`@onesub/providers`](https://www.npmjs.com/package/@onesub/providers) | ![npm](https://img.shields.io/npm/v/@onesub/providers.svg) | App Store Connect + Google Play API wrappers (standalone) | `npm i @onesub/providers` |
 | [`@onesub/cli`](https://www.npmjs.com/package/@onesub/cli) | ![npm](https://img.shields.io/npm/v/@onesub/cli.svg) | Scaffolds a starter server project | `npx @onesub/cli init` |
 | [`@onesub/shared`](https://www.npmjs.com/package/@onesub/shared) | ![npm](https://img.shields.io/npm/v/@onesub/shared.svg) | Shared TypeScript types | Auto-installed |
+| `onesub-dashboard` | [![ghcr](https://img.shields.io/badge/ghcr.io-latest-blue)](https://github.com/jeonghwanko/onesub/pkgs/container/onesub-dashboard) | Self-hosted operations dashboard (Docker) | `docker run -p 4101:4101 -e ONESUB_SERVER_URL=... ghcr.io/jeonghwanko/onesub-dashboard:latest` |
 
 ---
 
@@ -403,7 +404,7 @@ run it for you on startup.
 - [ ] Apple Promotional Offer server-side signing
 - [ ] Google `oneTimeProductNotification` (currently only voided purchases handled for IAP)
 - [ ] Apple Transaction History API (replay past transactions)
-- [ ] Analytics dashboard
+- [x] Analytics dashboard (self-hosted Docker — `ghcr.io/jeonghwanko/onesub-dashboard`)
 - [ ] Hosted service (no server needed)
 
 ---
