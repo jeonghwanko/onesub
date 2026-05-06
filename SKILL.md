@@ -60,7 +60,18 @@ app.listen(4100);
 | `POST /onesub/webhook/google` | Google Play RTDN (Pub/Sub JWT-verified) |
 | `POST /onesub/purchase/validate` | One-time purchase (consumable / non-consumable) |
 | `GET  /onesub/purchase/status?userId=` | List user's one-time purchases |
+| `DELETE /onesub/purchase/admin/:userId/:productId` | Reset a non-consumable for re-testing (admin) |
+| `POST /onesub/purchase/admin/grant` | Manually insert a purchase record (admin) |
 | `POST /onesub/purchase/admin/transfer` | Reassign `transactionId` to a new user (admin) |
+| `GET  /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=` | Filtered + paginated subscription list (admin) |
+| `GET  /onesub/admin/subscriptions/:transactionId` | Single subscription detail by originalTransactionId (admin) |
+| `GET  /onesub/admin/customers/:userId` | Full per-user profile: subscriptions + purchases + entitlements (admin) |
+| `GET  /onesub/entitlement?userId=&id=` | Single entitlement check (requires `config.entitlements`) |
+| `GET  /onesub/entitlements?userId=` | All entitlements in one round-trip (requires `config.entitlements`) |
+| `GET  /onesub/metrics/active` | Current active subscriber + purchaser counts (admin) |
+| `GET  /onesub/metrics/started?from=&to=&groupBy=` | Subscriptions started in a date range (admin) |
+| `GET  /onesub/metrics/expired?from=&to=&groupBy=` | Subscriptions expired/canceled in a date range (admin) |
+| `GET  /onesub/metrics/purchases/started?from=&to=&groupBy=` | Non-consumable purchases started in a date range (admin) |
 
 ### Postgres schema
 
@@ -142,7 +153,8 @@ interface OneSubServerConfig {
     pushAudience?: string;       // Pub/Sub push endpoint URL for JWT verification
   };
   database: { url: string };
-  adminSecret?: string;          // enables /onesub/purchase/admin/* routes
+  adminSecret?: string;          // enables /onesub/purchase/admin/* + /onesub/admin/* + /onesub/metrics/* routes
+  entitlements?: Record<string, { productIds: string[] }>;  // enables /onesub/entitlement(s) routes
   logger?: OneSubLogger;         // { info, warn, error } — defaults to console
 }
 ```

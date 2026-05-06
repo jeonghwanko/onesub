@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@onesub/server"><img src="https://img.shields.io/npm/v/@onesub/server.svg?label=%40onesub%2Fserver" alt="@onesub/server" /></a>
-  <a href="https://www.npmjs.com/package/@onesub/sdk"><img src="https://img.shields.io/npm/v/@onesub/sdk.svg?label=%40onesub%2Fsdk" alt="@onesub/sdk" /></a>
+  <a href="https://www.npmjs.com/package/@jeonghwanko/onesub-sdk"><img src="https://img.shields.io/npm/v/@jeonghwanko/onesub-sdk.svg?label=%40jeonghwanko%2Fonesub-sdk" alt="@jeonghwanko/onesub-sdk" /></a>
   <a href="https://www.npmjs.com/package/@onesub/mcp-server"><img src="https://img.shields.io/npm/v/@onesub/mcp-server.svg?label=%40onesub%2Fmcp-server" alt="@onesub/mcp-server" /></a>
   <br/>
   <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" />
@@ -72,7 +72,7 @@ npm install @onesub/server
 ### 2. Add to your Express app
 
 ```ts
-import { createOneSubMiddleware, PostgresSubscriptionStore } from '@onesub/server';
+import { createOneSubMiddleware, PostgresSubscriptionStore, PostgresPurchaseStore } from '@onesub/server';
 
 app.use(createOneSubMiddleware({
   apple: {
@@ -85,6 +85,7 @@ app.use(createOneSubMiddleware({
   },
   database: { url: process.env.DATABASE_URL },
   store: new PostgresSubscriptionStore(process.env.DATABASE_URL),
+  purchaseStore: new PostgresPurchaseStore(process.env.DATABASE_URL),
 }));
 ```
 
@@ -152,11 +153,57 @@ stateDiagram-v2
 
 Mounted only when `config.adminSecret` is set. All requests must include the `X-Admin-Secret` header.
 
+**Purchase admin** (testing + migration):
+
 | Endpoint | What it does |
 |----------|-------------|
 | `DELETE /onesub/purchase/admin/:userId/:productId` | Wipe a non-consumable so the user can re-test the purchase flow |
 | `POST /onesub/purchase/admin/grant` | Manually insert a purchase record (bypasses store verification) |
 | `POST /onesub/purchase/admin/transfer` | Reassign a `transactionId` to a new `userId` (legitimate device/account migration) |
+
+**Dashboard / operational**:
+
+| Endpoint | What it does |
+|----------|-------------|
+| `GET /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=` | Filtered + paginated subscription list (max 200 per page) |
+| `GET /onesub/admin/subscriptions/:transactionId` | Single subscription record by `originalTransactionId` |
+| `GET /onesub/admin/customers/:userId` | Full per-user profile: subscriptions + purchases + entitlements (when configured) |
+| `GET /onesub/admin/webhook-deadletters` | List failed webhook jobs (requires BullMQ queue) |
+| `POST /onesub/admin/webhook-replay/:id` | Replay a failed webhook job (requires BullMQ queue) |
+
+### Entitlements (opt-in — requires `config.entitlements`)
+
+Map abstract feature flags to one or more product IDs. A user is entitled when they have an **active subscription** or a **non-consumable purchase** for any product in the list. Consumables are excluded — they grant a one-time resource, not an ongoing right.
+
+```ts
+app.use(createOneSubMiddleware({
+  ...config,
+  entitlements: {
+    premium: { productIds: ['pro_monthly', 'pro_yearly', 'premium_unlock'] },
+    adFree:  { productIds: ['remove_ads'] },
+  },
+}));
+```
+
+| Endpoint | What it does |
+|----------|-------------|
+| `GET /onesub/entitlement?userId=&id=premium` | Single check: `{ id, active, source, productId?, expiresAt? }` |
+| `GET /onesub/entitlements?userId=` | All entitlements in one round-trip — use on app launch / login |
+
+SDK: `const { entitlements, hasEntitlement } = useOneSub();` — fetches the full map from the server and re-evaluates on subscription change.
+
+### Metrics (opt-in — same `config.adminSecret`, same `X-Admin-Secret` header)
+
+Read-only aggregate counts. Revenue metrics (MRR, ARR) require per-product price configuration and are not yet implemented.
+
+| Endpoint | What it does |
+|----------|-------------|
+| `GET /onesub/metrics/active` | Current active count: `{ total, activeSubscriptions, gracePeriodSubscriptions, nonConsumablePurchases, byProduct, byPlatform }` |
+| `GET /onesub/metrics/started?from=&to=&groupBy=` | Subscriptions started in a date range |
+| `GET /onesub/metrics/expired?from=&to=&groupBy=` | Subscriptions expired or canceled in a date range |
+| `GET /onesub/metrics/purchases/started?from=&to=&groupBy=` | Non-consumable purchases started in a date range |
+
+`from` and `to` are ISO 8601 timestamps. Add `groupBy=day` to get a UTC-bucketed time series in the `buckets` field.
 
 **Consumables** (coins, credits): Can be purchased multiple times. Each purchase is tracked.
 
@@ -181,7 +228,7 @@ const { valid, purchase } = await res.json();
 ## What's Under the Hood
 
 - **Apple**: StoreKit 2 JWS verified against Apple Root CA G3 (full x5c chain), App Store Server API for status fetch fallback + CONSUMPTION_REQUEST response, JWT minting cached + Promise-deduped
-- **Google**: OAuth2 service account → Play Developer API **v2** (`subscriptionsv2.get`) — `subscriptionState` enum directly mapped to lifecycle states (no expiry/cancelReason inference)
+- **Google**: OAuth2 service account → Play Developer API **v3** (`subscriptionsv2.get`) — `subscriptionState` enum directly mapped to lifecycle states (no expiry/cancelReason inference)
 - **Webhooks**: Lifecycle classification for grace_period / on_hold / paused (Apple subtype + Google notification types), `acknowledgePurchase` auto-called for Google subs+IAP, `voidedPurchasesNotification` routed to right store, `linkedPurchaseToken` chain tracking for plan changes
 - **Refund policy**: Choose `'immediate'` (default — flip status=canceled) or `'until_expiry'` (keep entitlement until original expiry)
 - **Outbound calls**: All upstream fetches (Apple/Google APIs) wrapped with `AbortController` timeout (default 10s) so a hung upstream doesn't pile up webhook handlers
@@ -199,11 +246,11 @@ const { valid, purchase } = await res.json();
 If you want a drop-in React hook + paywall component (built on react-native-iap):
 
 ```bash
-npm install @onesub/sdk react-native-iap
+npm install @jeonghwanko/onesub-sdk react-native-iap
 ```
 
 ```tsx
-import { OneSubProvider, useOneSub } from '@onesub/sdk';
+import { OneSubProvider, useOneSub } from '@jeonghwanko/onesub-sdk';
 
 // Wrap your app
 <OneSubProvider config={{ serverUrl, productId }} userId={userId}>
@@ -261,8 +308,9 @@ A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`
 | Package | Version | What | Install |
 |---------|---------|------|---------|
 | [`@onesub/server`](https://www.npmjs.com/package/@onesub/server) | ![npm](https://img.shields.io/npm/v/@onesub/server.svg) | Express middleware — receipt validation + webhooks | `npm i @onesub/server` |
-| [`@onesub/sdk`](https://www.npmjs.com/package/@onesub/sdk) | ![npm](https://img.shields.io/npm/v/@onesub/sdk.svg) | React Native SDK — `useOneSub()` + `<Paywall />` | `npm i @onesub/sdk` |
+| [`@jeonghwanko/onesub-sdk`](https://www.npmjs.com/package/@jeonghwanko/onesub-sdk) | ![npm](https://img.shields.io/npm/v/@jeonghwanko/onesub-sdk.svg) | React Native SDK — `useOneSub()` + `<Paywall />` | `npm i @jeonghwanko/onesub-sdk` |
 | [`@onesub/mcp-server`](https://www.npmjs.com/package/@onesub/mcp-server) | ![npm](https://img.shields.io/npm/v/@onesub/mcp-server.svg) | MCP tools — AI creates products + paywalls | `npx @onesub/mcp-server` |
+| [`@onesub/providers`](https://www.npmjs.com/package/@onesub/providers) | ![npm](https://img.shields.io/npm/v/@onesub/providers.svg) | App Store Connect + Google Play API wrappers (standalone) | `npm i @onesub/providers` |
 | [`@onesub/cli`](https://www.npmjs.com/package/@onesub/cli) | ![npm](https://img.shields.io/npm/v/@onesub/cli.svg) | Scaffolds a starter server project | `npx @onesub/cli init` |
 | [`@onesub/shared`](https://www.npmjs.com/package/@onesub/shared) | ![npm](https://img.shields.io/npm/v/@onesub/shared.svg) | Shared TypeScript types | Auto-installed |
 
@@ -336,7 +384,7 @@ run it for you on startup.
 ## Roadmap
 
 - [x] Apple StoreKit 2 receipt validation (JWKS verified, x5c chain → Apple Root CA G3)
-- [x] Google Play Billing v2 (`subscriptionsv2.get`)
+- [x] Google Play Billing v3 (`subscriptionsv2.get` resource)
 - [x] Webhook handlers (Apple V2 + Google RTDN, voided purchases included)
 - [x] Lifecycle states: `grace_period` / `on_hold` / `paused` (correct classification, not inferred)
 - [x] PostgreSQL subscription store + purchase store (auto-backfill via `ALTER TABLE IF NOT EXISTS`)
