@@ -1,5 +1,5 @@
 import { decodeJwt, decodeProtectedHeader, importPKCS8, importX509, jwtVerify, SignJWT } from 'jose';
-import { X509Certificate } from 'node:crypto';
+import { X509Certificate, createSign, randomUUID } from 'node:crypto';
 import type {
   SubscriptionInfo,
   AppleNotificationPayload,
@@ -33,8 +33,9 @@ interface AppleTransactionPayload {
   purchaseDate?: number;       // ms since epoch
   originalPurchaseDate?: number;
   expiresDate?: number;        // ms since epoch
-  inAppOwnershipType?: string;
-  type?: string;               // 'Auto-Renewable Subscription'
+  inAppOwnershipType?: string; // 'PURCHASED' | 'FAMILY_SHARED'
+  appAccountToken?: string;    // UUID linked at purchase time (= userId for onesub)
+  type?: string;               // 'Auto-Renewable Subscription' | 'Consumable' | 'Non-Consumable'
   isUpgraded?: boolean;
   revocationDate?: number;
   [key: string]: unknown;
@@ -354,6 +355,19 @@ export async function decodeAppleNotification(
   willRenew: boolean;
   /** May be null for non-subscription notifications (consumable refund). */
   expiresAt: string | null;
+  /**
+   * UUID the app set via setAppAccountToken at purchase time. For onesub this
+   * maps directly to userId. Present for both PURCHASED and FAMILY_SHARED
+   * ownership types when the host linked a user account at checkout time.
+   * Null when not set (sandbox, or host didn't call setAppAccountToken).
+   */
+  appAccountToken: string | null;
+  /**
+   * 'PURCHASED' — the user bought this directly.
+   * 'FAMILY_SHARED' — a family member of the purchaser. The originalTransactionId
+   * and appAccountToken belong to the family member, not the purchaser.
+   */
+  inAppOwnershipType: string | null;
 } | null> {
   const { signedTransactionInfo, signedRenewalInfo } = payload.data;
 
@@ -396,6 +410,8 @@ export async function decodeAppleNotification(
     status,
     willRenew,
     expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
+    appAccountToken: tx.appAccountToken ?? null,
+    inAppOwnershipType: tx.inAppOwnershipType ?? null,
   };
 }
 
@@ -671,4 +687,184 @@ export async function fetchAppleSubscriptionStatus(
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: renewal?.autoRenewStatus === 1,
   };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// App Store Server API — Transaction History
+// ───────────────────────────────────────────────────────────────────────────
+
+interface AppleTransactionHistoryResponse {
+  signedTransactions?: string[];
+  revision?: string;
+  hasMore?: boolean;
+  bundleId?: string;
+  appAppleId?: number;
+  environment?: 'Production' | 'Sandbox';
+}
+
+/**
+ * Decoded lightweight transaction record from transaction history.
+ */
+export interface AppleTransactionRecord {
+  originalTransactionId: string;
+  transactionId: string;
+  productId: string;
+  type: string;
+  purchasedAt: string;
+  expiresAt: string | null;
+  appAccountToken: string | null;
+  inAppOwnershipType: string | null;
+  revocationDate: string | null;
+}
+
+/**
+ * Fetch all transactions for an originalTransactionId from the App Store
+ * Transaction History API (GET /inApps/v2/history/{originalTransactionId}).
+ *
+ * Paginates automatically until `hasMore` is false. Returns all decoded
+ * transaction records, oldest-first (Apple's default sort).
+ *
+ * Returns null when API credentials are missing or the call fails.
+ */
+export async function fetchAppleTransactionHistory(
+  originalTransactionId: string,
+  config: AppleConfig,
+  options?: { sandbox?: boolean },
+): Promise<AppleTransactionRecord[] | null> {
+  if (config.mockMode) return null;
+
+  let jwt: string;
+  try {
+    jwt = await makeAppleApiJwt(config);
+  } catch (err) {
+    log.warn('[onesub/apple] Cannot fetch transaction history — JWT mint failed:', err);
+    return null;
+  }
+
+  const host = options?.sandbox
+    ? 'api.storekit-sandbox.itunes.apple.com'
+    : 'api.storekit.itunes.apple.com';
+
+  const results: AppleTransactionRecord[] = [];
+  let revision: string | undefined;
+
+  for (;;) {
+    const url = new URL(`https://${host}/inApps/v2/history/${encodeURIComponent(originalTransactionId)}`);
+    if (revision) url.searchParams.set('revision', revision);
+
+    let page: AppleTransactionHistoryResponse;
+    try {
+      const resp = await fetchWithTimeout(url.toString(), {
+        headers: { Authorization: `Bearer ${jwt}` },
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        log.warn(`[onesub/apple] Transaction History API error ${resp.status}: ${text}`);
+        return results.length > 0 ? results : null;
+      }
+      page = (await resp.json()) as AppleTransactionHistoryResponse;
+    } catch (err) {
+      log.warn('[onesub/apple] Transaction History API network error:', err);
+      return results.length > 0 ? results : null;
+    }
+
+    for (const signed of page.signedTransactions ?? []) {
+      try {
+        const tx = await decodeJws<AppleTransactionPayload>(signed, config.skipJwsVerification);
+        if (!tx.originalTransactionId || !tx.transactionId || !tx.productId) continue;
+        results.push({
+          originalTransactionId: tx.originalTransactionId,
+          transactionId: tx.transactionId,
+          productId: tx.productId,
+          type: tx.type ?? 'Unknown',
+          purchasedAt: tx.purchaseDate ? new Date(tx.purchaseDate).toISOString() : new Date().toISOString(),
+          expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
+          appAccountToken: tx.appAccountToken ?? null,
+          inAppOwnershipType: tx.inAppOwnershipType ?? null,
+          revocationDate: tx.revocationDate ? new Date(tx.revocationDate).toISOString() : null,
+        });
+      } catch {
+        // skip malformed JWS entries
+      }
+    }
+
+    if (!page.hasMore) break;
+    revision = page.revision;
+  }
+
+  return results;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Apple Promotional Offer — server-side signature
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Input for signing an Apple Promotional Offer payload.
+ * https://developer.apple.com/documentation/storekit/generating-a-signature-for-promotional-offers
+ */
+export interface AppleOfferSignatureInput {
+  /** App Bundle ID (e.g. com.example.app) */
+  bundleId: string;
+  /** The product ID of the subscription being offered */
+  productId: string;
+  /** The promotional offer ID defined in App Store Connect */
+  offerId: string;
+  /** A unique UUID generated per request (the nonce) */
+  applicationUsername: string;
+}
+
+/**
+ * Result returned to the client so StoreKit can verify the offer.
+ */
+export interface AppleOfferSignatureResult {
+  keyId: string;
+  nonce: string;
+  timestamp: number;
+  signature: string;
+}
+
+/**
+ * Sign an Apple Promotional Offer payload with ES256 (ECDSA P-256).
+ *
+ * The message to sign is:
+ *   appBundleId + '⁣' + keyIdentifier + '⁣' + productIdentifier + '⁣'
+ *   + offerIdentifier + '⁣' + applicationUsername + '⁣'
+ *   + nonce (lowercase) + '⁣' + timestamp (ms, string)
+ *
+ * Requires `config.offerKeyId` and `config.offerPrivateKey` (PEM ES256 key from
+ * App Store Connect → Subscriptions → Promotional Offers → Keys).
+ *
+ * Throws if the required keys are not configured.
+ */
+export async function signApplePromotionalOffer(
+  input: AppleOfferSignatureInput,
+  config: AppleConfig,
+): Promise<AppleOfferSignatureResult> {
+  const { offerKeyId, offerPrivateKey } = config as AppleConfig & { offerKeyId?: string; offerPrivateKey?: string };
+  if (!offerKeyId || !offerPrivateKey) {
+    throw new Error('[onesub/apple] Promotional Offer signing requires config.apple.offerKeyId and config.apple.offerPrivateKey');
+  }
+
+  const nonce = randomUUID().toLowerCase();
+  const timestamp = Date.now();
+  const separator = '⁣';
+
+  const message = [
+    input.bundleId,
+    offerKeyId,
+    input.productId,
+    input.offerId,
+    input.applicationUsername,
+    nonce,
+    String(timestamp),
+  ].join(separator);
+
+  const sign = createSign('SHA256');
+  sign.update(message);
+  sign.end();
+  const signatureBuffer = sign.sign(offerPrivateKey);
+  const signature = signatureBuffer.toString('base64');
+
+  return { keyId: offerKeyId, nonce, timestamp, signature };
 }

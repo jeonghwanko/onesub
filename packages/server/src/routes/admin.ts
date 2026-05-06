@@ -15,6 +15,7 @@ import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { evaluateEntitlement } from './entitlements.js';
 import { sendError, sendZodError } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
+import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -267,6 +268,43 @@ export function createAdminRouter(
       res.status(200).json(response);
     } catch (err) {
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'customer error');
+    }
+  });
+
+  // POST /onesub/admin/sync-apple/:originalTransactionId
+  // Fetch the current subscription state directly from Apple's Status API and
+  // upsert into the local store. Useful for reconciliation / missed-webhook recovery.
+  const syncAppleParamsSchema = z.object({
+    originalTransactionId: z.string().min(1).max(256),
+  });
+  router.post(ROUTES.ADMIN_SYNC_APPLE, async (req: Request, res: Response) => {
+    let params;
+    try {
+      params = syncAppleParamsSchema.parse(req.params);
+    } catch {
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'originalTransactionId required');
+      return;
+    }
+
+    if (!config.apple?.issuerId || !config.apple?.keyId || !config.apple?.privateKey) {
+      sendError(res, 400, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple API credentials not configured');
+      return;
+    }
+
+    try {
+      const { originalTransactionId } = params;
+      const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, config.apple);
+      if (!fresh) {
+        sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'Apple Status API returned no record');
+        return;
+      }
+
+      const existing = await store.getByTransactionId(originalTransactionId);
+      fresh.userId = existing?.userId ?? originalTransactionId;
+      await store.save(fresh);
+      res.status(200).json({ ok: true, subscription: fresh });
+    } catch (err) {
+      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, (err as Error).message ?? 'sync error');
     }
   });
 

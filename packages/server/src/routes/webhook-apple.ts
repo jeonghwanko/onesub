@@ -88,6 +88,8 @@ export async function handleAppleWebhook(
     status,
     willRenew,
     expiresAt,
+    appAccountToken,
+    inAppOwnershipType,
   } = decoded;
   const notificationType = payload.notificationType;
   const subtype = payload.subtype;
@@ -157,7 +159,10 @@ export async function handleAppleWebhook(
         sandbox: environment === 'Sandbox',
       });
       if (fresh) {
-        fresh.userId = originalTransactionId;
+        fresh.userId = appAccountToken ?? originalTransactionId;
+        if (inAppOwnershipType === 'FAMILY_SHARED') {
+          log.info('[onesub/webhook/apple] FAMILY_SHARED transaction — userId derived from appAccountToken:', fresh.userId);
+        }
         await store.save(fresh);
       } else {
         log.warn(

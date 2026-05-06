@@ -206,6 +206,18 @@ export interface OneSubServerConfig {
     consumptionInfoProvider?: (
       ctx: AppleConsumptionContext,
     ) => Promise<AppleConsumptionRequest | null>;
+    /**
+     * Promotional offer signing key ID from App Store Connect →
+     * Users and Access → Keys → Subscriptions.
+     * Required for `POST /onesub/apple/offer-signature`.
+     */
+    offerKeyId?: string;
+    /**
+     * ES256 private key (PEM) for signing promotional offer payloads.
+     * Pair with `offerKeyId`. Never set both `offerPrivateKey` and `privateKey`
+     * to the same value — they are separate keys with different scopes.
+     */
+    offerPrivateKey?: string;
   };
   google?: {
     packageName?: string;

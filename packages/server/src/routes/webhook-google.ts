@@ -6,7 +6,9 @@ import type { SubscriptionStore, PurchaseStore } from '../store.js';
 import {
   decodeGoogleNotification,
   decodeGoogleVoidedNotification,
+  decodeGoogleOneTimeProductNotification,
   validateGoogleReceipt,
+  acknowledgeGoogleProduct,
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
@@ -102,6 +104,38 @@ export async function handleGoogleWebhook(
     } catch (err) {
       log.error('[onesub/webhook/google] voided notification error:', err);
       sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process voided notification');
+    }
+    return;
+  }
+
+  // oneTimeProductNotification — consumable / non-consumable purchase signal.
+  // The notification carries no userId, so we cannot create a purchase record
+  // here (the client's POST /onesub/purchase/validate is the authoritative path).
+  // For PURCHASED we acknowledge to prevent the 3-day auto-refund window.
+  const oneTimeProduct = decodeGoogleOneTimeProductNotification(body as GoogleNotificationPayload);
+  if (oneTimeProduct) {
+    if (config.google?.packageName && oneTimeProduct.packageName !== config.google.packageName) {
+      log.warn('[onesub/webhook/google] oneTimeProduct package name mismatch:', oneTimeProduct.packageName, '!==', config.google.packageName);
+      sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
+      return;
+    }
+    try {
+      const { notificationType, purchaseToken, sku } = oneTimeProduct;
+      if (notificationType === 1 /* PURCHASED */) {
+        log.info('[onesub/webhook/google] oneTimeProduct PURCHASED:', sku);
+        if (config.google?.serviceAccountKey && config.google.packageName) {
+          void acknowledgeGoogleProduct(purchaseToken, sku, config.google).catch(
+            (err) => log.warn('[onesub/webhook/google] oneTimeProduct ack failed — 3-day auto-refund risk:', err),
+          );
+        }
+      } else {
+        // notificationType === 2: CANCELED (user aborted before purchase completed)
+        log.info('[onesub/webhook/google] oneTimeProduct CANCELED (pre-completion):', sku);
+      }
+      res.status(200).json({ received: true });
+    } catch (err) {
+      log.error('[onesub/webhook/google] oneTimeProduct error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process oneTimeProduct notification');
     }
     return;
   }

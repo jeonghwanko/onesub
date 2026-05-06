@@ -18,6 +18,10 @@ export const ROUTES = {
   ADMIN_SUBSCRIPTION_DETAIL: '/onesub/admin/subscriptions/:transactionId',
   /** Per-user profile bundle (subs + purchases + entitlements); takes :userId path param. */
   ADMIN_CUSTOMER_DETAIL: '/onesub/admin/customers/:userId',
+  /** Sync a subscription from Apple Status API; takes :originalTransactionId path param. */
+  ADMIN_SYNC_APPLE: '/onesub/admin/sync-apple/:originalTransactionId',
+  /** Sign an Apple Promotional Offer payload (requires apple.offerKeyId + offerPrivateKey). */
+  APPLE_OFFER_SIGNATURE: '/onesub/apple/offer-signature',
 } as const;
 
 /** Default server port */

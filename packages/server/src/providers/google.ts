@@ -102,9 +102,32 @@ interface GoogleDeveloperNotification {
     /** 1 = Full refund, 2 = Quantity-based partial refund (consumables) */
     refundType: 1 | 2;
   };
+  oneTimeProductNotification?: {
+    version: string;
+    /** 1 = PURCHASED, 2 = CANCELED */
+    notificationType: 1 | 2;
+    purchaseToken: string;
+    /** Product SKU (productId) */
+    sku: string;
+  };
   testNotification?: {
     version: string;
   };
+}
+
+/**
+ * Decoded Google RTDN oneTimeProductNotification — sent when a consumable or
+ * non-consumable product is purchased or canceled before acknowledgment.
+ *
+ * https://developer.android.com/google/play/billing/rtdn-reference#one-time
+ */
+export interface GoogleOneTimeProductNotification {
+  /** 1 = PURCHASED, 2 = CANCELED (user canceled before purchase completed) */
+  notificationType: 1 | 2;
+  purchaseToken: string;
+  /** Product SKU / productId */
+  sku: string;
+  packageName: string;
 }
 
 /**
@@ -710,6 +733,31 @@ export function decodeGoogleVoidedNotification(
     refundType,
     packageName: notification.packageName,
   };
+}
+
+/**
+ * Decode a Google RTDN oneTimeProductNotification, if the payload is one.
+ * Returns null when the payload is a different notification kind.
+ *
+ * Note: the notification does NOT carry userId context. For PURCHASED, the
+ * receipt must be acknowledged via acknowledgeGoogleProduct to prevent the
+ * 3-day auto-refund window. The userId is only known after the client calls
+ * POST /onesub/purchase/validate, which is the authoritative record-creation
+ * path. The webhook handler therefore acknowledges without creating a record.
+ */
+export function decodeGoogleOneTimeProductNotification(
+  payload: GoogleNotificationPayload,
+): GoogleOneTimeProductNotification | null {
+  let notification: GoogleDeveloperNotification;
+  try {
+    const json = Buffer.from(payload.message.data, 'base64').toString('utf-8');
+    notification = JSON.parse(json) as GoogleDeveloperNotification;
+  } catch {
+    return null;
+  }
+  if (!notification.oneTimeProductNotification) return null;
+  const { notificationType, purchaseToken, sku } = notification.oneTimeProductNotification;
+  return { notificationType, purchaseToken, sku, packageName: notification.packageName };
 }
 
 /**

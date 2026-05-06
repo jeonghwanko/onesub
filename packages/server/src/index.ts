@@ -10,6 +10,7 @@ import { createPurchaseRouter } from './routes/purchase.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createEntitlementRouter } from './routes/entitlements.js';
 import { createMetricsRouter } from './routes/metrics.js';
+import { createAppleOfferRouter } from './routes/apple-offer.js';
 import { setLogger } from './logger.js';
 import type { CacheAdapter } from './cache.js';
 import { setDefaultCache } from './cache.js';
@@ -115,6 +116,10 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   const metricsRouter = createMetricsRouter(config, store, purchaseStore);
   if (metricsRouter) router.use(metricsRouter);
 
+  // Apple Promotional Offer signing — only mounted when offerKeyId + offerPrivateKey are set
+  const appleOfferRouter = createAppleOfferRouter(config);
+  if (appleOfferRouter) router.use(appleOfferRouter);
+
   return router;
 }
 
@@ -170,7 +175,12 @@ export type { OpenAPIDoc } from './openapi.js';
 export { withSpan } from './tracing.js';
 
 // Provider functions for direct (non-HTTP) usage
-export { validateAppleReceipt, fetchAppleSubscriptionStatus } from './providers/apple.js';
+export {
+  validateAppleReceipt,
+  fetchAppleSubscriptionStatus,
+  fetchAppleTransactionHistory,
+  signApplePromotionalOffer,
+} from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
 
 // Entitlement evaluator — exported so hosts can evaluate entitlements
