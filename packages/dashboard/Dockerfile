@@ -20,8 +20,6 @@ RUN npm ci --workspaces --include-workspace-root --omit=dev || npm ci --workspac
 FROM node:22-alpine AS builder
 WORKDIR /repo
 COPY --from=deps /repo/node_modules ./node_modules
-COPY --from=deps /repo/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /repo/packages/dashboard/node_modules ./packages/dashboard/node_modules
 COPY package*.json ./
 COPY tsconfig.base.json ./
 COPY packages/shared ./packages/shared
