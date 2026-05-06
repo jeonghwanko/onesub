@@ -1,10 +1,10 @@
 ---
 title: I built my own IAP backend instead of using RevenueCat — what 3 weeks of pain taught me
-published: false
+published: true
 description: A post-mortem on shipping React Native subscriptions without RevenueCat. StoreKit 2 JWS verification, Google Play v3, webhook lifecycle states, and the 3-day refund trap.
 tags: reactnative, expo, opensource, javascript
-canonical_url:
-cover_image:
+canonical_url: https://github.com/jeonghwanko/onesub/blob/master/docs/blog/why-i-built-onesub.md
+cover_image: https://raw.githubusercontent.com/jeonghwanko/onesub/master/docs/blog/cover-why-i-built-onesub.png
 ---
 
 I'm shipping a subscription-based React Native app and went through the
