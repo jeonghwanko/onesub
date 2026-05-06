@@ -760,12 +760,12 @@ export async function fetchAppleTransactionHistory(
       if (!resp.ok) {
         const text = await resp.text();
         log.warn(`[onesub/apple] Transaction History API error ${resp.status}: ${text}`);
-        return results.length > 0 ? results : null;
+        return null;
       }
       page = (await resp.json()) as AppleTransactionHistoryResponse;
     } catch (err) {
       log.warn('[onesub/apple] Transaction History API network error:', err);
-      return results.length > 0 ? results : null;
+      return null;
     }
 
     for (const signed of page.signedTransactions ?? []) {
@@ -860,10 +860,19 @@ export async function signApplePromotionalOffer(
     String(timestamp),
   ].join(separator);
 
-  const sign = createSign('SHA256');
-  sign.update(message);
-  sign.end();
-  const signatureBuffer = sign.sign(offerPrivateKey);
+  if (!offerPrivateKey.includes('BEGIN') || !offerPrivateKey.includes('END')) {
+    throw new Error('[onesub/apple] offerPrivateKey does not appear to be PEM-encoded');
+  }
+
+  let signatureBuffer: Buffer;
+  try {
+    const sign = createSign('SHA256');
+    sign.update(message);
+    sign.end();
+    signatureBuffer = sign.sign(offerPrivateKey);
+  } catch (err) {
+    throw new Error(`[onesub/apple] Failed to sign promotional offer — check that offerPrivateKey is a valid ES256 PEM key: ${(err as Error).message}`);
+  }
   const signature = signatureBuffer.toString('base64');
 
   return { keyId: offerKeyId, nonce, timestamp, signature };

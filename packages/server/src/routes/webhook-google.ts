@@ -125,7 +125,7 @@ export async function handleGoogleWebhook(
         log.info('[onesub/webhook/google] oneTimeProduct PURCHASED:', sku);
         if (config.google?.serviceAccountKey && config.google.packageName) {
           void acknowledgeGoogleProduct(purchaseToken, sku, config.google).catch(
-            (err) => log.warn('[onesub/webhook/google] oneTimeProduct ack failed — 3-day auto-refund risk:', err),
+            (err) => log.warn(`[onesub/webhook/google] oneTimeProduct ack failed for SKU ${sku} — 3-day auto-refund risk:`, err),
           );
         }
       } else {

@@ -757,6 +757,10 @@ export function decodeGoogleOneTimeProductNotification(
   }
   if (!notification.oneTimeProductNotification) return null;
   const { notificationType, purchaseToken, sku } = notification.oneTimeProductNotification;
+  if (notificationType !== 1 && notificationType !== 2) {
+    log.warn('[onesub/google] Unknown oneTimeProductNotification type:', notificationType);
+    return null;
+  }
   return { notificationType, purchaseToken, sku, packageName: notification.packageName };
 }
 

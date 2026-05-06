@@ -145,10 +145,22 @@ export async function handleAppleWebhook(
         isRefundOrRevoke && !isOneTimePurchase && notificationType !== 'CONSUMPTION_REQUEST';
       const keepEntitlement = isSubscriptionRefund && config.refundPolicy === 'until_expiry';
 
+      // If the stored userId was a fallback (originalTransactionId) and we now
+      // have a real appAccountToken, correct it. Never overwrite a userId that
+      // the client set explicitly (which would differ from originalTransactionId).
+      const correctedUserId =
+        appAccountToken && existing.userId === originalTransactionId
+          ? appAccountToken
+          : existing.userId;
+      if (correctedUserId !== existing.userId) {
+        log.info('[onesub/webhook/apple] correcting userId from originalTransactionId to appAccountToken:', correctedUserId);
+      }
+
       const updated: SubscriptionInfo = keepEntitlement
-        ? { ...existing, willRenew: false }
+        ? { ...existing, userId: correctedUserId, willRenew: false }
         : {
             ...existing,
+            userId: correctedUserId,
             status: finalStatus,
             willRenew,
             expiresAt: expiresAt ?? existing.expiresAt,
