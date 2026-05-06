@@ -14,7 +14,7 @@ WORKDIR /repo
 COPY package*.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/dashboard/package.json packages/dashboard/
-RUN npm ci --workspaces --include-workspace-root --omit=dev || npm ci --workspaces --include-workspace-root
+RUN npm ci --workspaces --include-workspace-root
 
 # ─── build ──────────────────────────────────────────────────────────────────
 FROM node:22-alpine AS builder
