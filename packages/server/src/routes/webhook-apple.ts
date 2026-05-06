@@ -173,7 +173,8 @@ export async function handleAppleWebhook(
       if (fresh) {
         fresh.userId = appAccountToken ?? originalTransactionId;
         if (inAppOwnershipType === 'FAMILY_SHARED') {
-          log.info('[onesub/webhook/apple] FAMILY_SHARED transaction — userId derived from appAccountToken:', fresh.userId);
+          const source = appAccountToken ? 'appAccountToken' : 'originalTransactionId (fallback)';
+          log.info(`[onesub/webhook/apple] FAMILY_SHARED — userId: ${fresh.userId} (source: ${source})`);
         }
         await store.save(fresh);
       } else {

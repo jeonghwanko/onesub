@@ -293,13 +293,18 @@ export function createAdminRouter(
 
     try {
       const { originalTransactionId } = params;
-      const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, config.apple);
+      // Allow callers to force sandbox mode; otherwise infer from the stored record.
+      const existingForEnv = await store.getByTransactionId(originalTransactionId);
+      const isSandbox =
+        req.query['sandbox'] === 'true' ||
+        (existingForEnv as (typeof existingForEnv & { environment?: string }) | null)?.environment === 'Sandbox';
+      const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, config.apple, { sandbox: isSandbox });
       if (!fresh) {
         sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'Apple Status API returned no record');
         return;
       }
 
-      const existing = await store.getByTransactionId(originalTransactionId);
+      const existing = existingForEnv;
       fresh.userId = existing?.userId ?? originalTransactionId;
       await store.save(fresh);
       res.status(200).json({ ok: true, subscription: fresh });

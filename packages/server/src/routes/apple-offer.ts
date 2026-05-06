@@ -6,6 +6,8 @@ import { ONESUB_ERROR_CODE } from '@onesub/shared';
 import { signApplePromotionalOffer } from '../providers/apple.js';
 import { sendError, sendZodError } from '../errors.js';
 
+const OFFER_SECRET_HEADER = 'x-onesub-offer-secret';
+
 const offerBodySchema = z.object({
   productId: z.string().min(1).max(256),
   offerId: z.string().min(1).max(256),
@@ -17,6 +19,11 @@ const offerBodySchema = z.object({
  *
  * Sign an Apple Promotional Offer payload server-side.
  * Requires config.apple.offerKeyId and config.apple.offerPrivateKey.
+ *
+ * Authentication: if config.adminSecret is set, the request must carry
+ * `X-Onesub-Offer-Secret: <adminSecret>` (same value). Hosts that mount
+ * onesub without adminSecret are responsible for securing this endpoint
+ * themselves (e.g. behind their own auth middleware).
  *
  * Body: { productId, offerId, applicationUsername }
  * Response: { keyId, nonce, timestamp, signature }
@@ -31,6 +38,13 @@ export function createAppleOfferRouter(config: OneSubServerConfig): Router | nul
   const router = Router();
 
   router.post('/onesub/apple/offer-signature', async (req: Request, res: Response) => {
+    if (config.adminSecret) {
+      const provided = req.headers[OFFER_SECRET_HEADER];
+      if (typeof provided !== 'string' || provided !== config.adminSecret) {
+        sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
+        return;
+      }
+    }
     let body: z.infer<typeof offerBodySchema>;
     try {
       body = offerBodySchema.parse(req.body);
