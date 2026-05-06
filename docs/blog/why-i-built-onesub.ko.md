@@ -8,8 +8,8 @@ thumbnail: https://raw.githubusercontent.com/jeonghwanko/onesub/master/docs/blog
 
 ![cover](https://raw.githubusercontent.com/jeonghwanko/onesub/master/docs/blog/cover-why-i-built-onesub.png)
 
-> 영문 원문(dev.to): https://dev.to/_9848c5582063b42abecb7/i-built-my-own-iap-backend-instead-of-using-revenuecat-what-3-weeks-of-pain-taught-me-1l06
-> 코드: https://github.com/jeonghwanko/onesub
+> 영문 원문: [dev.to](https://dev.to/_9848c5582063b42abecb7/i-built-my-own-iap-backend-instead-of-using-revenuecat-what-3-weeks-of-pain-taught-me-1l06)
+> 코드: [github.com/jeonghwanko/onesub](https://github.com/jeonghwanko/onesub)
 
 구독 기반 React Native 앱을 만들면서 RN 솔로 개발자라면 누구나 한 번 부딪히는
 질문 — **"RevenueCat 쓸까, 직접 만들까?"** — 을 거쳤다. 결국 직접 만들기를
@@ -111,7 +111,7 @@ Redis든 뭐든 OK). React Native SDK는 옵션 (`useOneSub()` 훅 + paywall
 
 RN에서 IAP 직접 구현해본 분 중에, 위에 안 적힌 엣지 케이스로 데인 적 있나요?
 특히 **Family Sharing**이나 **upgrade/downgrade chain** 프로덕션에서
-다뤄본 경험이 있다면 정말 궁금합니다. 댓글이나 GitHub Issue 환영.
+다뤄본 경험이 있다면 좋을 듯.
 
 ---
 
