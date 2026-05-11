@@ -42,10 +42,10 @@
     "@onesub/shared": "0.8.0"
   },
   "peerDependencies": {
-    "react": ">=18.0.0",
+    "expo-in-app-purchases": ">=14.0.0",
+    "react": "^19.2.6",
     "react-native": ">=0.73.0",
-    "react-native-iap": ">=15.0.0",
-    "expo-in-app-purchases": ">=14.0.0"
+    "react-native-iap": ">=15.0.0"
   },
   "peerDependenciesMeta": {
     "react-native-iap": {
