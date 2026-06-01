@@ -38,7 +38,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.17.0",
+    "@types/node": "^20.19.41",
     "typescript": "^5.7.0"
   },
   "engines": {
