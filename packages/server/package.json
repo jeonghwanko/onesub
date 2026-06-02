@@ -86,7 +86,7 @@
     "@types/pg": "^8.20.0",
     "express": "^5.2.1",
     "ioredis-mock": "^8.9.0",
-    "size-limit": "^11.1.6",
+    "size-limit": "^12.1.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.0"
   },
