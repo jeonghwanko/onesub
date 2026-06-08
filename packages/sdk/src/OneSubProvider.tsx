@@ -20,6 +20,7 @@ import {
   handlePurchaseEvent as handlePurchaseEventPure,
   registerInFlight as registerInFlightPure,
   extractReceiptToken,
+  extractTransactionId,
   type InFlightEntry,
 } from './purchaseFlow.js';
 import { OneSubError } from './OneSubError.js';
@@ -606,9 +607,21 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         }
 
         // Non-consumable already owned on the server side is still a success
-        // from the user's perspective — they do own it. Surface it as such.
+        // from the user's perspective — they do own it. Surface it as such,
+        // carrying the store transactionId so receipt-forwarding hosts can
+        // re-entitle. (Defensive: updated servers return the recorded purchase
+        // via the valid:true branch above; this covers legacy 409 servers.)
         if (validationResult.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
-          return { productId, userId, platform: platform === 'ios' ? 'apple' : 'google', type: purchaseType } as PurchaseInfo;
+          return {
+            productId,
+            userId,
+            platform: platform === 'ios' ? 'apple' : 'google',
+            type: purchaseType,
+            transactionId: extractTransactionId(match),
+            purchasedAt: new Date().toISOString(),
+            quantity: 1,
+            action: 'restored',
+          } satisfies PurchaseInfo & { action: 'restored' };
         }
 
         throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, validationResult.error ?? '[onesub] Restore validation failed.');

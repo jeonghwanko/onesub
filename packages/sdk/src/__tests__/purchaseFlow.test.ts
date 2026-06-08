@@ -236,13 +236,13 @@ describe('handlePurchaseEvent — purchase (non-consumable)', () => {
     expect(resolved).toMatchObject({ valid: true, action: 'new' });
   });
 
-  it('NON_CONSUMABLE_ALREADY_OWNED: synthesizes restored result + still finishes', async () => {
+  it('NON_CONSUMABLE_ALREADY_OWNED: synthesizes restored result carrying the store transactionId + still finishes', async () => {
     const inFlight = new Map<string, InFlightEntry>();
-    let resolved: { valid: boolean; action?: string } | null = null;
+    let resolved: { valid: boolean; action?: string; purchase?: { transactionId?: string } } | null = null;
     inFlight.set('welcome_pass', {
       kind: 'purchase',
       purchaseType: 'non_consumable',
-      resolve: (v) => { resolved = v as { valid: boolean; action?: string }; },
+      resolve: (v) => { resolved = v as typeof resolved; },
       reject: () => {},
     });
 
@@ -258,10 +258,17 @@ describe('handlePurchaseEvent — purchase (non-consumable)', () => {
       api: { validateReceipt: vi.fn(), validatePurchase },
     });
 
-    await handlePurchaseEvent(makePurchase({ productId: 'welcome_pass' }), deps);
+    await handlePurchaseEvent(
+      makePurchase({ productId: 'welcome_pass', transactionId: 'GPA.1234-5678-9012-34567' }),
+      deps,
+    );
 
     expect(finishTransaction).toHaveBeenCalled();
+    // Regression guard: the synthesized restore MUST carry the real
+    // transactionId. Dropping it (the old bug) left receipt-forwarding hosts
+    // with `undefined`, so a charged user was never granted their entitlement.
     expect(resolved).toMatchObject({ valid: true, action: 'restored' });
+    expect(resolved!.purchase?.transactionId).toBe('GPA.1234-5678-9012-34567');
   });
 });
 

@@ -77,6 +77,22 @@ export function extractReceiptToken(purchase: unknown): string {
 }
 
 /**
+ * Pull the store transaction id from a raw react-native-iap purchase object.
+ * On iOS this is the StoreKit transactionId; on Android the Google order id.
+ * v15 / OpenIAP surfaces `transactionId`; `id` is the newer OpenIAP alias and
+ * `orderId` the legacy Android field — try them in order. Returns '' if none.
+ */
+export function extractTransactionId(purchase: unknown): string {
+  if (!purchase || typeof purchase !== 'object') return '';
+  const p = purchase as Record<string, unknown>;
+  for (const k of ['transactionId', 'id', 'orderId'] as const) {
+    const v = p[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return '';
+}
+
+/**
  * Decide whether this event describes a subscription. Priority:
  *   1. The caller's in-flight entry (user just tapped Subscribe vs Purchase)
  *   2. The Purchase object's `productType` field set by react-native-iap v15
@@ -188,13 +204,27 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         });
         inFlight?.resolve(result);
       } else if (result.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
-        deps.logger?.trace('purchase synthesized as restored (already owned)', { productId });
+        // Defensive fallback for servers still returning the legacy 409 instead
+        // of an idempotent `restored` success (see server purchase route). Carry
+        // the store transactionId through — an object missing it violates the
+        // PurchaseInfo contract and breaks hosts that re-entitle off
+        // `result.transactionId` (the user gets charged but never granted).
+        const transactionId = extractTransactionId(purchase);
+        deps.logger?.trace('purchase synthesized as restored (already owned)', { productId, transactionId });
         await deps.RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
           /* ignore */
         });
         inFlight?.resolve({
           valid: true,
-          purchase: { productId, userId: deps.userId, platform: platformName, type: purchaseType } as PurchaseInfo,
+          purchase: {
+            productId,
+            userId: deps.userId,
+            platform: platformName,
+            type: purchaseType,
+            transactionId,
+            purchasedAt: new Date().toISOString(),
+            quantity: 1,
+          } satisfies PurchaseInfo,
           action: 'restored',
         });
       } else {

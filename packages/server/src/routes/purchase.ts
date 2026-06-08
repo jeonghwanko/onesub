@@ -69,11 +69,30 @@ export function createPurchaseRouter(
     const { platform, receipt, userId, productId, type } = body;
 
     try {
-      // Non-consumable duplicate check (before receipt validation to fail fast)
+      // Non-consumable idempotent restore. If the user already owns this
+      // product, return the *recorded* purchase — with its real transactionId —
+      // as a `restored` success instead of a 409 error.
+      //
+      // Owning a non-consumable IS success. The old behaviour (409 +
+      // `purchase: null`) forced the SDK to synthesize a restored result with
+      // no transactionId, so downstream consumers that re-entitle off
+      // `result.transactionId` (e.g. a host app registering its own pass)
+      // received `undefined` and silently failed — the user was charged but
+      // never granted. Returning the stored record keeps the receipt chain
+      // intact and is safe: ownership was already proven by the prior validated
+      // purchase recorded under this userId (same idempotent-restore semantics
+      // as the transactionId-match path below).
       if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-        const alreadyOwned = await purchaseStore.hasPurchased(userId, productId);
-        if (alreadyOwned) {
-          sendError(res, 409, ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED, 'NON_CONSUMABLE_ALREADY_OWNED', NO_PURCHASE);
+        const owned = (await purchaseStore.getPurchasesByUserId(userId)).find(
+          (p) => p.productId === productId,
+        );
+        if (owned) {
+          const response: ValidatePurchaseResponse = {
+            valid: true,
+            purchase: { ...owned, userId },
+            action: 'restored',
+          };
+          res.status(200).json(response);
           return;
         }
       }

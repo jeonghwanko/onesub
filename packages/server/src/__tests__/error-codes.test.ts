@@ -83,7 +83,7 @@ describe('server error codes', () => {
       expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.INVALID_INPUT);
     });
 
-    it('non-consumable already owned → errorCode: NON_CONSUMABLE_ALREADY_OWNED', async () => {
+    it('non-consumable already owned → 200 idempotent restore with recorded transactionId', async () => {
       // Pre-seed the store with a purchase
       const purchaseStore = new InMemoryPurchaseStore();
       await purchaseStore.savePurchase({
@@ -111,8 +111,13 @@ describe('server error codes', () => {
         productId: 'premium',
         type: 'non_consumable',
       });
-      expect(res.status).toBe(409);
-      expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED);
+      // Owning a non-consumable IS success. The server returns the recorded
+      // purchase as a `restored` result — crucially WITH its transactionId — so
+      // downstream consumers can re-entitle instead of receiving a 409 + null.
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+      expect(res.body.action).toBe('restored');
+      expect(res.body.purchase.transactionId).toBe('tx_1');
     });
   });
 
