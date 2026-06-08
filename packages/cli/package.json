@@ -40,7 +40,7 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "@types/node": "^20.19.41",
+    "@types/node": "^20.19.42",
     "typescript": "^5.7.0"
   },
   "engines": {
