@@ -18,6 +18,16 @@ jobs:
       - run: npm ci
       - run: npm run build
 
+      # examples/* is not a root workspace (workspaces = packages/*), so `npm ci`
+      # never installs the example server's own deps. @onesub/server (the bench
+      # target) only depends on @onesub/shared/jose/zod, so dotenv/bullmq/pg are
+      # absent and the server crashes at its first import. Install the missing
+      # third-party deps at the root (the example resolves them via hoisting)
+      # WITHOUT touching package.json/lockfile, so @onesub/server still resolves
+      # to the local workspace build being benchmarked. express/ioredis already hoisted.
+      - name: Install example-only runtime deps (not in workspace tree)
+        run: npm install --no-save --no-package-lock dotenv@^16.4.0 bullmq@^5.0.0 pg@^8.13.0
+
       - name: Boot example server (in-memory)
         run: |
           (cd examples/server && nohup node server.js > server.log 2>&1 &)
