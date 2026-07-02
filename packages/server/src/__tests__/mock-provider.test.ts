@@ -237,4 +237,33 @@ describe('full server in mockMode', () => {
     expect(res.status).toBe(409);
     expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
   });
+
+  it('account-binding: Google obfuscatedExternalAccountId matching userId is accepted', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/purchase/validate').send({
+      platform: 'google',
+      receipt: 'MOCK_VALID_gbind_ok#token=acct-uuid-g1',
+      userId: 'acct-uuid-g1',
+      productId: 'premium',
+      type: 'non_consumable',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+    expect(res.body.action).toBe('new');
+  });
+
+  it('account-binding: Google obfuscatedExternalAccountId mismatch is rejected (payment-bypass guard)', async () => {
+    const app = mockApp();
+    // A leaked Google purchaseToken bound to acct-uuid-g1 cannot be attributed
+    // to a different userId — same guard as Apple, symmetric coverage.
+    const res = await request(app).post('/onesub/purchase/validate').send({
+      platform: 'google',
+      receipt: 'MOCK_VALID_gbind_mismatch#token=acct-uuid-g1',
+      userId: 'attacker-uuid-g2',
+      productId: 'premium',
+      type: 'non_consumable',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
 });

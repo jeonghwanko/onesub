@@ -133,6 +133,7 @@ export function createPurchaseRouter(
         if (result) {
           transactionId = result.transactionId;
           purchasedAt = result.purchasedAt;
+          boundAccountId = result.obfuscatedExternalAccountId ?? null;
         }
       }
 
@@ -149,7 +150,10 @@ export function createPurchaseRouter(
       // the request-body userId otherwise). Backward-compatible: purchases made
       // before the client set appAccountToken have no token → guard is skipped and
       // current behaviour (incl. reinstall reassignment) is unchanged.
-      if (boundAccountId && boundAccountId !== userId) {
+      // Case-insensitive compare: Apple normalizes appAccountToken to a lowercase
+      // UUID in the signed transaction, so a host passing the same UUID uppercased
+      // must not be rejected. Harmless for Google's verbatim account ids.
+      if (boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()) {
         log.warn(
           `[onesub/purchase] account binding mismatch for transaction ${transactionId}: token does not match userId ${userId}`,
         );

@@ -139,6 +139,8 @@ interface GoogleProductPurchase {
   purchaseState?: number;       // 0 = Purchased, 1 = Canceled, 2 = Pending
   consumptionState?: number;    // 0 = Not consumed, 1 = Consumed
   orderId?: string;
+  /** Account identity set by the client at purchase time (obfuscatedAccountIdAndroid). */
+  obfuscatedExternalAccountId?: string;
   [key: string]: unknown;
 }
 
@@ -581,6 +583,14 @@ export interface GoogleProductResult {
   /** orderId — unique per Google Play transaction, safe deduplication key */
   transactionId: string;
   purchasedAt: string;
+  /**
+   * Account identity the client baked in at purchase time
+   * (`obfuscatedAccountIdAndroid` → Play `obfuscatedExternalAccountId`). When
+   * present the validate route rejects attributing/reassigning the purchase to
+   * a non-matching userId. Absent for purchases made before the client set it
+   * (backward-compatible).
+   */
+  obfuscatedExternalAccountId?: string;
 }
 
 /**
@@ -650,6 +660,7 @@ export async function validateGoogleProductReceipt(
     purchasedAt: purchase.purchaseTimeMillis
       ? new Date(parseInt(purchase.purchaseTimeMillis, 10)).toISOString()
       : new Date().toISOString(),
+    obfuscatedExternalAccountId: purchase.obfuscatedExternalAccountId,
   };
 }
 

@@ -108,6 +108,8 @@ function isUserCancelled(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 // Helper — build platform-scoped requestPurchase args for react-native-iap v15
 // ---------------------------------------------------------------------------
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function buildRequestPurchaseArgs(
   sku: string,
   platform: 'ios' | 'android',
@@ -116,12 +118,27 @@ function buildRequestPurchaseArgs(
 ) {
   // accountToken binds the purchase to a stable account identity: Apple bakes it
   // into the signed transaction as `appAccountToken` (must be a UUID), Android
-  // carries it as `obfuscatedAccountIdAndroid`. The server's validate route
-  // rejects attributing/reassigning the purchase to a different userId, so a
-  // leaked receipt cannot be claimed by another account. Optional — omitted when
-  // the host doesn't pass an `accountToken`.
-  const apple = accountToken ? { sku, appAccountToken: accountToken } : { sku };
-  const androidExtra = accountToken ? { obfuscatedAccountIdAndroid: accountToken } : {};
+  // carries it as `obfuscatedAccountId` (the react-native-iap v15 REQUEST field —
+  // note the purchase RESULT uses the suffixed `obfuscatedAccountIdAndroid`, do
+  // not confuse them). The server's validate route rejects attributing/reassigning
+  // the purchase to a different userId, so a leaked receipt cannot be claimed by
+  // another account. Optional — omitted when the host doesn't pass `accountToken`.
+  //
+  // Each store rejects malformed tokens at purchase time (Apple: non-UUID;
+  // Google: obfuscatedAccountId > 64 chars → DEVELOPER_ERROR), which would break
+  // the purchase sheet itself. Degrade an invalid token to an unbound purchase
+  // rather than let it break checkout.
+  const iosToken = accountToken && UUID_RE.test(accountToken) ? accountToken : undefined;
+  const androidToken = accountToken && accountToken.length <= 64 ? accountToken : undefined;
+  if (accountToken && typeof console !== 'undefined') {
+    if (platform === 'ios' && !iosToken) {
+      console.warn('[onesub] accountToken is not a UUID — omitted on iOS; purchase will be unbound');
+    } else if (platform === 'android' && !androidToken) {
+      console.warn('[onesub] accountToken exceeds 64 chars — omitted on Android; purchase will be unbound');
+    }
+  }
+  const apple = iosToken ? { sku, appAccountToken: iosToken } : { sku };
+  const androidExtra = androidToken ? { obfuscatedAccountId: androidToken } : {};
   const request =
     platform === 'ios'
       ? { ios: apple }
@@ -176,7 +193,7 @@ export interface OneSubProviderProps {
   userId: string;
   /**
    * Stable account identity baked into each purchase (Apple `appAccountToken`,
-   * Android `obfuscatedAccountIdAndroid`). Bind this to an identity that survives
+   * Android `obfuscatedAccountId`). Bind this to an identity that survives
    * reinstall (e.g. a UUID derived from a hardware id hash) and is the SAME value
    * you pass as `userId`, so the server's validate route accepts the purchase.
    * Apple requires a UUID string. Omit to keep the previous unbound behavior.

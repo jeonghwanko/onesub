@@ -125,11 +125,15 @@ export function mockValidateGoogleSubscription(
 export function mockValidateGoogleProduct(
   receipt: string,
   productId: string,
-): { transactionId: string; purchasedAt: string } | null {
+): { transactionId: string; purchasedAt: string; obfuscatedExternalAccountId?: string } | null {
   const outcome = classifyMockReceipt(receipt);
   if (!outcomePasses(outcome, 'google')) return null;
+  // Test convention: `...#token=<value>` surfaces an obfuscatedExternalAccountId,
+  // exercising the account-binding guard in the validate route (mirrors Apple).
+  const tokenMatch = receipt.match(/#token=([^#]+)/);
   return {
     transactionId: deterministicTransactionId(`mock_google_${productId}`, receipt),
     purchasedAt: new Date().toISOString(),
+    ...(tokenMatch ? { obfuscatedExternalAccountId: tokenMatch[1] } : {}),
   };
 }
