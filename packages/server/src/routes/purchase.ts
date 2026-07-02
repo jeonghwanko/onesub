@@ -103,6 +103,10 @@ export function createPurchaseRouter(
       // security checks (type validation, consumptionState, receipt age).
       let transactionId: string | null = null;
       let purchasedAt: string = new Date().toISOString();
+      // Account binding token baked into the receipt at purchase time (Apple
+      // appAccountToken / Google obfuscatedExternalAccountId). Null when the
+      // client didn't set one (legacy purchases / apps not yet on the bound SDK).
+      let boundAccountId: string | null = null;
 
       if (platform === 'apple') {
         if (!config.apple) {
@@ -113,6 +117,7 @@ export function createPurchaseRouter(
         if (result) {
           transactionId = result.transactionId;
           purchasedAt = result.purchasedAt;
+          boundAccountId = result.appAccountToken ?? null;
         }
       } else {
         if (!config.google) {
@@ -133,6 +138,28 @@ export function createPurchaseRouter(
 
       if (!transactionId) {
         sendError(res, 422, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, 'Receipt validation failed', NO_PURCHASE);
+        return;
+      }
+
+      // Account-binding guard (payment-bypass defense). If the receipt carries an
+      // appAccountToken (a stable account id the client baked in at purchase time),
+      // the purchase may ONLY be attributed to a matching userId. This blocks the
+      // core exploit: a leaked/valid JWS being SAVED or REASSIGNED to an
+      // attacker-chosen userId (both the fresh-save and reassign paths below trust
+      // the request-body userId otherwise). Backward-compatible: purchases made
+      // before the client set appAccountToken have no token → guard is skipped and
+      // current behaviour (incl. reinstall reassignment) is unchanged.
+      if (boundAccountId && boundAccountId !== userId) {
+        log.warn(
+          `[onesub/purchase] account binding mismatch for transaction ${transactionId}: token does not match userId ${userId}`,
+        );
+        sendError(
+          res,
+          409,
+          ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER,
+          'TRANSACTION_BELONGS_TO_OTHER_USER',
+          NO_PURCHASE,
+        );
         return;
       }
 

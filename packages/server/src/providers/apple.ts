@@ -236,6 +236,14 @@ export interface AppleProductResult {
   transactionId: string;
   productId: string;
   purchasedAt: string;
+  /**
+   * appAccountToken baked into the JWS at purchase time (UUID the client passed
+   * to StoreKit). When present it binds the purchase to a stable account
+   * identity; the validate route rejects attributing/reassigning the purchase to
+   * a userId that doesn't match it. Absent for purchases made before the client
+   * started setting appAccountToken (backward-compatible).
+   */
+  appAccountToken?: string;
 }
 
 /**
@@ -331,6 +339,7 @@ export async function validateAppleConsumableReceipt(
     purchasedAt: tx.purchaseDate
       ? new Date(tx.purchaseDate).toISOString()
       : new Date().toISOString(),
+    appAccountToken: tx.appAccountToken ?? undefined,
   };
 }
 

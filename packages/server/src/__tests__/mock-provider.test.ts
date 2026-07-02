@@ -204,7 +204,37 @@ describe('full server in mockMode', () => {
     // transactionId path.
     const second = await request(app).post('/onesub/purchase/validate').send({ ...body, userId: 'user_2' });
     // non-consumable with same transactionId but different userId → auto-reassigned (0.6.1+)
+    // (backward-compat: no appAccountToken on the receipt → binding guard skipped)
     expect(second.body.valid).toBe(true);
     expect(second.body.action).toBe('restored');
+  });
+
+  it('account-binding: receipt appAccountToken matching userId is accepted', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/purchase/validate').send({
+      platform: 'apple',
+      receipt: 'MOCK_VALID_bind_ok#token=acct-uuid-1',
+      userId: 'acct-uuid-1',
+      productId: 'premium',
+      type: 'non_consumable',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+    expect(res.body.action).toBe('new');
+  });
+
+  it('account-binding: receipt appAccountToken not matching userId is rejected (payment-bypass guard)', async () => {
+    const app = mockApp();
+    // A valid receipt bound to acct-uuid-1 cannot be attributed to a different
+    // userId — blocks a leaked/valid JWS being planted on an attacker deviceId.
+    const res = await request(app).post('/onesub/purchase/validate').send({
+      platform: 'apple',
+      receipt: 'MOCK_VALID_bind_mismatch#token=acct-uuid-1',
+      userId: 'attacker-uuid-2',
+      productId: 'premium',
+      type: 'non_consumable',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
   });
 });

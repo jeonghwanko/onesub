@@ -87,14 +87,18 @@ export function mockValidateAppleSubscription(receipt: string): SubscriptionInfo
 export function mockValidateAppleProduct(
   receipt: string,
   expectedProductId?: string,
-): { transactionId: string; productId: string; purchasedAt: string } | null {
+): { transactionId: string; productId: string; purchasedAt: string; appAccountToken?: string } | null {
   const outcome = classifyMockReceipt(receipt);
   if (!outcomePasses(outcome, 'apple')) return null;
   const productId = expectedProductId ?? 'mock_product';
+  // Test convention: `...#token=<value>` in the mock receipt surfaces an
+  // appAccountToken, exercising the account-binding guard in the validate route.
+  const tokenMatch = receipt.match(/#token=([^#]+)/);
   return {
     transactionId: deterministicTransactionId(`mock_apple_${productId}`, receipt),
     productId,
     purchasedAt: new Date().toISOString(),
+    ...(tokenMatch ? { appAccountToken: tokenMatch[1] } : {}),
   };
 }
 
