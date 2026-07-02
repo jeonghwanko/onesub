@@ -112,13 +112,22 @@ function buildRequestPurchaseArgs(
   sku: string,
   platform: 'ios' | 'android',
   type: 'in-app' | 'subs',
+  accountToken?: string,
 ) {
+  // accountToken binds the purchase to a stable account identity: Apple bakes it
+  // into the signed transaction as `appAccountToken` (must be a UUID), Android
+  // carries it as `obfuscatedAccountIdAndroid`. The server's validate route
+  // rejects attributing/reassigning the purchase to a different userId, so a
+  // leaked receipt cannot be claimed by another account. Optional — omitted when
+  // the host doesn't pass an `accountToken`.
+  const apple = accountToken ? { sku, appAccountToken: accountToken } : { sku };
+  const androidExtra = accountToken ? { obfuscatedAccountIdAndroid: accountToken } : {};
   const request =
     platform === 'ios'
-      ? { ios: { sku } }
+      ? { ios: apple }
       : type === 'subs'
-        ? { android: { skus: [sku], subscriptionOffers: [] } }
-        : { android: { skus: [sku] } };
+        ? { android: { skus: [sku], subscriptionOffers: [], ...androidExtra } }
+        : { android: { skus: [sku], ...androidExtra } };
 
   return { request, type };
 }
@@ -165,16 +174,29 @@ function buildRequestPurchaseArgs(
 export interface OneSubProviderProps {
   config: OneSubConfig;
   userId: string;
+  /**
+   * Stable account identity baked into each purchase (Apple `appAccountToken`,
+   * Android `obfuscatedAccountIdAndroid`). Bind this to an identity that survives
+   * reinstall (e.g. a UUID derived from a hardware id hash) and is the SAME value
+   * you pass as `userId`, so the server's validate route accepts the purchase.
+   * Apple requires a UUID string. Omit to keep the previous unbound behavior.
+   */
+  accountToken?: string;
   children: React.ReactNode;
 }
 
-export function OneSubProvider({ config, userId, children }: OneSubProviderProps) {
+export function OneSubProvider({ config, userId, accountToken, children }: OneSubProviderProps) {
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
   const [entitlements, setEntitlements] = useState<Record<string, EntitlementStatus>>({});
 
   const isBusyRef = useRef(false);
+  // Read via ref so the stable purchase callbacks always see the latest token
+  // (it may resolve asynchronously on the host, e.g. after hashing a hardware id)
+  // without needing to be in their dependency arrays.
+  const accountTokenRef = useRef(accountToken);
+  accountTokenRef.current = accountToken;
   const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
   // Recreate only when the relevant config fields change — referential
   // stability keeps re-mount effects from firing on every parent render.
@@ -417,7 +439,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         undefined,
       );
       try {
-        await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs'));
+        await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs', accountTokenRef.current));
       } catch (err) {
         inFlightRef.current.delete(productId);
         if (isUserCancelled(err)) return;
@@ -531,7 +553,7 @@ export function OneSubProvider({ config, userId, children }: OneSubProviderProps
         }>(productId, 'purchase', type);
 
         try {
-          await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app'));
+          await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app', accountTokenRef.current));
         } catch (err) {
           inFlightRef.current.delete(productId);
           if (isUserCancelled(err)) return null;
