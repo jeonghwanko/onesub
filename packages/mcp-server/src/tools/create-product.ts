@@ -278,6 +278,9 @@ function buildCreateOutput(opts: {
           lines.push('Set the price manually in [App Store Connect](https://appstoreconnect.apple.com).');
         } else {
           lines.push('**Price:** Not set automatically — set manually in App Store Connect.');
+          if ('priceError' in appleResult && appleResult.priceError) {
+            lines.push(`**Price error:** ${appleResult.priceError}`);
+          }
         }
 
         if ('extraRegionsSet' in appleResult && appleResult.extraRegionsSet && appleResult.extraRegionsSet.length > 0) {
@@ -351,6 +354,9 @@ function buildCreateOutput(opts: {
       if (googleResult.success) {
         lines.push('', `**Status:** Success`);
         lines.push(`**Created product ID:** \`${googleResult.productId ?? productId}\``);
+        if ('skippedRegions' in googleResult && googleResult.skippedRegions && googleResult.skippedRegions.length > 0) {
+          lines.push(`**Regions skipped (unsupported or duplicate currency):** ${googleResult.skippedRegions.join(', ')} — set these prices manually in Play Console.`);
+        }
         lines.push('', '**Next steps:**');
         if (productType === 'subscription') {
           lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → Subscriptions.');

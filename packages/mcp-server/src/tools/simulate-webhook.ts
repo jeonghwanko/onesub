@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ROUTES, type Platform } from '@onesub/shared';
-import { normalizeUrl, fetchJson } from '../utils.js';
+import { normalizeUrl, fetchJson, tryParseJson } from '../utils.js';
 
 // ── Apple notification types ─────────────────────────────────────────────────
 
@@ -92,12 +92,12 @@ export const simulateWebhookInputSchema = {
     .describe('Apple only — subtype for DID_FAIL_TO_RENEW. Pass "GRACE_PERIOD" to land in grace_period status; omit for on_hold.'),
   bundleId: z
     .string()
-    .default('com.example.app')
-    .describe('Apple only — bundle ID embedded in the fake JWS payload.'),
+    .default('mock.onesub.dev')
+    .describe('Apple only — bundle ID embedded in the fake JWS payload. Default matches the `npx @onesub/cli dev` server config so the webhook bundle-ID check passes.'),
   packageName: z
     .string()
-    .default('com.example.app')
-    .describe('Google only — package name embedded in the Pub/Sub message.'),
+    .default('mock.onesub.dev')
+    .describe('Google only — package name embedded in the Pub/Sub message. Default matches the `npx @onesub/cli dev` server config so the package-name check passes.'),
   expiresInDays: z
     .number()
     .int()
@@ -252,7 +252,14 @@ export async function runSimulateWebhook(args: {
     };
   }
 
-  const response: unknown = result.ok ? result.data : (result.raw ?? result.error);
+  // Non-2xx bodies are still structured JSON from the server — parse them so
+  // the errorCode / INVALID_SIGNED_PAYLOAD hints below render; fall back to
+  // the raw string when the body isn't JSON.
+  const response: unknown = result.ok
+    ? result.data
+    : result.raw !== undefined
+      ? tryParseJson(result.raw)
+      : result.error;
   return {
     content: [{
       type: 'text',

@@ -6,7 +6,7 @@ import {
   type PurchaseType,
   type Platform,
 } from '@onesub/shared';
-import { normalizeUrl, fetchJson } from '../utils.js';
+import { normalizeUrl, fetchJson, tryParseJson } from '../utils.js';
 
 export const simulatePurchaseInputSchema = {
   serverUrl: z
@@ -70,10 +70,13 @@ export async function runSimulatePurchase(args: {
     return { content: [{ type: 'text', text: buildNetworkErrorOutput(url, new Error(result.error)) }] };
   }
 
-  // Pass the already-parsed object (or raw error string) directly — avoids a
-  // JSON.stringify → JSON.parse round-trip that was previously needed to fit
-  // the old rawBody: string parameter.
-  const response: unknown = result.ok ? result.data : (result.raw ?? result.error);
+  // Non-2xx bodies are still structured JSON from the server — parse them so
+  // the errorCode highlighting below renders; fall back to the raw string.
+  const response: unknown = result.ok
+    ? result.data
+    : result.raw !== undefined
+      ? tryParseJson(result.raw)
+      : result.error;
   return { content: [{ type: 'text', text: buildOutput({ url, body, httpStatus: result.httpStatus, response, scenario: args.scenario }) }] };
 }
 

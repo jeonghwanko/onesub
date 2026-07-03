@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runSimulatePurchase } from '../tools/simulate-purchase.js';
+import { runSimulateWebhook } from '../tools/simulate-webhook.js';
 import { runInspectState } from '../tools/inspect-state.js';
 
 function text(result: { content: Array<{ type: 'text'; text: string }> }): string {
@@ -85,6 +86,9 @@ describe('simulate_purchase', () => {
     const md = text(out);
     expect(md).toContain('HTTP 422');
     expect(md).toContain('RECEIPT_VALIDATION_FAILED');
+    // Non-2xx bodies must be parsed (not passed through as a raw string) so
+    // the errorCode highlight renders.
+    expect(md).toContain('**errorCode:** `RECEIPT_VALIDATION_FAILED`');
     expect(md).not.toContain('Unexpected:'); // 422 for revoked is expected
   });
 
@@ -135,6 +139,58 @@ describe('simulate_purchase', () => {
     });
     expect(text(out)).toContain('connection failed');
     expect(text(out)).toContain('npx @onesub/cli dev');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onesub_simulate_webhook
+// ---------------------------------------------------------------------------
+describe('simulate_webhook', () => {
+  it('parses non-2xx JSON body and renders the INVALID_SIGNED_PAYLOAD hint', async () => {
+    mockFetch({
+      '/onesub/webhook/apple': {
+        status: 422,
+        body: { received: false, error: 'JWS verification failed', errorCode: 'INVALID_SIGNED_PAYLOAD' },
+      },
+    });
+
+    const out = await runSimulateWebhook({
+      serverUrl: 'http://localhost:4100',
+      platform: 'apple',
+      notificationType: 'DID_RENEW',
+      transactionId: 'orig_tx_1',
+      productId: 'pro_monthly',
+      bundleId: 'com.example.app',
+      packageName: 'com.example.app',
+      expiresInDays: 30,
+    });
+
+    const md = text(out);
+    expect(md).toContain('HTTP 422');
+    expect(md).toContain('**errorCode:** `INVALID_SIGNED_PAYLOAD`');
+    expect(md).toContain('skipJwsVerification');
+  });
+
+  it('renders expected status hint on 2xx', async () => {
+    mockFetch({
+      '/onesub/webhook/apple': { status: 200, body: { received: true } },
+    });
+
+    const out = await runSimulateWebhook({
+      serverUrl: 'http://localhost:4100',
+      platform: 'apple',
+      notificationType: 'EXPIRED',
+      transactionId: 'orig_tx_1',
+      productId: 'pro_monthly',
+      bundleId: 'com.example.app',
+      packageName: 'com.example.app',
+      expiresInDays: 30,
+    });
+
+    const md = text(out);
+    expect(md).toContain('HTTP 200 ✓');
+    expect(md).toContain('Expected status after this notification:');
+    expect(md).toContain('`expired`');
   });
 });
 

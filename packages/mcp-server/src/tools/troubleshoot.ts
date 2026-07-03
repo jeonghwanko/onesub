@@ -164,7 +164,7 @@ function diagnosePurchaseFailed(
       steps: [
         'Android: This usually means the device does not have Google Play Services or billing service is not ready.',
         'Android: Check that the device has Google Play installed and updated.',
-        'Android: Ensure `react-native-iap` or `expo-in-app-purchases` is correctly set up and linked.',
+        'Android: Ensure `react-native-iap` is correctly set up and linked (Expo projects need a development build — it does not work in Expo Go).',
         'Restart the app completely after linking native modules.',
       ],
     });

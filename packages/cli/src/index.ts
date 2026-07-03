@@ -57,12 +57,32 @@ interface ParsedArgs {
 function parseArgs(argv: string[]): ParsedArgs {
   const args = argv.slice(2);
   const portFlag = args.findIndex((a) => a === '--port' || a === '-p');
-  const port = portFlag >= 0 && args[portFlag + 1] ? parseInt(args[portFlag + 1]!, 10) : 4100;
+  let port = 4100;
+  if (portFlag >= 0) {
+    const rawPort = args[portFlag + 1];
+    // Number() is stricter than parseInt() — '80abc' must not pass as 80.
+    const parsed = rawPort !== undefined && rawPort !== '' ? Number(rawPort) : NaN;
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+      console.error(
+        `error: --port expects an integer between 1 and 65535 (got ${rawPort === undefined ? 'nothing' : `"${rawPort}"`})`,
+      );
+      process.exit(1);
+    }
+    port = parsed;
+  }
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     return { cmd: 'help', target: '.', port };
   }
   if (args[0] === 'init') {
-    return { cmd: 'init', target: args[1] ?? '.', port };
+    const target = args[1] ?? '.';
+    // A directory target starting with '-' is almost certainly a mistyped
+    // flag — refuse rather than scaffold into a directory literally named
+    // e.g. "--port".
+    if (target.startsWith('-')) {
+      console.error(`error: invalid init directory "${target}" — directory names must not start with '-'`);
+      process.exit(1);
+    }
+    return { cmd: 'init', target, port };
   }
   if (args[0] === 'dev') {
     return { cmd: 'dev', target: '.', port };
@@ -139,7 +159,9 @@ async function dev(port: number): Promise<void> {
   const app = express();
   app.use(
     createOneSubMiddleware({
-      apple: { bundleId: 'mock.onesub.dev', mockMode: true },
+      // skipJwsVerification lets the MCP simulate-webhook tool's fake Apple
+      // JWS payloads through — its docs promise the dev server accepts them.
+      apple: { bundleId: 'mock.onesub.dev', mockMode: true, skipJwsVerification: true },
       google: { packageName: 'mock.onesub.dev', mockMode: true },
       database: { url: '' },
       store: new InMemorySubscriptionStore(),

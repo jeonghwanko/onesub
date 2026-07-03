@@ -20,6 +20,20 @@ export type FetchJsonResult<T = unknown> =
  * Default behaviour: GET with Content-Type application/json and a 10-second timeout.
  * Override any of these via `options`.
  */
+/**
+ * Best-effort JSON parse of a raw (usually non-2xx) response body. Server
+ * errors are structured JSON (`{ valid: false, error, errorCode }`) — parsing
+ * them lets tool output highlight `errorCode` instead of dumping a string.
+ * Falls back to the raw string when the body isn't JSON.
+ */
+export function tryParseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export async function fetchJson<T = unknown>(
   url: string,
   options?: RequestInit,
