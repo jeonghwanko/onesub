@@ -1,5 +1,11 @@
 # @onesub/server
 
+## 0.17.1
+
+### Patch Changes
+
+- b2693fd: Bump zod 4.3 → 4.4 (runtime dependency; no schema behavior changes in our usage — full suite green).
+
 ## 0.17.0
 
 ### Minor Changes
