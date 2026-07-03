@@ -6,9 +6,14 @@
  * Authentication: OAuth2 service account JWT assertion (native Node.js crypto).
  */
 
-import { createSign } from 'crypto';
+import { createHash, createSign } from 'crypto';
+
+import { ZERO_DECIMAL_CURRENCIES } from './currency.js';
 
 const ANDROID_BASE = 'https://androidpublisher.googleapis.com/androidpublisher/v3/applications';
+
+/** monetization.subscriptions create/patch require the regions version as a query param. */
+const REGIONS_VERSION = '2022/02';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -30,12 +35,16 @@ export type GoogleProductType = 'subscription' | 'consumable' | 'non_consumable'
 export interface CreateSubscriptionResult {
   success: boolean;
   productId?: string;
+  /** Currencies from extraRegions that have no known Play region code and were not applied. */
+  skippedRegions?: string[];
   error?: string;
 }
 
 export interface CreateOneTimePurchaseResult {
   success: boolean;
   productId?: string;
+  /** Currencies from extraRegions that have no known Play region code and were not applied. */
+  skippedRegions?: string[];
   error?: string;
 }
 
@@ -109,25 +118,32 @@ interface InAppProductResource {
 interface InAppProductListResponse {
   inappproduct?: InAppProductResource[];
   kind?: string;
+  tokenPagination?: { nextPageToken?: string };
 }
 
 // ── Token cache ───────────────────────────────────────────────────────────────
 
-let tokenCache: { token: string; expiresAt: number; keyHash: string } | null = null;
-let inflightPromise: Promise<string> | null = null;
+// Keyed by a hash of the full key JSON — a prefix is identical across service
+// accounts (same `{"type": "service_account", ...` boilerplate) and would let
+// one account reuse another's token.
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+const inflightTokens = new Map<string, Promise<string>>();
 
 async function getCachedToken(serviceAccountKey: string): Promise<string> {
   const now = Date.now();
-  const keyHash = serviceAccountKey.slice(0, 40);
-  if (tokenCache && tokenCache.keyHash === keyHash && tokenCache.expiresAt - now > 60_000) {
-    return tokenCache.token;
+  const keyHash = createHash('sha256').update(serviceAccountKey).digest('hex');
+  const cached = tokenCache.get(keyHash);
+  if (cached && cached.expiresAt - now > 60_000) {
+    return cached.token;
   }
-  if (!inflightPromise) {
-    inflightPromise = fetchAccessToken(serviceAccountKey)
-      .then((token) => { tokenCache = { token, expiresAt: now + 3_600_000, keyHash }; return token; })
-      .finally(() => { inflightPromise = null; });
+  let pending = inflightTokens.get(keyHash);
+  if (!pending) {
+    pending = fetchAccessToken(serviceAccountKey)
+      .then((token) => { tokenCache.set(keyHash, { token, expiresAt: now + 3_600_000 }); return token; })
+      .finally(() => { inflightTokens.delete(keyHash); });
+    inflightTokens.set(keyHash, pending);
   }
-  return inflightPromise;
+  return pending;
 }
 
 async function fetchAccessToken(serviceAccountKey: string): Promise<string> {
@@ -150,6 +166,7 @@ async function fetchAccessToken(serviceAccountKey: string): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${sig}` }),
+    signal: AbortSignal.timeout(30_000),
   });
   const data = (await resp.json()) as TokenResponse;
   if (!resp.ok || !data.access_token) {
@@ -165,8 +182,11 @@ async function playRequest<T>(token: string, method: string, url: string, body?:
     method,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(30_000),
   });
   const text = await resp.text();
+  // DELETE (and some POSTs) succeed with 204/empty body — JSON.parse('') would throw.
+  if (resp.ok && text.trim() === '') return undefined as T;
   let json: T;
   try { json = JSON.parse(text) as T; }
   catch { throw new Error(`Google Play API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
@@ -178,11 +198,6 @@ async function playRequest<T>(token: string, method: string, url: string, body?:
 }
 
 // ── Price helpers ─────────────────────────────────────────────────────────────
-
-const ZERO_DECIMAL_CURRENCIES = new Set([
-  'KRW', 'JPY', 'VND', 'IDR', 'HUF', 'CLP', 'PYG', 'ISK',
-  'TWD', 'DJF', 'GNF', 'KMF', 'MGA', 'RWF', 'UGX', 'XAF', 'XOF',
-]);
 
 /** Google Play subscriptions API: { units, nanos } */
 function toGooglePrice(price: number, currency: string): { currencyCode: string; units: string; nanos: number } {
@@ -201,12 +216,19 @@ function toGooglePriceMicros(price: number, currency: string): string {
   return String(price * 10_000);
 }
 
-function currencyToRegionCode(currency: string): string {
-  const map: Record<string, string> = {
-    USD: 'US', KRW: 'KR', EUR: 'DE', JPY: 'JP',
-    GBP: 'GB', AUD: 'AU', CAD: 'CA', CNY: 'CN', SGD: 'SG',
-  };
-  return map[currency.toUpperCase()] ?? 'US';
+const CURRENCY_REGION: Record<string, string> = {
+  USD: 'US', KRW: 'KR', EUR: 'DE', JPY: 'JP',
+  GBP: 'GB', AUD: 'AU', CAD: 'CA', CNY: 'CN', SGD: 'SG',
+};
+
+// No fallback: defaulting to 'US' pairs a foreign currency with the US region
+// (rejected by the API) and collides extra regions onto the same record key.
+function currencyToRegionCode(currency: string): string | undefined {
+  return CURRENCY_REGION[currency.toUpperCase()];
+}
+
+function unsupportedCurrencyError(currency: string): string {
+  return `Unsupported currency '${currency}' — supported: ${Object.keys(CURRENCY_REGION).join(', ')}.`;
 }
 
 function toBillingPeriod(period: string): string {
@@ -234,17 +256,31 @@ export async function createSubscription(opts: {
     const billingPeriod = toBillingPeriod(opts.period);
     const basePlanId = opts.period === 'yearly' ? 'yearly' : 'monthly';
 
+    const primaryRegionCode = currencyToRegionCode(opts.currency);
+    if (!primaryRegionCode) {
+      return { success: false, error: unsupportedCurrencyError(opts.currency) };
+    }
+
     const primaryRegion = {
-      regionCode: currencyToRegionCode(opts.currency),
+      regionCode: primaryRegionCode,
       price: toGooglePrice(opts.price, opts.currency),
       newSubscriberAvailability: true,
     };
 
-    const extraRegionalConfigs = (opts.extraRegions ?? []).map((r) => ({
-      regionCode: currencyToRegionCode(r.currency),
-      price: toGooglePrice(r.price, r.currency),
-      newSubscriberAvailability: true,
-    }));
+    const skippedRegions: string[] = [];
+    const extraRegionalConfigs: Array<typeof primaryRegion> = [];
+    // Track claimed region codes: duplicate regionCodes in one basePlan make
+    // the whole create fail with INVALID_ARGUMENT (mirrors the one-time path).
+    const usedRegionCodes = new Set([primaryRegionCode]);
+    for (const r of opts.extraRegions ?? []) {
+      const regionCode = currencyToRegionCode(r.currency);
+      if (!regionCode || usedRegionCodes.has(regionCode)) {
+        skippedRegions.push(r.currency);
+        continue;
+      }
+      usedRegionCodes.add(regionCode);
+      extraRegionalConfigs.push({ regionCode, price: toGooglePrice(r.price, r.currency), newSubscriberAvailability: true });
+    }
 
     const body: GoogleSubscriptionResource = {
       productId: opts.productId,
@@ -261,7 +297,11 @@ export async function createSubscription(opts: {
       }],
     };
 
-    await playRequest<GoogleSubscriptionResource>(token, 'POST', `${ANDROID_BASE}/${pkg}/subscriptions`, body);
+    await playRequest<GoogleSubscriptionResource>(
+      token, 'POST',
+      `${ANDROID_BASE}/${pkg}/subscriptions?productId=${encodeURIComponent(opts.productId)}&regionsVersion.version=${encodeURIComponent(REGIONS_VERSION)}`,
+      body,
+    );
 
     try {
       await playRequest<Record<string, unknown>>(
@@ -271,7 +311,7 @@ export async function createSubscription(opts: {
       );
     } catch { /* activation is non-fatal if already active via body */ }
 
-    return { success: true, productId: opts.productId };
+    return { success: true, productId: opts.productId, ...(skippedRegions.length ? { skippedRegions } : {}) };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -298,11 +338,19 @@ export async function createOneTimePurchase(opts: {
     const pkg = encodeURIComponent(opts.packageName);
 
     const primaryRegionCode = currencyToRegionCode(opts.currency);
+    if (!primaryRegionCode) {
+      return { success: false, error: unsupportedCurrencyError(opts.currency) };
+    }
     const prices: Record<string, { currency: string; priceMicros: string }> = {
       [primaryRegionCode]: { currency: opts.currency, priceMicros: toGooglePriceMicros(opts.price, opts.currency) },
     };
+    const skippedRegions: string[] = [];
     for (const region of opts.extraRegions ?? []) {
       const code = currencyToRegionCode(region.currency);
+      if (!code || code in prices) {
+        skippedRegions.push(region.currency);
+        continue;
+      }
       prices[code] = { currency: region.currency, priceMicros: toGooglePriceMicros(region.price, region.currency) };
     }
 
@@ -316,7 +364,7 @@ export async function createOneTimePurchase(opts: {
     };
 
     await playRequest<InAppProductResource>(token, 'POST', `${ANDROID_BASE}/${pkg}/inappproducts`, body);
-    return { success: true, productId: opts.productId };
+    return { success: true, productId: opts.productId, ...(skippedRegions.length ? { skippedRegions } : {}) };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -339,11 +387,20 @@ export async function updateProduct(opts: {
     const updated: string[] = [];
 
     if (opts.productType === 'subscription') {
-      // PATCH listing title via subscriptions.patch
+      // updateMask=listings replaces the whole listings array — merge the new
+      // title into the current listings so other locales survive the patch.
+      const current = await playRequest<GoogleSubscriptionResource>(
+        token, 'GET',
+        `${ANDROID_BASE}/${pkg}/subscriptions/${encodeURIComponent(opts.productId)}`,
+      );
+      const listings = current.listings ?? [];
+      const enListing = listings.find((l) => l.languageCode === 'en-US');
+      if (enListing) enListing.title = opts.name;
+      else listings.push({ languageCode: 'en-US', title: opts.name });
       await playRequest<GoogleSubscriptionResource>(
         token, 'PATCH',
-        `${ANDROID_BASE}/${pkg}/subscriptions/${encodeURIComponent(opts.productId)}?updateMask=listings`,
-        { listings: [{ languageCode: 'en-US', title: opts.name }] },
+        `${ANDROID_BASE}/${pkg}/subscriptions/${encodeURIComponent(opts.productId)}?updateMask=listings&regionsVersion.version=${encodeURIComponent(REGIONS_VERSION)}`,
+        { listings },
       );
     } else {
       // PATCH inappproducts listing
@@ -402,49 +459,66 @@ export async function listProducts(opts: {
   const token = await getCachedToken(opts.serviceAccountKey);
   const pkg = encodeURIComponent(opts.packageName);
   const results: GoogleProductRecord[] = [];
+  const failures: unknown[] = [];
 
   // Subscriptions
   try {
-    const resp = await playRequest<GoogleSubscriptionListResponse>(
-      token, 'GET', `${ANDROID_BASE}/${pkg}/subscriptions`,
-    );
-    for (const sub of resp.subscriptions ?? []) {
-      if (!sub.productId) continue;
-      const listing = sub.listings?.find((l) => l.languageCode === 'en-US') ?? sub.listings?.[0];
-      const basePlan = sub.basePlans?.[0];
-      const rc = basePlan?.regionalConfigs?.[0];
-      let price: number | undefined;
-      let currency: string | undefined;
-      if (rc?.price) {
-        currency = rc.price.currencyCode;
-        price = parseInt(rc.price.units, 10) * 100 + Math.round(rc.price.nanos / 10_000_000);
+    let pageToken: string | undefined;
+    do {
+      const resp: GoogleSubscriptionListResponse = await playRequest<GoogleSubscriptionListResponse>(
+        token, 'GET',
+        `${ANDROID_BASE}/${pkg}/subscriptions?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
+      );
+      for (const sub of resp.subscriptions ?? []) {
+        if (!sub.productId) continue;
+        const listing = sub.listings?.find((l) => l.languageCode === 'en-US') ?? sub.listings?.[0];
+        const basePlan = sub.basePlans?.[0];
+        const rc = basePlan?.regionalConfigs?.[0];
+        let price: number | undefined;
+        let currency: string | undefined;
+        if (rc?.price) {
+          currency = rc.price.currencyCode;
+          price = ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase())
+            ? parseInt(rc.price.units, 10) + Math.round(rc.price.nanos / 1_000_000_000)
+            : parseInt(rc.price.units, 10) * 100 + Math.round(rc.price.nanos / 10_000_000);
+        }
+        results.push({ productId: sub.productId, name: listing?.title, status: basePlan?.state, type: 'subscription', price, currency });
       }
-      results.push({ productId: sub.productId, name: listing?.title, status: basePlan?.state, type: 'subscription', price, currency });
-    }
-  } catch { /* non-fatal */ }
+      pageToken = resp.nextPageToken;
+    } while (pageToken);
+  } catch (err) { failures.push(err); }
 
   // One-time products
   try {
-    const resp = await playRequest<InAppProductListResponse>(
-      token, 'GET', `${ANDROID_BASE}/${pkg}/inappproducts`,
-    );
-    for (const item of resp.inappproduct ?? []) {
-      if (!item.sku) continue;
-      const title = item.listings?.['en-US']?.title ?? item.listings?.[Object.keys(item.listings ?? {})[0]]?.title;
-      const priceEntry = item.prices ? Object.values(item.prices)[0] : undefined;
-      let price: number | undefined;
-      let currency: string | undefined;
-      if (priceEntry) {
-        currency = priceEntry.currency;
-        const micros = parseInt(priceEntry.priceMicros, 10);
-        price = ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase())
-          ? Math.round(micros / 1_000_000)
-          : Math.round(micros / 10_000);
+    let pageToken: string | undefined;
+    do {
+      const resp: InAppProductListResponse = await playRequest<InAppProductListResponse>(
+        token, 'GET',
+        `${ANDROID_BASE}/${pkg}/inappproducts?maxResults=100${pageToken ? `&token=${encodeURIComponent(pageToken)}` : ''}`,
+      );
+      for (const item of resp.inappproduct ?? []) {
+        if (!item.sku) continue;
+        const title = item.listings?.['en-US']?.title ?? item.listings?.[Object.keys(item.listings ?? {})[0]]?.title;
+        const priceEntry = item.prices ? Object.values(item.prices)[0] : undefined;
+        let price: number | undefined;
+        let currency: string | undefined;
+        if (priceEntry) {
+          currency = priceEntry.currency;
+          const micros = parseInt(priceEntry.priceMicros, 10);
+          price = ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase())
+            ? Math.round(micros / 1_000_000)
+            : Math.round(micros / 10_000);
+        }
+        // Google Play doesn't distinguish consumable/non-consumable at API level
+        results.push({ productId: item.sku, name: title, status: item.status, type: 'consumable', price, currency });
       }
-      // Google Play doesn't distinguish consumable/non-consumable at API level
-      results.push({ productId: item.sku, name: title, status: item.status, type: 'consumable', price, currency });
-    }
-  } catch { /* non-fatal */ }
+      pageToken = resp.tokenPagination?.nextPageToken;
+    } while (pageToken);
+  } catch (err) { failures.push(err); }
+
+  // A single half failing is tolerable (partial list); both failing means the
+  // caller would mistake an auth/network problem for an empty catalog.
+  if (failures.length === 2) throw failures[0];
 
   return results;
 }
