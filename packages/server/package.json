@@ -57,7 +57,7 @@
   "dependencies": {
     "@onesub/shared": "0.10.0",
     "jose": "^6.2.3",
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@opentelemetry/api": ">=1.7.0",
