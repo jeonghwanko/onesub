@@ -127,10 +127,11 @@ server.tool(
 
 server.tool(
   'onesub_view_subscribers',
-  'View current subscription status and subscriber count from the onesub server',
+  "View subscribers from the onesub server. Pass userId for one user's subscription status (no secret needed). Omit userId and pass adminSecret (the server's config.adminSecret) for aggregate active-subscriber counts (GET /onesub/metrics/active) plus a first page of subscription records (GET /onesub/admin/subscriptions).",
   {
     serverUrl: viewSubscribersInputSchema.serverUrl,
     userId: viewSubscribersInputSchema.userId,
+    adminSecret: viewSubscribersInputSchema.adminSecret,
   },
   async (args) => {
     return runViewSubscribers(args);

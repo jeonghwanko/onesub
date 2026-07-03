@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runSimulatePurchase } from '../tools/simulate-purchase.js';
 import { runSimulateWebhook } from '../tools/simulate-webhook.js';
 import { runInspectState } from '../tools/inspect-state.js';
+import { runViewSubscribers } from '../tools/view-subscribers.js';
 
 function text(result: { content: Array<{ type: 'text'; text: string }> }): string {
   return result.content.map((c) => c.text).join('\n');
@@ -256,5 +257,135 @@ describe('inspect_state', () => {
     const md = text(out);
     expect(md).toContain('Connection failed');
     expect(md).toContain('npx @onesub/cli dev');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// onesub_view_subscribers
+// ---------------------------------------------------------------------------
+describe('view_subscribers', () => {
+  const METRICS_BODY = {
+    total: 15,
+    activeSubscriptions: 12,
+    gracePeriodSubscriptions: 1,
+    nonConsumablePurchases: 3,
+    byProduct: { pro_monthly: 12 },
+    byProductPurchases: { lifetime_pass: 3 },
+    byPlatform: { apple: 10, google: 5 },
+  };
+
+  it('with adminSecret and no userId fetches metrics + list with x-admin-secret and renders counts', async () => {
+    const { calls } = mockFetch({
+      '/onesub/metrics/active': { status: 200, body: METRICS_BODY },
+      '/onesub/admin/subscriptions': {
+        status: 200,
+        body: {
+          items: [
+            { userId: 'u1', productId: 'pro_monthly', platform: 'apple', status: 'active', expiresAt: '2026-08-01T00:00:00.000Z', purchasedAt: '2026-07-01T00:00:00.000Z', originalTransactionId: 'tx_1', willRenew: true },
+            { userId: 'u2', productId: 'pro_monthly', platform: 'google', status: 'grace_period', expiresAt: '2026-07-05T00:00:00.000Z', purchasedAt: '2026-06-05T00:00:00.000Z', originalTransactionId: 'tx_2', willRenew: true },
+          ],
+          total: 12,
+          limit: 10,
+          offset: 0,
+        },
+      },
+    });
+
+    const out = await runViewSubscribers({ serverUrl: 'http://localhost:4100', adminSecret: 's3cret' });
+    const md = text(out);
+
+    const metricsCall = calls.find((c) => c.url.includes('/onesub/metrics/active'));
+    const listCall = calls.find((c) => c.url.includes('/onesub/admin/subscriptions'));
+    expect(metricsCall).toBeDefined();
+    expect((metricsCall!.init.headers as Record<string, string>)['x-admin-secret']).toBe('s3cret');
+    expect(listCall).toBeDefined();
+    expect(listCall!.url).toContain('limit=10');
+    expect((listCall!.init.headers as Record<string, string>)['x-admin-secret']).toBe('s3cret');
+
+    expect(md).toContain('| Total entitled users | 15 |');
+    expect(md).toContain('| Active subscriptions | 12 |');
+    expect(md).toContain('| — in grace period | 1 |');
+    expect(md).toContain('| Lifetime (non-consumable) purchases | 3 |');
+    expect(md).toContain('`pro_monthly` ×12');
+    expect(md).toContain('`lifetime_pass` ×3');
+    expect(md).toContain('`apple` ×10');
+    // recent-subscriptions table: productId, status, expiresAt
+    expect(md).toContain('| `pro_monthly` | active | 2026-08-01T00:00:00.000Z |');
+    expect(md).toContain('| `pro_monthly` | grace_period | 2026-07-05T00:00:00.000Z |');
+    expect(md).toContain('first 2 of 12');
+  });
+
+  it('degrades to counts-only when the subscriptions list call fails', async () => {
+    mockFetch({
+      '/onesub/metrics/active': { status: 200, body: METRICS_BODY },
+      '/onesub/admin/subscriptions': { status: 500, body: { error: 'boom', errorCode: 'STORE_ERROR' } },
+    });
+
+    const out = await runViewSubscribers({ serverUrl: 'http://localhost:4100', adminSecret: 's3cret' });
+    const md = text(out);
+
+    expect(md).toContain('| Total entitled users | 15 |');
+    expect(md).toContain('Subscription list unavailable');
+  });
+
+  it('renders invalid-secret guidance when metrics returns 401', async () => {
+    mockFetch({
+      '/onesub/metrics/active': {
+        status: 401,
+        body: { error: 'INVALID_ADMIN_SECRET', errorCode: 'INVALID_ADMIN_SECRET' },
+      },
+    });
+
+    const out = await runViewSubscribers({ serverUrl: 'http://localhost:4100', adminSecret: 'wrong' });
+    const md = text(out);
+
+    expect(md).toContain('HTTP Status:** 401');
+    expect(md).toContain('`adminSecret` was rejected');
+    expect(md).toContain('config.adminSecret');
+  });
+
+  it('without adminSecret and no userId renders guidance naming the endpoints and the adminSecret arg — no fetch', async () => {
+    const { fn } = mockFetch({});
+
+    const out = await runViewSubscribers({ serverUrl: 'http://localhost:4100' });
+    const md = text(out);
+
+    expect(fn).not.toHaveBeenCalled();
+    expect(md).toContain('/onesub/metrics/active');
+    expect(md).toContain('/onesub/admin/subscriptions');
+    expect(md).toContain('adminSecret');
+    expect(md).toContain('x-admin-secret');
+    // Stale claims must be gone
+    expect(md).not.toContain('does not expose');
+    expect(md).not.toContain('database directly');
+  });
+
+  it('per-user path still queries /onesub/status without any secret header', async () => {
+    const { calls } = mockFetch({
+      '/onesub/status': {
+        status: 200,
+        body: {
+          active: true,
+          subscription: {
+            productId: 'pro_monthly',
+            platform: 'apple',
+            status: 'active',
+            willRenew: true,
+            purchasedAt: '2026-06-01T00:00:00.000Z',
+            expiresAt: '2026-08-01T00:00:00.000Z',
+            originalTransactionId: 'tx_1',
+          },
+        },
+      },
+    });
+
+    const out = await runViewSubscribers({ serverUrl: 'http://localhost:4100', userId: 'u1' });
+    const md = text(out);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toContain('/onesub/status?userId=u1');
+    expect((calls[0]!.init.headers as Record<string, string>)['x-admin-secret']).toBeUndefined();
+    expect(md).toContain('**Active:** YES');
+    expect(md).toContain('pro_monthly');
   });
 });

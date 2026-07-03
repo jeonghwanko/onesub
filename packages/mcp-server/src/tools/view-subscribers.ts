@@ -1,26 +1,45 @@
 import { z } from 'zod';
 import { ROUTES } from '@onesub/shared';
-import type { StatusResponse } from '@onesub/shared';
-import { normalizeUrl, fetchJson } from '../utils.js';
+import type {
+  ListSubscriptionsResponse,
+  MetricsActiveResponse,
+  StatusResponse,
+} from '@onesub/shared';
+import type { FetchJsonResult } from '../utils.js';
+import { normalizeUrl, fetchJson, responseBody } from '../utils.js';
+
+const ADMIN_SECRET_HEADER = 'x-admin-secret';
+
+/** First-page size for the recent-subscriptions table (server caps at 200). */
+const SUMMARY_LIST_LIMIT = 10;
 
 export const viewSubscribersInputSchema = {
   serverUrl: z.string().url().describe('onesub server URL'),
   userId: z
     .string()
     .optional()
-    .describe('Check specific user (omit for summary)'),
+    .describe('Check specific user (omit for the aggregate summary)'),
+  adminSecret: z
+    .string()
+    .optional()
+    .describe(
+      "Server admin secret (config.adminSecret, sent as the x-admin-secret header) — gates the aggregate/list queries used when userId is omitted. The per-user status path doesn't need it.",
+    ),
 };
 
 type ViewSubscribersArgs = {
   serverUrl: string;
   userId?: string;
+  adminSecret?: string;
 };
 
 export async function runViewSubscribers(
   args: ViewSubscribersArgs,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   if (!args.userId) {
-    const text = buildNoUserIdOutput(args.serverUrl);
+    const text = args.adminSecret
+      ? await buildSummaryOutput(args.serverUrl, args.adminSecret)
+      : buildNoUserIdOutput(args.serverUrl);
     return { content: [{ type: 'text', text }] };
   }
 
@@ -46,10 +65,23 @@ function buildNoUserIdOutput(serverUrl: string): string {
   const lines: string[] = [
     '# Subscriber Summary',
     '',
-    'The onesub server does not expose a list-all-subscribers endpoint at this time.',
-    'Subscriber data is queried per user via the `/onesub/status` endpoint.',
+    'Aggregate subscriber data is available, but the endpoints are gated behind the',
+    "server's admin secret (`config.adminSecret`, sent as the `x-admin-secret` header):",
     '',
-    '## How to query individual users',
+    `- \`GET ${ROUTES.METRICS_ACTIVE}\` — active-subscriber counts (by product / platform)`,
+    `- \`GET ${ROUTES.ADMIN_SUBSCRIPTIONS}\` — filtered/paginated subscription list`,
+    '',
+    '## Get the aggregate summary',
+    '',
+    'Re-run this tool with the `adminSecret` argument:',
+    '',
+    '```',
+    'onesub_view_subscribers',
+    `  serverUrl: "${baseUrl}"`,
+    '  adminSecret: "<config.adminSecret>"',
+    '```',
+    '',
+    '## Check a single user (no secret required)',
     '',
     'Provide a `userId` to this tool to check a specific user\'s subscription status:',
     '',
@@ -62,37 +94,119 @@ function buildNoUserIdOutput(serverUrl: string): string {
     'Or query the endpoint directly:',
     '',
     '```bash',
-    `curl "${baseUrl}/onesub/status?userId=YOUR_USER_ID"`,
+    `curl "${baseUrl}${ROUTES.STATUS}?userId=YOUR_USER_ID"`,
     '```',
     '',
-    '**Example response (active subscriber):**',
-    '```json',
-    '{',
-    '  "active": true,',
-    '  "subscription": {',
-    '    "productId": "premium_monthly",',
-    '    "platform": "apple",',
-    '    "status": "active",',
-    '    "willRenew": true,',
-    '    "purchasedAt": "2025-01-01T00:00:00.000Z",',
-    '    "expiresAt": "2025-02-01T00:00:00.000Z",',
-    '    "originalTransactionId": "1234567890"',
-    '  }',
-    '}',
-    '```',
-    '',
-    '**Example response (no subscription):**',
-    '```json',
-    '{ "active": false, "subscription": null }',
-    '```',
-    '',
-    '## Alternatives for bulk reporting',
-    '',
-    'If you need aggregate subscriber counts or analytics, consider:',
-    '- Querying your app database directly (the `Subscription` table populated by onesub)',
-    '- Checking subscription metrics in [App Store Connect](https://appstoreconnect.apple.com) → Trends → Subscriptions',
-    '- Checking subscription metrics in [Google Play Console](https://play.google.com/console) → Monetize → Subscriptions',
+    'For revenue metrics (not exposed by onesub), check App Store Connect → Trends →',
+    'Subscriptions or Google Play Console → Monetize → Subscriptions.',
   ];
+
+  return lines.join('\n');
+}
+
+async function buildSummaryOutput(serverUrl: string, adminSecret: string): Promise<string> {
+  const baseUrl = normalizeUrl(serverUrl);
+  const headers = { [ADMIN_SECRET_HEADER]: adminSecret };
+
+  const metricsUrl = `${baseUrl}${ROUTES.METRICS_ACTIVE}`;
+  const metrics = await fetchJson<MetricsActiveResponse>(metricsUrl, { headers });
+  if (!metrics.ok) {
+    return buildSummaryErrorOutput({ url: metricsUrl, result: metrics });
+  }
+
+  // Best-effort first page — the counts above are the primary payload, so a
+  // list failure degrades to counts-only output instead of an error.
+  const listUrl = `${baseUrl}${ROUTES.ADMIN_SUBSCRIPTIONS}?limit=${SUMMARY_LIST_LIMIT}`;
+  const listResult = await fetchJson<ListSubscriptionsResponse>(listUrl, { headers });
+  const list = listResult.ok ? listResult.data : null;
+
+  const m = metrics.data;
+  const lines: string[] = [
+    '# Subscriber Summary',
+    '',
+    `**Server:** \`${baseUrl}\``,
+    '',
+    '## Active Entitlements',
+    '',
+    '| Metric | Count |',
+    '|--------|-------|',
+    `| Total entitled users | ${m.total} |`,
+    `| Active subscriptions | ${m.activeSubscriptions} |`,
+    `| — in grace period | ${m.gracePeriodSubscriptions} |`,
+    `| Lifetime (non-consumable) purchases | ${m.nonConsumablePurchases} |`,
+    '',
+    `**By subscription product:** ${formatDistribution(m.byProduct)}`,
+    `**By lifetime product:** ${formatDistribution(m.byProductPurchases)}`,
+    `**By platform:** ${formatDistribution(m.byPlatform)}`,
+  ];
+
+  if (list) {
+    lines.push('', `## Subscriptions (first ${Math.min(list.items.length, SUMMARY_LIST_LIMIT)} of ${list.total})`, '');
+    if (list.items.length === 0) {
+      lines.push('No subscription records yet.');
+    } else {
+      lines.push('| Product | Status | Expires At |');
+      lines.push('|---------|--------|------------|');
+      for (const sub of list.items) {
+        lines.push(`| \`${sub.productId}\` | ${sub.status} | ${sub.expiresAt} |`);
+      }
+      if (list.total > list.items.length) {
+        lines.push(
+          '',
+          `Page through the rest with \`GET ${ROUTES.ADMIN_SUBSCRIPTIONS}?limit=&offset=\` (filters: userId, status, productId, platform).`,
+        );
+      }
+    }
+  } else {
+    lines.push(
+      '',
+      `_Subscription list unavailable (\`GET ${ROUTES.ADMIN_SUBSCRIPTIONS}\` failed) — counts above are still accurate._`,
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function formatDistribution(dist: Record<string, number>): string {
+  const entries = Object.entries(dist).sort(([, a], [, b]) => b - a);
+  if (entries.length === 0) return '—';
+  return entries.map(([key, count]) => `\`${key}\` ×${count}`).join(', ');
+}
+
+function buildSummaryErrorOutput(opts: {
+  url: string;
+  result: FetchJsonResult & { ok: false };
+}): string {
+  const { url, result } = opts;
+  const body = responseBody(result);
+  const bodyText = typeof body === 'string' ? body : JSON.stringify(body, null, 2);
+
+  const lines: string[] = [
+    '# Subscriber Summary — Error',
+    '',
+    `**Endpoint:** \`${url}\``,
+    result.httpStatus > 0 ? `**HTTP Status:** ${result.httpStatus}` : `**Error:** ${result.error}`,
+    '',
+    '## Server Response',
+    '```',
+    bodyText.slice(0, 500),
+    '```',
+    '',
+    '## Troubleshooting',
+  ];
+
+  if (result.httpStatus === 401 || result.httpStatus === 403) {
+    lines.push('- The provided `adminSecret` was rejected (`INVALID_ADMIN_SECRET`).');
+    lines.push("- Verify it matches the server's `config.adminSecret` exactly.");
+  } else if (result.httpStatus === 404) {
+    lines.push('- The metrics routes are not mounted — the server only mounts them when `config.adminSecret` is set.');
+    lines.push('- Set `adminSecret` in the server config, restart, then retry.');
+  } else if (result.httpStatus >= 500) {
+    lines.push('- The server returned an internal error. Check server logs for details.');
+  } else if (result.httpStatus === 0) {
+    lines.push('- The onesub server is not running or unreachable at this URL.');
+    lines.push('- Start the server and verify the `serverUrl` (including port).');
+  }
 
   return lines.join('\n');
 }
