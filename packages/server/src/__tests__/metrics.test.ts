@@ -342,6 +342,58 @@ describe('GET /onesub/metrics/started?groupBy=day', () => {
     );
     expect(resp.status).toBe(400);
   });
+
+  it('400 INVALID_INPUT when groupBy=day spans more than 366 days (bucket-allocation cap)', async () => {
+    const { server } = buildServer({ adminSecret: SECRET });
+    const resp = await server.get<{ errorCode: string; error: string }>(
+      // 10-year range — would zero-fill ~3653 daily bucket objects per request
+      '/onesub/metrics/started?from=2016-01-01T00:00:00Z&to=2026-01-01T00:00:00Z&groupBy=day',
+      AUTH,
+    );
+    expect(resp.status).toBe(400);
+    expect(resp.body.errorCode).toBe('INVALID_INPUT');
+    expect(resp.body.error).toContain('366');
+  });
+
+  it('a 30-day range with groupBy=day still works under the cap', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ purchasedAt: '2026-04-15T00:00:00Z' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2026-04-01T00:00:00Z&to=2026-04-30T23:59:59Z&groupBy=day',
+      AUTH,
+    );
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.total).toBe(1);
+    expect(resp.body.buckets).toHaveLength(30);
+  });
+
+  it('a >366-day range WITHOUT groupBy is still allowed (totals only, no buckets)', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ purchasedAt: '2020-06-01T00:00:00Z' }));
+
+    const resp = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2016-01-01T00:00:00Z&to=2026-01-01T00:00:00Z',
+      AUTH,
+    );
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.total).toBe(1);
+    expect(resp.body.buckets).toBeUndefined();
+  });
+
+  it('the cap also applies to /expired and /purchases/started (shared parseRange)', async () => {
+    const { server } = buildServer({ adminSecret: SECRET });
+    for (const path of ['/onesub/metrics/expired', '/onesub/metrics/purchases/started']) {
+      const resp = await server.get<{ errorCode: string }>(
+        `${path}?from=2016-01-01T00:00:00Z&to=2026-01-01T00:00:00Z&groupBy=day`,
+        AUTH,
+      );
+      expect(resp.status).toBe(400);
+      expect(resp.body.errorCode).toBe('INVALID_INPUT');
+    }
+  });
 });
 
 describe('GET /onesub/metrics/expired?groupBy=day', () => {

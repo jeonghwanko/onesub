@@ -18,6 +18,7 @@ import {
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
+import { secretsEqual } from './secret-compare.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -47,7 +48,7 @@ export function createMetricsRouter(
   // even when this router is mounted on the parent root).
   router.use('/onesub/metrics', (req, res, next) => {
     const provided = req.headers[ADMIN_SECRET_HEADER];
-    if (typeof provided !== 'string' || provided !== adminSecret) {
+    if (typeof provided !== 'string' || !secretsEqual(provided, adminSecret)) {
       sendError(res, 401, ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET, 'INVALID_ADMIN_SECRET');
       return;
     }
@@ -130,6 +131,13 @@ export function createMetricsRouter(
 
   type Range = { fromMs: number; toMs: number; groupBy: 'none' | 'day' };
 
+  // groupBy=day zero-fills one bucket object per calendar day, so an
+  // unbounded range (e.g. from=0001-01-01) would allocate millions of
+  // buckets from a single request. Cap the span at a year of daily buckets;
+  // ranges without groupBy stay uncapped (they only produce totals).
+  const MAX_DAY_BUCKET_SPAN_DAYS = 366;
+  const MAX_DAY_BUCKET_SPAN_MS = MAX_DAY_BUCKET_SPAN_DAYS * 86_400_000;
+
   function parseRange(req: Request): Range | { error: string } {
     const parsed = rangeSchema.safeParse(req.query);
     if (!parsed.success) return { error: 'from and to are required (ISO 8601)' };
@@ -139,7 +147,13 @@ export function createMetricsRouter(
       return { error: 'from / to must be ISO 8601 timestamps' };
     }
     if (fromMs > toMs) return { error: 'from must be ≤ to' };
-    return { fromMs, toMs, groupBy: parsed.data.groupBy ?? 'none' };
+    const groupBy = parsed.data.groupBy ?? 'none';
+    if (groupBy === 'day' && toMs - fromMs > MAX_DAY_BUCKET_SPAN_MS) {
+      return {
+        error: `groupBy=day supports a range of at most ${MAX_DAY_BUCKET_SPAN_DAYS} days — narrow the from/to window or omit groupBy`,
+      };
+    }
+    return { fromMs, toMs, groupBy };
   }
 
   // UTC `YYYY-MM-DD` for a given epoch-ms. Used to assign each record to a

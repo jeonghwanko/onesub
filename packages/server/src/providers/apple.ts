@@ -60,10 +60,36 @@ function derBase64ToPem(der: string): string {
 const APPLE_ROOT_CERTS = APPLE_ROOT_CA_PEMS.map((pem) => new X509Certificate(pem));
 
 /**
+ * BasicConstraints enforcement for certificates acting as ISSUERS in an x5c
+ * chain. Without it, any end-entity (leaf) certificate — which Apple issues
+ * WITHOUT CA privileges — could be abused to sign a forged "leaf" and splice
+ * it into an otherwise signature-valid chain.
+ *
+ * We enforce `basicConstraints CA=true` via node's `X509Certificate.ca`.
+ * The KeyUsage keyCertSign bit is NOT checked because node:crypto does not
+ * expose the KeyUsage bit string: `X509Certificate.keyUsage` actually returns
+ * the Extended Key Usage OIDs (it reads NID_ext_key_usage), so `.ca` is the
+ * only reliably available signal in Node 20/22. `.ca` alone is sufficient to
+ * block leaf-as-issuer splicing.
+ *
+ * The LEAF certificate (index 0) must NOT be passed here — leaves are not
+ * CAs and are never issuers.
+ *
+ * Exported for unit testing.
+ */
+export function assertIssuerCanSign(cert: Pick<X509Certificate, 'ca'>, index: number): void {
+  if (!cert.ca) {
+    throw new Error(
+      `[onesub/apple] cert[${index}] is used as an issuer but is not a CA (basicConstraints CA=false)`,
+    );
+  }
+}
+
+/**
  * Validate that the x5c chain from the JWS terminates at one of Apple's
  * bundled root CAs. Each cert in the chain must be signed by the next (or
- * the bundled root), and all certs must currently be within their validity
- * window.
+ * the bundled root), every issuing cert must be a CA (BasicConstraints), and
+ * all certs must currently be within their validity window.
  *
  * Returns the leaf certificate PEM on success. Throws on any failure.
  */
@@ -81,6 +107,8 @@ function verifyAppleCertChain(x5c: string[]): string {
     if (new Date(cert.validFrom) > now || new Date(cert.validTo) < now) {
       throw new Error(`[onesub/apple] cert[${i}] outside validity window`);
     }
+    // Every cert above the leaf signs the cert below it → must be a CA.
+    if (i >= 1) assertIssuerCanSign(cert, i);
     if (i + 1 < chain.length) {
       if (!cert.checkIssued(chain[i + 1]) || !cert.verify(chain[i + 1].publicKey)) {
         throw new Error(`[onesub/apple] cert[${i}] not signed by cert[${i + 1}]`);
@@ -95,6 +123,9 @@ function verifyAppleCertChain(x5c: string[]): string {
   const topDer = top.raw.toString('base64');
   const trustsRoot = APPLE_ROOT_CERTS.some((root) => {
     if (root.raw.toString('base64') === topDer) return true;
+    // A bundled root acting as the issuer of `top` must itself be a CA
+    // (always true for Apple's roots; kept as defense in depth).
+    if (!root.ca) return false;
     if (!top.checkIssued(root)) return false;
     try { return top.verify(root.publicKey); } catch { return false; }
   });
@@ -728,6 +759,14 @@ export interface AppleTransactionRecord {
 }
 
 /**
+ * Pagination safety cap for the Transaction History API. Apple returns ~20
+ * transactions per page, so 50 pages ≈ 1000 transactions — far beyond any
+ * realistic single-subscription history. Guards against a misbehaving
+ * endpoint keeping the loop alive forever.
+ */
+const MAX_HISTORY_PAGES = 50;
+
+/**
  * Fetch all transactions for an originalTransactionId from the App Store
  * Transaction History API (GET /inApps/v2/history/{originalTransactionId}).
  *
@@ -757,6 +796,7 @@ export async function fetchAppleTransactionHistory(
 
   const results: AppleTransactionRecord[] = [];
   let revision: string | undefined;
+  let pageCount = 0;
 
   for (;;) {
     const url = new URL(`https://${host}/inApps/v2/history/${encodeURIComponent(originalTransactionId)}`);
@@ -798,7 +838,22 @@ export async function fetchAppleTransactionHistory(
       }
     }
 
+    pageCount++;
     if (!page.hasMore) break;
+    // Infinite-loop guards: `hasMore: true` with a missing or unchanged
+    // revision cursor would refetch the same page forever.
+    if (!page.revision || page.revision === revision) {
+      log.warn(
+        '[onesub/apple] Transaction History API returned hasMore without a new revision cursor — stopping pagination (partial history returned)',
+      );
+      break;
+    }
+    if (pageCount >= MAX_HISTORY_PAGES) {
+      log.warn(
+        `[onesub/apple] Transaction History pagination hit the ${MAX_HISTORY_PAGES}-page cap — stopping (partial history returned)`,
+      );
+      break;
+    }
     revision = page.revision;
   }
 

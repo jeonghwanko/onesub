@@ -16,6 +16,7 @@ import { evaluateEntitlement } from './entitlements.js';
 import { sendError, sendZodError } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
+import { secretsEqual } from './secret-compare.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -61,7 +62,7 @@ export function createAdminRouter(
   // alongside host-app routes (e.g. /health).
   const adminAuth = (req: Request, res: Response, next: () => void) => {
     const provided = req.headers[ADMIN_SECRET_HEADER];
-    if (typeof provided !== 'string' || provided !== adminSecret) {
+    if (typeof provided !== 'string' || !secretsEqual(provided, adminSecret)) {
       sendError(res, 401, ONESUB_ERROR_CODE.INVALID_ADMIN_SECRET, 'INVALID_ADMIN_SECRET');
       return;
     }

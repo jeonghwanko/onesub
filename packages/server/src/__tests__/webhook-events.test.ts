@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CacheWebhookEventStore, InMemoryWebhookEventStore } from '../webhook-events.js';
 import { InMemoryCacheAdapter } from '../cache.js';
 
@@ -16,12 +16,20 @@ describe('InMemoryWebhookEventStore', () => {
   });
 
   it('expires entries after the TTL', async () => {
-    const store = new InMemoryWebhookEventStore(1); // 1-second TTL
-    expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
-    await new Promise((resolve) => setTimeout(resolve, 1100));
-    // Re-eligible after expiry — Apple/Google retries beyond the window are
-    // effectively new events, which is the intended behavior.
-    expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
+    // Fake timers instead of a real 1100ms sleep — the store's expiry is
+    // driven by Date.now(), which vitest's fake timers cover, and the real
+    // sleep flaked under CI load.
+    vi.useFakeTimers();
+    try {
+      const store = new InMemoryWebhookEventStore(1); // 1-second TTL
+      expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
+      vi.advanceTimersByTime(1100);
+      // Re-eligible after expiry — Apple/Google retries beyond the window are
+      // effectively new events, which is the intended behavior.
+      expect(await store.markIfNew('apple', 'uuid-1')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

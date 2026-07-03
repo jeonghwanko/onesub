@@ -5,6 +5,7 @@ import type { OneSubServerConfig } from '@onesub/shared';
 import { ONESUB_ERROR_CODE } from '@onesub/shared';
 import { signApplePromotionalOffer } from '../providers/apple.js';
 import { sendError, sendZodError } from '../errors.js';
+import { secretsEqual } from './secret-compare.js';
 
 const OFFER_SECRET_HEADER = 'x-onesub-offer-secret';
 
@@ -40,7 +41,7 @@ export function createAppleOfferRouter(config: OneSubServerConfig): Router | nul
   router.post('/onesub/apple/offer-signature', async (req: Request, res: Response) => {
     if (config.adminSecret) {
       const provided = req.headers[OFFER_SECRET_HEADER];
-      if (typeof provided !== 'string' || provided !== config.adminSecret) {
+      if (typeof provided !== 'string' || !secretsEqual(provided, config.adminSecret)) {
         sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
         return;
       }

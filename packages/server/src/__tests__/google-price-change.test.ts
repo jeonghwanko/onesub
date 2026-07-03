@@ -120,12 +120,17 @@ describe('Google webhook — SUBSCRIPTION_PRICE_CHANGE_CONFIRMED (8)', () => {
   });
 
   it('async hook is awaited internally without blocking the webhook response', async () => {
+    // Deterministic gate instead of wall-clock timing: the hook blocks on a
+    // manually-resolved promise, so "response arrived while the hook was still
+    // pending" cannot flake under machine load.
+    let releaseHook!: () => void;
+    const gate = new Promise<void>((r) => { releaseHook = r; });
     let hookResolved = false;
     const { store, server } = buildServer({
       google: {
         packageName: 'com.example.app',
         onPriceChangeConfirmed: async () => {
-          await new Promise((r) => setTimeout(r, 50));
+          await gate;
           hookResolved = true;
         },
       },
@@ -133,17 +138,16 @@ describe('Google webhook — SUBSCRIPTION_PRICE_CHANGE_CONFIRMED (8)', () => {
     });
     await store.save(sampleSub({ originalTransactionId: 'tok_async' }));
 
-    const start = Date.now();
     const resp = await server.request('/onesub/webhook/google', priceChangePushBody('tok_async'));
-    const responseLatency = Date.now() - start;
 
-    // Webhook returned 200 fast — host's slow hook didn't block
+    // Webhook returned 200 while the hook is still parked on the gate —
+    // the host's slow hook didn't block the response.
     expect(resp.status).toBe(200);
-    expect(responseLatency).toBeLessThan(50);
     expect(hookResolved).toBe(false);
 
-    // Hook still completes eventually
-    await new Promise((r) => setTimeout(r, 80));
+    // Hook still completes once unblocked.
+    releaseHook();
+    await new Promise((r) => setTimeout(r, 10));
     expect(hookResolved).toBe(true);
   });
 

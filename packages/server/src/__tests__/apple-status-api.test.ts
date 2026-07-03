@@ -16,7 +16,7 @@ import express from 'express';
 import { generateKeyPairSync } from 'crypto';
 import type { OneSubServerConfig, SubscriptionInfo } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
-import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
+import { fetchAppleSubscriptionStatus, fetchAppleTransactionHistory } from '../providers/apple.js';
 import { createWebhookRouter } from '../routes/webhook.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
 import { isLocalhostUrl } from './test-utils.js';
@@ -233,6 +233,93 @@ describe('fetchAppleSubscriptionStatus', () => {
     }));
     const result = await fetchAppleSubscriptionStatus('orig_caller', appleConfigWithApi());
     expect(result?.originalTransactionId).toBe('orig_caller');
+  });
+});
+
+// ── fetchAppleTransactionHistory pagination guards ──────────────────────────
+
+describe('fetchAppleTransactionHistory pagination guards', () => {
+  function historyTx(id: number): string {
+    return makeJws({
+      bundleId: 'com.example.app',
+      type: 'Auto-Renewable Subscription',
+      productId: 'pro_monthly',
+      transactionId: `tx_${id}`,
+      originalTransactionId: 'orig_hist',
+      purchaseDate: Date.now(),
+    });
+  }
+
+  /** Mock fetch where each non-localhost call gets pageForCall(callIndex). */
+  function mockHistoryFetch(pageForCall: (call: number) => unknown): { count: () => number } {
+    const originalFetch = global.fetch;
+    let calls = 0;
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      if (isLocalhostUrl(url)) {
+        return originalFetch(url, init);
+      }
+      const body = pageForCall(calls++);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as Response;
+    });
+    return { count: () => calls };
+  }
+
+  it('terminates when hasMore=true repeats the same revision (previously looped forever)', async () => {
+    const counter = mockHistoryFetch((call) => ({
+      signedTransactions: [historyTx(call)],
+      revision: 'rev_stuck',
+      hasMore: true,
+    }));
+
+    const result = await fetchAppleTransactionHistory('orig_hist', appleConfigWithApi());
+
+    // page 1 (revision undefined → 'rev_stuck' is new) + page 2 (unchanged → stop)
+    expect(counter.count()).toBe(2);
+    expect(result).toHaveLength(2);
+  });
+
+  it('terminates when hasMore=true but revision is missing', async () => {
+    const counter = mockHistoryFetch((call) => ({
+      signedTransactions: [historyTx(call)],
+      hasMore: true,
+    }));
+
+    const result = await fetchAppleTransactionHistory('orig_hist', appleConfigWithApi());
+
+    expect(counter.count()).toBe(1);
+    expect(result).toHaveLength(1);
+  });
+
+  it('caps pagination at 50 pages even when revisions keep advancing', async () => {
+    const counter = mockHistoryFetch((call) => ({
+      signedTransactions: [historyTx(call)],
+      revision: `rev_${call}`,
+      hasMore: true,
+    }));
+
+    const result = await fetchAppleTransactionHistory('orig_hist', appleConfigWithApi());
+
+    expect(counter.count()).toBe(50);
+    expect(result).toHaveLength(50);
+  });
+
+  it('normal pagination still collects every page until hasMore=false', async () => {
+    const counter = mockHistoryFetch((call) => ({
+      signedTransactions: [historyTx(call)],
+      revision: `rev_${call}`,
+      hasMore: call < 2, // 3 pages total
+    }));
+
+    const result = await fetchAppleTransactionHistory('orig_hist', appleConfigWithApi());
+
+    expect(counter.count()).toBe(3);
+    expect(result).toHaveLength(3);
+    expect(result?.map((t) => t.transactionId)).toEqual(['tx_0', 'tx_1', 'tx_2']);
   });
 });
 
