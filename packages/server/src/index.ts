@@ -47,10 +47,20 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
    */
   webhookEventStore?: WebhookEventStore;
   /**
-   * Async webhook queue. Default: in-process synchronous (legacy behavior —
-   * route latency = handler latency). For decoupled retries pass a
-   * `BullMQWebhookQueue`; the dead-letter list becomes accessible via
-   * `/onesub/admin/webhook-deadletters` and `/onesub/admin/webhook-replay/:id`.
+   * Async webhook queue. Default: none — webhook routes process notifications
+   * synchronously inside the request (route latency = handler latency;
+   * Apple/Google source retries on 5xx are the durability layer).
+   *
+   * When set, the webhook routes keep the cheap gating inline (validation,
+   * JWS/push-token verification, bundleId/packageName checks, idempotency
+   * dedup) and `enqueue()` the decoded work, acking 200 as soon as the job is
+   * accepted. The state-mutating processing runs in the queue handler, which
+   * is registered once here at middleware creation via `setHandler()`.
+   *
+   * Pass a `BullMQWebhookQueue` for durable retries with backoff; jobs that
+   * exhaust their attempts land in the dead-letter list, accessible via
+   * `GET /onesub/admin/webhook-deadletters` and replayable via
+   * `POST /onesub/admin/webhook-replay/:id` (requires `adminSecret`).
    */
   webhookQueue?: WebhookQueue;
 }
@@ -100,7 +110,7 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
 
   router.use(createValidateRouter(config, store));
   router.use(createStatusRouter(store));
-  router.use(createWebhookRouter(config, store, purchaseStore, config.webhookEventStore));
+  router.use(createWebhookRouter(config, store, purchaseStore, config.webhookEventStore, config.webhookQueue));
   router.use(createPurchaseRouter(config, purchaseStore));
 
   // Admin routes — only mounted when config.adminSecret is set
@@ -161,9 +171,17 @@ export { InMemoryCacheAdapter, getDefaultCache, setDefaultCache } from './cache.
 
 // Webhook hardening primitives
 export type { WebhookEventStore } from './webhook-events.js';
-export { InMemoryWebhookEventStore, CacheWebhookEventStore } from './webhook-events.js';
+export { InMemoryWebhookEventStore, CacheWebhookEventStore, unmarkWebhookEvent } from './webhook-events.js';
 export type { WebhookQueue, WebhookJob, WebhookHandler, DeadLetterRecord } from './webhook-queue.js';
 export { InProcessWebhookQueue, BullMQWebhookQueue } from './webhook-queue.js';
+// Post-gate webhook processors — the same functions the built-in queue
+// handler runs. Exported so hosts running a dedicated worker process (e.g.
+// a standalone BullMQ Worker) can call `queue.setHandler(...)` themselves
+// with identical processing semantics.
+export { processAppleNotification } from './routes/webhook-apple.js';
+export type { AppleWebhookWork } from './routes/webhook-apple.js';
+export { processGoogleNotification } from './routes/webhook-google.js';
+export type { GoogleWebhookWork } from './routes/webhook-google.js';
 
 // OpenAPI document — for hosts that want to expose `/openapi.json` and
 // generate clients from the spec.

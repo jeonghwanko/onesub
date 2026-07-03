@@ -1,3 +1,5 @@
+import { log } from './logger.js';
+
 /**
  * Webhook processing queue.
  *
@@ -13,9 +15,10 @@
  *                       lands in the dead-letter store.
  *   - Handler returns → ack to source.
  *
- * The HTTP route should always 200 once the job is *enqueued*. Synchronous
- * processing happens to acknowledge later only because the in-process queue
- * runs inline; for any async queue the route should ack after `enqueue()`.
+ * The webhook routes ack (200) as soon as `enqueue()` resolves. For the
+ * in-process queue that still means "after the handler ran" (enqueue runs it
+ * synchronously); for BullMQ it means "job persisted to Redis" and processing
+ * happens in the worker.
  */
 export interface WebhookJob<T = unknown> {
   provider: 'apple' | 'google';
@@ -112,9 +115,13 @@ interface BullMQQueue {
   getJob(id: string): Promise<BullMQJob | undefined>;
   getFailed(): Promise<BullMQJob[]>;
   close(): Promise<void>;
+  /** Queue extends EventEmitter — optional in the shape so test stubs stay minimal. */
+  on?(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 interface BullMQWorker {
   close(): Promise<void>;
+  /** Worker extends EventEmitter — optional in the shape so test stubs stay minimal. */
+  on?(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 interface BullMQModule {
   Queue: new (name: string, opts: { connection: unknown }) => BullMQQueue;
@@ -150,6 +157,13 @@ export class BullMQWebhookQueue implements WebhookQueue {
   private queuePromise: Promise<BullMQQueue> | null = null;
   private workerPromise: Promise<BullMQWorker> | null = null;
   private handler: WebhookHandler | null = null;
+  /**
+   * Captured worker-startup failure (e.g. `bullmq` not installed). `setHandler`
+   * is synchronous, so it can't reject — the error is surfaced on the next
+   * `enqueue()` instead of becoming an unhandled rejection that kills the
+   * process.
+   */
+  private workerStartupError: Error | null = null;
 
   constructor(opts: BullMQWebhookQueueOptions) {
     this.connection = opts.connection;
@@ -169,7 +183,13 @@ export class BullMQWebhookQueue implements WebhookQueue {
     if (!this.queuePromise) {
       this.queuePromise = (async () => {
         const { Queue } = await this.getBullMQ();
-        return new Queue(this.queueName, { connection: this.connection });
+        const queue = new Queue(this.queueName, { connection: this.connection });
+        // Without an 'error' listener, a Redis hiccup on the EventEmitter
+        // becomes an uncaught 'error' event and crashes the process.
+        queue.on?.('error', (err) => {
+          log.error('[onesub] BullMQ queue error:', err);
+        });
+        return queue;
       })();
     }
     return this.queuePromise;
@@ -180,7 +200,7 @@ export class BullMQWebhookQueue implements WebhookQueue {
     if (!this.workerPromise) {
       this.workerPromise = (async () => {
         const { Worker } = await this.getBullMQ();
-        return new Worker(
+        const worker = new Worker(
           this.queueName,
           async (job) => {
             if (!this.handler) throw new Error('[onesub] handler not set');
@@ -191,11 +211,25 @@ export class BullMQWebhookQueue implements WebhookQueue {
             concurrency: this.concurrency,
           },
         );
+        // Same rationale as the queue's 'error' listener above. Job failures
+        // are NOT this event — they go through the retry/dead-letter flow.
+        worker.on?.('error', (err) => {
+          log.error('[onesub] BullMQ worker error:', err);
+        });
+        return worker;
       })();
+      // The worker starts in the background — swallow the rejection here
+      // (otherwise: unhandled rejection → process crash when bullmq is
+      // missing) and surface it on the next enqueue instead.
+      this.workerPromise.catch((err) => {
+        this.workerStartupError = err instanceof Error ? err : new Error(String(err));
+        log.error('[onesub] BullMQ worker failed to start:', err);
+      });
     }
   }
 
   async enqueue<T>(job: WebhookJob<T>): Promise<void> {
+    if (this.workerStartupError) throw this.workerStartupError;
     const queue = await this.getQueue();
     await queue.add('webhook', job, {
       attempts: this.maxAttempts,
@@ -227,12 +261,13 @@ export class BullMQWebhookQueue implements WebhookQueue {
 
   async close(): Promise<void> {
     if (this.workerPromise) {
-      const worker = await this.workerPromise;
-      await worker.close();
+      // A rejected workerPromise (startup failure) has nothing to close.
+      const worker = await this.workerPromise.catch(() => null);
+      if (worker) await worker.close();
     }
     if (this.queuePromise) {
-      const queue = await this.queuePromise;
-      await queue.close();
+      const queue = await this.queuePromise.catch(() => null);
+      if (queue) await queue.close();
     }
   }
 }

@@ -36,6 +36,33 @@ export interface WebhookEventStore {
   unmark?(provider: 'apple' | 'google', eventId: string): Promise<void>;
 }
 
+/**
+ * Best-effort unmark used by the webhook routes when INLINE processing fails
+ * after `markIfNew` succeeded — without it the source's retry (Apple/Google
+ * both retry on 5xx) would be deduped and the lifecycle event dropped forever.
+ *
+ * No-ops when the store is absent, the store doesn't implement `unmark`, or
+ * no event id was marked. Swallows its own errors: a failing unmark must not
+ * mask the original processing error that triggered it.
+ *
+ * NOTE — only the inline path (and a failed `enqueue()`) calls this. When a
+ * webhook queue is configured and the job was durably enqueued, handler
+ * failures are retried by the QUEUE, not the source; unmarking there would
+ * let a source retry race the queue's retries and double-apply the event.
+ */
+export async function unmarkWebhookEvent(
+  store: WebhookEventStore | undefined,
+  provider: 'apple' | 'google',
+  eventId: string | undefined,
+): Promise<void> {
+  if (!store?.unmark || typeof eventId !== 'string') return;
+  try {
+    await store.unmark(provider, eventId);
+  } catch {
+    /* best-effort */
+  }
+}
+
 /** Default 7-day retention — covers Apple's 3-day retry window plus headroom. */
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 
