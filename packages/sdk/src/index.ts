@@ -14,7 +14,14 @@ export { PaywallModal } from './PaywallModal.js';
 export type { PaywallModalProps } from './PaywallModal.js';
 
 // API utilities (for advanced / custom UI usage)
-export { checkStatus, validateReceipt, validatePurchase, checkPurchaseStatus } from './api.js';
+export {
+  checkStatus,
+  validateReceipt,
+  validatePurchase,
+  checkPurchaseStatus,
+  checkEntitlement,
+  checkEntitlements,
+} from './api.js';
 
 // Structured errors — `err.code` is a value from ONESUB_ERROR_CODE.
 export { OneSubError, isOneSubError, toOneSubError } from './OneSubError.js';
@@ -41,4 +48,7 @@ export type {
   ValidatePurchaseRequest,
   ValidatePurchaseResponse,
   PurchaseStatusResponse,
+  EntitlementStatus,
+  EntitlementResponse,
+  EntitlementsResponse,
 } from '@onesub/shared';

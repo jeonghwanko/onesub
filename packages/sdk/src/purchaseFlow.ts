@@ -17,6 +17,8 @@ export type InFlightEntry = {
   purchaseType?: 'consumable' | 'non_consumable';
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
+  /** Handle of the registration timeout — cleared on settle or clearInFlight. */
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 export type Platform = 'ios' | 'android';
@@ -151,7 +153,12 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
   if (!receiptToken) {
     deps.logger?.warn('event rejected: no receipt', { productId });
     inFlight?.reject(new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] No receipt data in purchase event.'));
-    deps.inFlight.delete(productId);
+    // Same invariant as the settle path below: only clear the slot we actually
+    // consumed. A suppressed-window replay (matching disabled → inFlight is
+    // undefined even though the map has an entry) must leave the user's live
+    // entry intact so a subsequent fresh event can still settle it. reject()
+    // above already cleared the entry's timer, so a bare delete is safe here.
+    if (inFlight) deps.inFlight.delete(productId);
     return;
   }
 
@@ -267,17 +274,52 @@ export function registerInFlight<T>(
     ));
   }
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      if (inFlight.get(productId)) {
+    const entry: InFlightEntry = {
+      kind,
+      purchaseType,
+      resolve: (v) => { clearTimeout(entry.timer); resolve(v as T); },
+      reject: (e) => { clearTimeout(entry.timer); reject(e); },
+    };
+    entry.timer = setTimeout(() => {
+      // Only act on the entry this timer was created for. A stale timer
+      // (entry externally cleared, then the same productId re-registered)
+      // must not delete the retry's fresh entry — that would leave its
+      // promise unsettled forever and the Provider stuck busy.
+      if (inFlight.get(productId) === entry) {
         inFlight.delete(productId);
         reject(new OneSubError(ONESUB_ERROR_CODE.PURCHASE_TIMEOUT, '[onesub] Purchase timed out'));
       }
     }, timeoutMs);
-    inFlight.set(productId, {
-      kind,
-      purchaseType,
-      resolve: (v) => { clearTimeout(timer); resolve(v as T); },
-      reject: (e) => { clearTimeout(timer); reject(e); },
-    });
+    inFlight.set(productId, entry);
   });
+}
+
+/**
+ * Remove an in-flight slot WITHOUT settling its promise, clearing the
+ * registration timeout so the stale timer can't fire later. Use this on the
+ * paths that abandon a registration (e.g. requestPurchase threw before any
+ * store event could arrive) — settling paths go through entry.resolve/reject,
+ * which clear the timer themselves.
+ */
+export function clearInFlight(inFlight: Map<string, InFlightEntry>, productId: string): void {
+  const entry = inFlight.get(productId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  inFlight.delete(productId);
+}
+
+/**
+ * True when the error represents the user dismissing the purchase sheet —
+ * either a raw react-native-iap error code or the SDK's own OneSubError
+ * (the Provider's purchaseErrorListener rejects in-flight promises with
+ * ONESUB_ERROR_CODE.USER_CANCELLED). Cancels are a normal outcome, not a
+ * failure — callers return instead of throwing.
+ */
+export function isUserCancelled(err: unknown): boolean {
+  if (err instanceof OneSubError) {
+    return err.code === ONESUB_ERROR_CODE.USER_CANCELLED;
+  }
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as Record<string, unknown>).code;
+  return code === 'E_USER_CANCELLED' || code === 'E_USER_ERROR';
 }

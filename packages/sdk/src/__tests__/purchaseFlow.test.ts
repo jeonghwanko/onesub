@@ -4,6 +4,8 @@ import { OneSubError } from '../OneSubError.js';
 import {
   handlePurchaseEvent,
   registerInFlight,
+  clearInFlight,
+  isUserCancelled,
   extractReceiptToken,
   isSubscriptionEvent,
   type InFlightEntry,
@@ -372,6 +374,79 @@ describe('registerInFlight', () => {
     await expect(promise).rejects.toThrow(/timed out/);
     expect(inFlight.has('pro_monthly')).toBe(false);
   });
+
+  it('stale timer from an abandoned entry does not kill a later retry entry', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+
+    // First attempt registered, then abandoned via a bare map delete (the old
+    // external-delete pattern) — its timer keeps running.
+    const first = registerInFlight(inFlight, 'pro_monthly', 'subscription', undefined, 5_000);
+    void first.catch(() => {});
+    vi.advanceTimersByTime(1_000);
+    inFlight.delete('pro_monthly');
+
+    // Retry registers a fresh entry with its own 5s window.
+    const retryEntrySettled = vi.fn();
+    const retry = registerInFlight(inFlight, 'pro_monthly', 'subscription', undefined, 5_000);
+    void retry.then(retryEntrySettled, retryEntrySettled);
+
+    // The FIRST attempt's timer fires at t=5s. It must recognize the map now
+    // holds a different entry and leave it alone.
+    vi.advanceTimersByTime(4_100);
+    await Promise.resolve();
+    expect(inFlight.has('pro_monthly')).toBe(true);
+    expect(retryEntrySettled).not.toHaveBeenCalled();
+
+    // The retry's OWN timer still enforces its timeout at t=6s.
+    vi.advanceTimersByTime(1_000);
+    await expect(retry).rejects.toThrow(/timed out/);
+    expect(inFlight.has('pro_monthly')).toBe(false);
+  });
+
+  it('clearInFlight removes the entry AND cancels its timer (promise left unsettled)', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    const settled = vi.fn();
+    const promise = registerInFlight(inFlight, 'pro_monthly', 'subscription', undefined, 5_000);
+    void promise.then(settled, settled);
+
+    clearInFlight(inFlight, 'pro_monthly');
+    expect(inFlight.has('pro_monthly')).toBe(false);
+
+    // Past the timeout — the cancelled timer must not fire (no rejection).
+    vi.advanceTimersByTime(10_000);
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+  });
+
+  it('clearInFlight is a no-op for unknown productIds', () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    expect(() => clearInFlight(inFlight, 'nope')).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isUserCancelled
+// ---------------------------------------------------------------------------
+describe('isUserCancelled', () => {
+  it('matches raw react-native-iap cancel codes', () => {
+    expect(isUserCancelled({ code: 'E_USER_CANCELLED' })).toBe(true);
+    expect(isUserCancelled({ code: 'E_USER_ERROR' })).toBe(true);
+    expect(isUserCancelled({ code: 'E_UNKNOWN' })).toBe(false);
+  });
+
+  it('matches OneSubError with USER_CANCELLED (purchaseErrorListener rejections)', () => {
+    const cancelled = new OneSubError(ONESUB_ERROR_CODE.USER_CANCELLED, '[onesub] cancelled');
+    expect(isUserCancelled(cancelled)).toBe(true);
+
+    const other = new OneSubError(ONESUB_ERROR_CODE.INTERNAL_ERROR, '[onesub] boom');
+    expect(isUserCancelled(other)).toBe(false);
+  });
+
+  it('rejects non-object inputs', () => {
+    expect(isUserCancelled(null)).toBe(false);
+    expect(isUserCancelled(undefined)).toBe(false);
+    expect(isUserCancelled('E_USER_CANCELLED')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -591,6 +666,36 @@ describe('regression: mount drain window suppresses in-flight matching', () => {
     expect(inFlight.has('pro_monthly')).toBe(true); // entry preserved
     expect(finishTransaction).toHaveBeenCalledOnce(); // replay still finished
     expect(onSubscriptionActivated).toHaveBeenCalledOnce();
+  });
+
+  it('receipt-less replay during drain does NOT delete the live in-flight entry', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let resolved: unknown = null;
+    let rejected: Error | null = null;
+
+    // User tapped Subscribe DURING the mount drain window
+    inFlight.set('pro_monthly', {
+      kind: 'subscription',
+      resolve: (v) => { resolved = v; },
+      reject: (e) => { rejected = e; },
+    });
+
+    const deps = makeDeps({
+      inFlight,
+      allowInFlightMatching: () => false, // drain active
+    });
+
+    // StoreKit delivers a queued replay with NO receipt token. The
+    // receipt-less path must honor the same invariant as the settle path:
+    // matching was suppressed, so the user's entry was never consumed and
+    // must survive (deleting it would strand the promise — the
+    // identity-checked timer no-ops on a missing entry — leaving the
+    // Provider stuck busy until the 180s timeout).
+    await handlePurchaseEvent({ productId: 'pro_monthly' }, deps);
+
+    expect(resolved).toBeNull();
+    expect(rejected).toBeNull();
+    expect(inFlight.has('pro_monthly')).toBe(true); // entry preserved
   });
 
   it('after drain closes, a fresh event resolves the preserved in-flight entry', async () => {

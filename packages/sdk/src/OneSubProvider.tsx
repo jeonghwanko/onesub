@@ -19,6 +19,8 @@ import { checkStatus, validateReceipt, validatePurchase, checkEntitlements } fro
 import {
   handlePurchaseEvent as handlePurchaseEventPure,
   registerInFlight as registerInFlightPure,
+  clearInFlight,
+  isUserCancelled,
   extractReceiptToken,
   extractTransactionId,
   type InFlightEntry,
@@ -97,12 +99,6 @@ function getCurrentPlatform(): 'ios' | 'android' {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Platform } = require('react-native') as typeof import('react-native');
   return Platform.OS === 'ios' ? 'ios' : 'android';
-}
-
-function isUserCancelled(err: unknown): boolean {
-  if (!err || typeof err !== 'object') return false;
-  const code = (err as Record<string, unknown>).code;
-  return code === 'E_USER_CANCELLED' || code === 'E_USER_ERROR';
 }
 
 // ---------------------------------------------------------------------------
@@ -229,20 +225,23 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   // the silent-restore bug. subscribe()/purchaseProduct() await this flag
   // before registering their in-flight slot.
   const drainCompleteRef = useRef(false);
-  const drainWaitersRef = useRef<Array<() => void>>([]);
+  // Waiters receive `aborted`: false = drain finished normally (proceed to
+  // requestPurchase), true = provider teardown (the parked caller must abort
+  // — see awaitDrainComplete, which maps it to a PROVIDER_UNMOUNTED throw).
+  const drainWaitersRef = useRef<Array<(aborted: boolean) => void>>([]);
   const DRAIN_WINDOW_MS = 2500;
   const mockMode = config.mockMode === true;
 
-  if (mockMode && typeof console !== 'undefined') {
-    // One-shot warning per provider mount so it's obvious in logs.
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useEffect(() => {
+  // One-shot warning per provider mount so it's obvious in logs. The hook must
+  // run unconditionally (Rules of Hooks) — the mockMode check lives inside.
+  useEffect(() => {
+    if (mockMode && typeof console !== 'undefined') {
       console.warn(
         '[onesub] mockMode is enabled — all purchases/restores return synthetic ' +
           'success without calling the store or server. Disable before production.',
       );
-    }, []);
-  }
+    }
+  }, [mockMode]);
 
   function mockPurchaseInfo(productId: string, type: 'consumable' | 'non_consumable'): PurchaseInfo {
     return {
@@ -265,6 +264,12 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     let updatedSub: any = null;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let errorSub: any = null;
+
+    // Re-runs of this effect (userId/serverUrl change) re-init the IAP
+    // connection, which can replay queued transactions all over again — the
+    // drain gate must be re-armed BEFORE setupIap so those replays can't
+    // match a fresh in-flight entry.
+    drainCompleteRef.current = false;
 
     async function loadStatus() {
       setIsLoading(true);
@@ -298,7 +303,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     function releaseDrain(reason: string) {
       drainCompleteRef.current = true;
       const waiters = drainWaitersRef.current.length;
-      drainWaitersRef.current.forEach((w) => w());
+      drainWaitersRef.current.forEach((w) => w(false));
       drainWaitersRef.current = [];
       logger.trace('drain released', { reason, waiters });
     }
@@ -387,6 +392,14 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         entry.reject(new OneSubError(ONESUB_ERROR_CODE.PROVIDER_UNMOUNTED, '[onesub] Provider unmounted'));
         inFlightRef.current.delete(pid);
       }
+      // Wake anyone parked in awaitDrainComplete so they don't hang forever
+      // after unmount — with aborted=true, so they throw PROVIDER_UNMOUNTED
+      // (same code as the in-flight rejections above) instead of proceeding
+      // to requestPurchase on a dead session. On a re-mount the effect body
+      // re-arms the gate above before setupIap runs.
+      const waiters = drainWaitersRef.current;
+      drainWaitersRef.current = [];
+      waiters.forEach((w) => w(true));
       if (RNIap) {
         void RNIap.endConnection?.().catch?.(() => {
           /* ignore */
@@ -397,11 +410,21 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   }, [config.serverUrl, userId]);
 
   // Block purchase/subscribe until the mount drain window closes. Returns
-  // immediately if already complete, otherwise queues the caller.
+  // immediately if already complete, otherwise queues the caller. If the
+  // provider tears down while the caller is parked, rejects with
+  // PROVIDER_UNMOUNTED — the same error the cleanup uses for in-flight
+  // entries — so the caller aborts instead of calling requestPurchase after
+  // listeners are removed and the connection is closed.
   function awaitDrainComplete(): Promise<void> {
     if (drainCompleteRef.current) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      drainWaitersRef.current.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      drainWaitersRef.current.push((aborted) => {
+        if (aborted) {
+          reject(new OneSubError(ONESUB_ERROR_CODE.PROVIDER_UNMOUNTED, '[onesub] Provider unmounted'));
+        } else {
+          resolve();
+        }
+      });
     });
   }
 
@@ -455,10 +478,14 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         'subscription',
         undefined,
       );
+      // The error listener may reject this promise while we're still awaiting
+      // requestPurchase below — attach a no-op handler so that rejection is
+      // never "unhandled". The original promise is still awaited afterwards.
+      void resultPromise.catch(() => {});
       try {
         await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs', accountTokenRef.current));
       } catch (err) {
-        inFlightRef.current.delete(productId);
+        clearInFlight(inFlightRef.current, productId);
         if (isUserCancelled(err)) return;
         throw err;
       }
@@ -466,6 +493,12 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       if (!result.valid) {
         throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, result.error ?? '[onesub] Subscription validation failed.');
       }
+    } catch (err) {
+      // A cancel surfaced via the error listener rejects the in-flight promise
+      // with USER_CANCELLED — treat it like a cancel from requestPurchase and
+      // return normally (same contract as purchaseProduct).
+      if (isUserCancelled(err)) return;
+      throw err;
     } finally {
       setIsLoading(false);
       isBusyRef.current = false;
@@ -506,6 +539,11 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       }
 
       const receiptToken = extractReceiptToken(match);
+      if (!receiptToken) {
+        // Same guard as restoreProduct — posting an empty receipt would only
+        // earn a 400 from the server.
+        throw new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] Matched purchase has no receipt data.');
+      }
 
       const result = await validateReceipt(config.serverUrl, {
         platform: platform === 'ios' ? 'apple' : 'google',
@@ -568,11 +606,14 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
           action?: 'new' | 'restored';
           error?: string;
         }>(productId, 'purchase', type);
+        // See subscribe() — guard against an unhandled rejection while
+        // requestPurchase is still pending. The promise is awaited below.
+        void resultPromise.catch(() => {});
 
         try {
           await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app', accountTokenRef.current));
         } catch (err) {
-          inFlightRef.current.delete(productId);
+          clearInFlight(inFlightRef.current, productId);
           if (isUserCancelled(err)) return null;
           throw err;
         }

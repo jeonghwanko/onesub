@@ -8,6 +8,24 @@ import {
   View,
 } from 'react-native';
 import type { PaywallConfig } from '@onesub/shared';
+import { createSdkLogger } from './logger.js';
+
+// Paywall receives no OneSubConfig, so use the SDK logger with defaults
+// (console sink, `[onesub]` tag) to surface handler failures.
+const logger = createSdkLogger({});
+
+/**
+ * Invoke a press handler that may return a promise, routing both sync throws
+ * and async rejections to the logger instead of letting them escape as
+ * unhandled rejections with zero user-visible feedback.
+ */
+function invokeHandler(handler: () => Promise<void> | void, label: string): void {
+  void Promise.resolve()
+    .then(handler)
+    .catch((err: unknown) => {
+      logger.warn(`${label} handler failed`, err);
+    });
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -79,7 +97,7 @@ export function Paywall({ config, onSubscribe, onRestore, onClose, isLoading = f
         {/* CTA button */}
         <TouchableOpacity
           style={[styles.ctaButton, isLoading && styles.ctaButtonDisabled]}
-          onPress={() => { void onSubscribe(); }}
+          onPress={() => { invokeHandler(onSubscribe, 'Paywall onSubscribe'); }}
           disabled={isLoading}
           activeOpacity={0.85}
         >
@@ -94,7 +112,7 @@ export function Paywall({ config, onSubscribe, onRestore, onClose, isLoading = f
         {onRestore && (
           <TouchableOpacity
             style={styles.restoreButton}
-            onPress={() => { void onRestore(); }}
+            onPress={() => { invokeHandler(onRestore, 'Paywall onRestore'); }}
             disabled={isLoading}
           >
             <Text style={styles.restoreText}>{restoreText}</Text>

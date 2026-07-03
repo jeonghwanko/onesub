@@ -11,6 +11,30 @@ import type {
 import { ROUTES } from '@onesub/shared';
 
 /**
+ * The server signals validation failures as 4xx/5xx with a structured JSON
+ * body (`{ valid: false, error, errorCode }`). Parse and return that body so
+ * callers can branch on `errorCode`; return null when the body is missing,
+ * not JSON, or JSON that doesn't have the onesub response shape (e.g. a
+ * proxy 502/429 `{"message":"upstream timeout"}` — treating that as a
+ * validation result would surface a permanent-looking failure for what is a
+ * transient infra error; the caller must fall back to its generic throw).
+ */
+async function parseErrorBody<T>(response: Response): Promise<T | null> {
+  try {
+    const body: unknown = await response.json();
+    if (body && typeof body === 'object') {
+      const b = body as { valid?: unknown; errorCode?: unknown };
+      if (typeof b.valid === 'boolean' || typeof b.errorCode === 'string') {
+        return body as T;
+      }
+    }
+  } catch {
+    // Not JSON — treat as transport-level failure.
+  }
+  return null;
+}
+
+/**
  * Checks the subscription status for a given user from the onesub server.
  */
 export async function checkStatus(
@@ -53,6 +77,8 @@ export async function validateReceipt(
   });
 
   if (!response.ok) {
+    const body = await parseErrorBody<ValidateReceiptResponse>(response);
+    if (body) return body;
     throw new Error(`[onesub] Receipt validation failed: ${response.status} ${response.statusText}`);
   }
 
@@ -79,6 +105,8 @@ export async function validatePurchase(
   });
 
   if (!response.ok) {
+    const body = await parseErrorBody<ValidatePurchaseResponse>(response);
+    if (body) return body;
     throw new Error(`[onesub] Purchase validation failed: ${response.status} ${response.statusText}`);
   }
 
