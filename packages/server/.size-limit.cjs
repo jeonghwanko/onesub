@@ -6,17 +6,21 @@
  * browser. Numbers below are aspirational ceilings; raise them only with
  * a deliberate justification.
  */
+// 2026-07: raised 30/32 → 34 KB after two deliberate surface additions —
+// webhookQueue wiring (queue-mode processors exported for standalone
+// workers) and the full-parity OpenAPI spec (every mounted route
+// documented). Measured 30.7/31.04 KB at the bump.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '30 KB',
+    limit: '34 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '32 KB',
+    limit: '34 KB',
     gzip: true,
   },
 ];
