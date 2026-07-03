@@ -11,6 +11,7 @@ import {
   deleteProduct,
   listProducts,
 } from '../google.js';
+import { backoff } from '../retry.js';
 
 let serviceAccountKey: string;
 
@@ -62,6 +63,105 @@ function mockFetch(
   }));
   return calls;
 }
+
+/**
+ * Queue-based fetch mock for retry tests: each androidpublisher call consumes
+ * the next entry (the last one repeats); the token endpoint always succeeds.
+ */
+function mockFetchSequence(
+  responses: Array<{ status: number; body?: unknown; retryAfter?: string }>,
+): { apiCalls: () => number } {
+  let i = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes('oauth2.googleapis.com')) {
+      const token = JSON.stringify({ access_token: 'tok_seq' });
+      return { ok: true, status: 200, headers: new Headers(), text: async () => token, json: async () => JSON.parse(token) } as Response;
+    }
+    const r = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    const text = r.body === undefined ? '' : JSON.stringify(r.body);
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      headers: new Headers(r.retryAfter !== undefined ? { 'Retry-After': r.retryAfter } : {}),
+      text: async () => text,
+    } as Response;
+  }));
+  return { apiCalls: () => i };
+}
+
+describe('playRequest — 429 retry', () => {
+  const quotaBody = { error: { code: 429, message: 'Quota exceeded for quota metric' } };
+
+  it('retries once on 429 then succeeds', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    const seq = mockFetchSequence([
+      { status: 429, body: quotaBody },
+      { status: 204 },
+    ]);
+
+    const result = await deleteProduct({
+      productId: 'coins', productType: 'consumable',
+      packageName: 'com.example', serviceAccountKey,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(seq.apiCalls()).toBe(2);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000]);
+  });
+
+  it('exhausts retries on persistent 429 and surfaces the standard message, honoring Retry-After', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    const seq = mockFetchSequence([
+      { status: 429, body: quotaBody, retryAfter: '5' },
+      { status: 429, body: quotaBody }, // no header → exponential backoff step 2
+    ]);
+
+    const result = await deleteProduct({
+      productId: 'coins', productType: 'consumable',
+      packageName: 'com.example', serviceAccountKey,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Google Play API error — Quota exceeded/);
+    expect(seq.apiCalls()).toBe(3); // initial attempt + 2 retries
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([5000, 4000]);
+  });
+
+  it('retries the OAuth token request on 429 with a freshly signed assertion', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    let tokenCalls = 0;
+    const assertions: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com')) {
+        tokenCalls += 1;
+        assertions.push(new URLSearchParams(String(init?.body)).get('assertion') ?? '');
+        if (tokenCalls === 1) {
+          const body = JSON.stringify({ error: 'rate_limit_exceeded' });
+          return { ok: false, status: 429, headers: new Headers(), text: async () => body, json: async () => JSON.parse(body) } as Response;
+        }
+        const body = JSON.stringify({ access_token: 'tok_retry' });
+        return { ok: true, status: 200, headers: new Headers(), text: async () => body, json: async () => JSON.parse(body) } as Response;
+      }
+      return { ok: true, status: 204, headers: new Headers(), text: async () => '' } as Response;
+    }));
+
+    const result = await deleteProduct({
+      productId: 'coins', productType: 'consumable',
+      packageName: 'com.example', serviceAccountKey,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(tokenCalls).toBe(2);
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000]);
+    // RSA-SHA256 over the same payload is deterministic, but the assertion is
+    // rebuilt per attempt — at minimum both attempts sent a signed assertion.
+    expect(assertions).toHaveLength(2);
+    expect(assertions.every((a) => a.split('.').length === 3)).toBe(true);
+  });
+});
 
 describe('token cache isolation', () => {
   it('does not reuse another service account\'s token (distinct keys → distinct token fetches)', async () => {

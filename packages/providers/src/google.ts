@@ -9,6 +9,7 @@
 import { createHash, createSign } from 'crypto';
 
 import { ZERO_DECIMAL_CURRENCIES, SUPPORTED_CURRENCIES, unsupportedCurrencyError } from './currency.js';
+import { MAX_RETRIES, isRetryableStatus, retryDelayMs, backoff } from './retry.js';
 
 const ANDROID_BASE = 'https://androidpublisher.googleapis.com/androidpublisher/v3/applications';
 
@@ -151,50 +152,66 @@ async function fetchAccessToken(serviceAccountKey: string): Promise<string> {
   try { key = JSON.parse(serviceAccountKey) as ServiceAccountKey; }
   catch { throw new Error('[google-play] Invalid serviceAccountKey JSON'); }
   const tokenUri = key.token_uri ?? 'https://oauth2.googleapis.com/token';
-  const now = Math.floor(Date.now() / 1000);
-  const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-  const payload = Buffer.from(JSON.stringify({
-    iss: key.client_email,
-    scope: 'https://www.googleapis.com/auth/androidpublisher',
-    aud: tokenUri, iat: now, exp: now + 3600,
-  })).toString('base64url');
-  const input = `${header}.${payload}`;
-  const sign = createSign('RSA-SHA256');
-  sign.update(input);
-  const sig = sign.sign(key.private_key, 'base64url');
-  const resp = await fetch(tokenUri, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${sig}` }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  const data = (await resp.json()) as TokenResponse;
-  if (!resp.ok || !data.access_token) {
-    throw new Error(`[google-play] Token request failed: ${data.error_description ?? data.error ?? `HTTP ${resp.status}`}`);
+  for (let attempt = 0; ; attempt++) {
+    // Assertion is signed per attempt so `iat` stays fresh across retry waits.
+    const now = Math.floor(Date.now() / 1000);
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({
+      iss: key.client_email,
+      scope: 'https://www.googleapis.com/auth/androidpublisher',
+      aud: tokenUri, iat: now, exp: now + 3600,
+    })).toString('base64url');
+    const input = `${header}.${payload}`;
+    const sign = createSign('RSA-SHA256');
+    sign.update(input);
+    const sig = sign.sign(key.private_key, 'base64url');
+    const resp = await fetch(tokenUri, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: `${input}.${sig}` }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    // Rate-limited (429) or transiently unavailable (503) — bounded retry.
+    if (isRetryableStatus(resp.status) && attempt < MAX_RETRIES) {
+      await backoff.sleep(retryDelayMs(attempt, resp.headers?.get('retry-after')));
+      continue;
+    }
+    const data = (await resp.json()) as TokenResponse;
+    if (!resp.ok || !data.access_token) {
+      throw new Error(`[google-play] Token request failed: ${data.error_description ?? data.error ?? `HTTP ${resp.status}`}`);
+    }
+    return data.access_token;
   }
-  return data.access_token;
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
 async function playRequest<T>(token: string, method: string, url: string, body?: unknown): Promise<T> {
-  const resp = await fetch(url, {
-    method,
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
-  });
-  const text = await resp.text();
-  // DELETE (and some POSTs) succeed with 204/empty body — JSON.parse('') would throw.
-  if (resp.ok && text.trim() === '') return undefined as T;
-  let json: T;
-  try { json = JSON.parse(text) as T; }
-  catch { throw new Error(`Google Play API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
-  if (!resp.ok) {
-    const detail = (json as { error?: { message?: string } }).error?.message ?? `HTTP ${resp.status}`;
-    throw new Error(`Google Play API error — ${detail}`);
+  for (let attempt = 0; ; attempt++) {
+    const resp = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await resp.text();
+    // Quota exhaustion (429) or transient unavailability (503) — bounded retry
+    // before surfacing the standard error message.
+    if (isRetryableStatus(resp.status) && attempt < MAX_RETRIES) {
+      await backoff.sleep(retryDelayMs(attempt, resp.headers?.get('retry-after')));
+      continue;
+    }
+    // DELETE (and some POSTs) succeed with 204/empty body — JSON.parse('') would throw.
+    if (resp.ok && text.trim() === '') return undefined as T;
+    let json: T;
+    try { json = JSON.parse(text) as T; }
+    catch { throw new Error(`Google Play API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
+    if (!resp.ok) {
+      const detail = (json as { error?: { message?: string } }).error?.message ?? `HTTP ${resp.status}`;
+      throw new Error(`Google Play API error — ${detail}`);
+    }
+    return json;
   }
-  return json;
 }
 
 // ── Price helpers ─────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@
 import { createSign } from 'crypto';
 
 import { ZERO_DECIMAL_CURRENCIES, SUPPORTED_CURRENCIES, unsupportedCurrencyError } from './currency.js';
+import { MAX_RETRIES, isRetryableStatus, retryDelayMs, backoff } from './retry.js';
 
 const BASE_URL = 'https://api.appstoreconnect.apple.com/v1';
 
@@ -193,30 +194,40 @@ async function appleRequest<T>(
   body?: unknown,
 ): Promise<T> {
   const url = path.startsWith('https://') ? path : `${BASE_URL}${path}`;
-  const resp = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${generateJwt(creds)}`,
-      'Content-Type': 'application/json',
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
-  });
-  const text = await resp.text();
-  // DELETE returns 204 No Content — JSON.parse('') would throw on a successful call.
-  if (resp.ok && text.trim() === '') return undefined as T;
-  let json: T;
-  try { json = JSON.parse(text) as T; }
-  catch { throw new Error(`Apple API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
-  if (!resp.ok) {
-    const errors = (json as { errors?: AppleApiError[] }).errors ?? [];
-    const detail = errors.map((e) => `${e.code}: ${e.detail ?? e.title}`).join('; ') || `HTTP ${resp.status}`;
-    const err = new Error(`Apple API error — ${detail}`) as Error & { appleErrors: AppleApiError[]; httpStatus: number };
-    err.appleErrors = errors;
-    err.httpStatus = resp.status;
-    throw err;
+  for (let attempt = 0; ; attempt++) {
+    // JWT is generated per attempt — a Retry-After wait must not push a reused
+    // token past its 20-min expiry window.
+    const resp = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${generateJwt(creds)}`,
+        'Content-Type': 'application/json',
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await resp.text();
+    // ASC hourly rate limits surface as 429 (503 for transient outages) —
+    // retry a bounded number of times before surfacing the usual error shape.
+    if (isRetryableStatus(resp.status) && attempt < MAX_RETRIES) {
+      await backoff.sleep(retryDelayMs(attempt, resp.headers?.get('retry-after')));
+      continue;
+    }
+    // DELETE returns 204 No Content — JSON.parse('') would throw on a successful call.
+    if (resp.ok && text.trim() === '') return undefined as T;
+    let json: T;
+    try { json = JSON.parse(text) as T; }
+    catch { throw new Error(`Apple API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
+    if (!resp.ok) {
+      const errors = (json as { errors?: AppleApiError[] }).errors ?? [];
+      const detail = errors.map((e) => `${e.code}: ${e.detail ?? e.title}`).join('; ') || `HTTP ${resp.status}`;
+      const err = new Error(`Apple API error — ${detail}`) as Error & { appleErrors: AppleApiError[]; httpStatus: number };
+      err.appleErrors = errors;
+      err.httpStatus = resp.status;
+      throw err;
+    }
+    return json;
   }
-  return json;
 }
 
 /**

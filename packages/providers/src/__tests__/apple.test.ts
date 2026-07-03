@@ -12,8 +12,10 @@ import {
   createOneTimePurchase,
   deleteProduct,
   listProducts,
+  resolveAppId,
 } from '../apple.js';
 import type { AppleCredentials } from '../apple.js';
+import { backoff } from '../retry.js';
 
 let creds: AppleCredentials;
 
@@ -53,7 +55,97 @@ function mockFetch(routes: Array<{ match: (url: string, method: string) => boole
   return calls;
 }
 
+/**
+ * Queue-based fetch mock for retry tests: each call consumes the next entry
+ * (the last one repeats). Records the Authorization header per call.
+ */
+function mockFetchSequence(
+  responses: Array<{ status: number; body?: unknown; retryAfter?: string }>,
+): Array<{ authorization?: string }> {
+  const calls: Array<{ authorization?: string }> = [];
+  let i = 0;
+  vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+    const r = responses[Math.min(i, responses.length - 1)];
+    i += 1;
+    calls.push({ authorization: (init?.headers as Record<string, string> | undefined)?.['Authorization'] });
+    const text = r.body === undefined ? '' : JSON.stringify(r.body);
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      headers: new Headers(r.retryAfter !== undefined ? { 'Retry-After': r.retryAfter } : {}),
+      text: async () => text,
+    } as Response;
+  }));
+  return calls;
+}
+
 const pricePoint = (id: string, customerPrice: string) => ({ id, attributes: { customerPrice } });
+
+describe('appleRequest — 429 retry', () => {
+  const appsBody = { data: [{ id: 'app1', attributes: { bundleId: 'com.x' } }] };
+  const rateLimitBody = { errors: [{ status: '429', code: 'RATE_LIMIT_EXCEEDED', title: 'Rate limit exceeded', detail: 'hourly limit' }] };
+
+  it('retries once on 429 then succeeds, with a fresh JWT per attempt', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    const calls = mockFetchSequence([
+      { status: 429, body: rateLimitBody },
+      { status: 200, body: appsBody },
+    ]);
+
+    const appId = await resolveAppId(creds, 'com.x');
+
+    expect(appId).toBe('app1');
+    expect(calls).toHaveLength(2);
+    // No Retry-After header → first exponential backoff step
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000]);
+    // ES256 signatures are nondeterministic — identical tokens would mean the
+    // first attempt's (possibly stale) JWT was reused on the retry.
+    expect(calls[0].authorization).toBeDefined();
+    expect(calls[1].authorization).not.toBe(calls[0].authorization);
+  });
+
+  it('exhausts retries on persistent 429 and surfaces the usual Apple error shape', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    const calls = mockFetchSequence([{ status: 429, body: rateLimitBody }]);
+
+    const err = await resolveAppId(creds, 'com.x').catch((e: unknown) => e) as Error & { appleErrors?: unknown[]; httpStatus?: number };
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/Apple API error — RATE_LIMIT_EXCEEDED/);
+    expect(err.httpStatus).toBe(429);
+    expect(err.appleErrors).toHaveLength(1);
+    expect(calls).toHaveLength(3); // initial attempt + 2 retries
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000, 4000]);
+  });
+
+  it('honors Retry-After in seconds and caps the wait at 30s', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    mockFetchSequence([
+      { status: 429, body: rateLimitBody, retryAfter: '7' },
+      { status: 429, body: rateLimitBody, retryAfter: '120' },
+      { status: 200, body: appsBody },
+    ]);
+
+    const appId = await resolveAppId(creds, 'com.x');
+
+    expect(appId).toBe('app1');
+    expect(sleep.mock.calls.map((c) => c[0])).toEqual([7000, 30_000]);
+  });
+
+  it('retries a transient 503 as well', async () => {
+    const sleep = vi.spyOn(backoff, 'sleep').mockResolvedValue(undefined);
+    const calls = mockFetchSequence([
+      { status: 503, body: { errors: [] } },
+      { status: 200, body: appsBody },
+    ]);
+
+    const appId = await resolveAppId(creds, 'com.x');
+
+    expect(appId).toBe('app1');
+    expect(calls).toHaveLength(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('findPricePoint — unit conversion', () => {
   it('matches USD price points given the target in cents (customerPrice is in dollars)', async () => {
