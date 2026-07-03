@@ -10,7 +10,7 @@
  */
 
 import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
-import { useOneSub } from '@onesub/sdk';
+import { useOneSub } from '@jeonghwanko/onesub-sdk';
 
 const COIN_PACK_PRODUCT = 'coin_pack_100';
 const REMOVE_ADS_PRODUCT = 'remove_ads_lifetime';

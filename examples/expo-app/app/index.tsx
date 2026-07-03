@@ -8,7 +8,7 @@
  */
 
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { useOneSub } from '@onesub/sdk';
+import { useOneSub } from '@jeonghwanko/onesub-sdk';
 
 export default function HomeScreen() {
   const { isActive, isLoading, subscribe, restore } = useOneSub();

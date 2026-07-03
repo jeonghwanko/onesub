@@ -9,7 +9,7 @@
     "ios": "expo run:ios"
   },
   "dependencies": {
-    "@onesub/sdk": "^0.1.0",
+    "@jeonghwanko/onesub-sdk": "^0.7.0",
     "expo": "~54.0.0",
     "expo-router": "~6.0.0",
     "expo-status-bar": "~3.0.0",

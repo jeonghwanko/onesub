@@ -4,6 +4,24 @@ Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases wi
 
 ---
 
+## `@onesub/server` 0.14.x → 0.15.0
+
+### Google subscription records are now keyed by `purchaseToken`
+
+Previously `validateGoogleReceipt` stored records with `originalTransactionId = latestOrderId` (`GPA.…`). RTDN webhooks and `linkedPurchaseToken` chains only carry the **purchaseToken**, so webhook lookups never found those records — refunds, cancellations, and renewals silently failed to update them. Records are now keyed by the purchaseToken itself.
+
+**Impact on existing deployments:** records created by older versions (keyed by order id) will not be found by webhook lookups — same as before the fix — but the next successful `POST /onesub/validate` for that user re-creates the record under the token key, after which the full lifecycle works. The stale order-id record ages out at its `expiresAt`. If you want to migrate eagerly, re-validate stored receipts or delete rows whose `original_transaction_id` starts with `GPA.`.
+
+### Subscription validation now enforces account binding
+
+`POST /onesub/validate` now rejects (409 `TRANSACTION_BELONGS_TO_OTHER_USER`) a receipt whose embedded account identity (Apple `appAccountToken` / Google `obfuscatedExternalAccountId`) does not match the request `userId` — the same guard `POST /onesub/purchase/validate` gained in 0.13. Receipts without an embedded token keep the legacy rebind behavior.
+
+### `CONSUMPTION_REQUEST` no longer revokes
+
+Apple's `CONSUMPTION_REQUEST` (refund **review** request) previously deleted consumable purchase rows and canceled subscriptions immediately. It now leaves state untouched; the actual `REFUND`/`REVOKE` notification (sent if Apple grants the refund) performs the revocation.
+
+---
+
 ## `@onesub/server` 0.11.x → 0.12.0
 
 **Zero breaking changes.** All new options are optional — existing code works unchanged after `npm update @onesub/server`.

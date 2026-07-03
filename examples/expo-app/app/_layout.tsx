@@ -6,7 +6,7 @@
  */
 
 import { Stack } from 'expo-router';
-import { OneSubProvider } from '@onesub/sdk';
+import { OneSubProvider } from '@jeonghwanko/onesub-sdk';
 
 const SERVER_URL = 'http://localhost:4100';
 const PRODUCT_ID = 'premium_monthly';

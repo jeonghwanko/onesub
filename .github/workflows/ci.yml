@@ -27,3 +27,23 @@ jobs:
         run: npm test
       - name: Bundle size check
         run: npm run size -w @onesub/server
+
+  # The root build script skips the dashboard (Next.js), so without this job a
+  # dashboard-breaking PR stays green and only fails after merge, in the
+  # docker-dashboard publish workflow.
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build shared (dashboard dependency)
+        run: npm run build -w @onesub/shared
+      - name: Type-check dashboard
+        run: npm run type-check -w @onesub/dashboard
+      - name: Build dashboard
+        run: npm run build -w @onesub/dashboard
