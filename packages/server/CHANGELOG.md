@@ -1,5 +1,33 @@
 # @onesub/server
 
+## 0.17.0
+
+### Minor Changes
+
+- 87f87cb: Wire `config.webhookQueue` into webhook processing. Previously the option was advertised (BullMQ retries + dead-letter queue) but never used: routes always processed inline, `setHandler()`/`enqueue()` were never called, and the admin dead-letter endpoints always showed an empty list.
+
+  - **Queue mode**: when `webhookQueue` is set, the Apple/Google webhook routes keep the cheap gating inline (body validation, JWS decode + verification / Pub/Sub push-token auth, bundleId/packageName checks, idempotency dedup) and enqueue the decoded, JSON-serializable work with a stable `provider:eventId` job id, acking 200 as soon as the job is accepted. The state-mutating processing runs in the queue handler, registered once at middleware creation. Failed jobs land in the dead-letter list for admin replay (`GET /onesub/admin/webhook-deadletters`, `POST /onesub/admin/webhook-replay/:id`).
+  - **No queue configured**: behavior is unchanged — inline processing with unmark-on-5xx so source retries are re-processed.
+  - **New exports**: `processAppleNotification` / `processGoogleNotification` (+ `AppleWebhookWork` / `GoogleWebhookWork` types) so hosts running a dedicated worker process can register the same handler themselves, and `unmarkWebhookEvent` (the unified best-effort idempotency-release helper the routes now share).
+  - **BullMQWebhookQueue hardening**: `setHandler()` no longer leaves a floating worker-startup promise (an unhandled rejection crashed the process when `bullmq` wasn't installed) — startup failures are captured and surfaced on the next `enqueue()`; Queue and Worker now get `'error'` listeners; `close()` tolerates a failed startup.
+
+### Patch Changes
+
+- a36a992: Security and robustness hardening:
+
+  - **Timing-safe secret comparison**: the admin routes (`X-Admin-Secret`), metrics routes, and Apple offer-signature route (`X-Onesub-Offer-Secret`) now compare shared secrets with `crypto.timingSafeEqual` instead of `!==`, closing a byte-by-byte timing side channel. Error responses are unchanged.
+  - **Metrics `groupBy=day` range cap**: `/onesub/metrics/{started,expired,purchases/started}` reject `groupBy=day` requests spanning more than 366 days with `400 INVALID_INPUT` — an unbounded range previously zero-filled one bucket object per day (millions for a pathological range). Requests without `groupBy` are unaffected.
+  - **Apple x5c BasicConstraints enforcement**: every certificate acting as an issuer in a StoreKit JWS x5c chain (and the bundled Apple root when used as issuer) must now carry `basicConstraints CA=true`, blocking leaf-as-issuer chain splicing. The leaf itself is not required to be a CA. (keyCertSign is not checked because node's `X509Certificate.keyUsage` exposes EKU OIDs, not the KeyUsage bit string.)
+  - **Transaction History pagination guard**: `fetchAppleTransactionHistory` no longer loops forever when Apple responds `hasMore: true` with a missing or unchanged `revision` cursor, and pagination is capped at 50 pages (warn + partial history instead of a hung request).
+
+- a36a992: OpenAPI spec now covers the full mounted HTTP surface (docs/spec only, no runtime behavior change):
+
+  - **Added missing paths**: `POST /onesub/purchase/validate`, `GET /onesub/purchase/status`, `GET /onesub/entitlement`, the purchase admin routes (`DELETE /onesub/purchase/admin/{userId}/{productId}`, `POST /onesub/purchase/admin/transfer`, `POST /onesub/purchase/admin/grant`), `GET /onesub/admin/subscriptions/{transactionId}`, `POST /onesub/admin/sync-apple/{originalTransactionId}`, all four metrics routes (`/onesub/metrics/active`, `/started`, `/expired`, `/purchases/started`), and `POST /onesub/apple/offer-signature` — with request bodies, query/header params, and response schemas.
+  - **Canonical error shape**: new `ErrorResponse` component (`{ error, errorCode }`, errorCode enum generated from `ONESUB_ERROR_CODE`) referenced by every documented 4xx, including the previously undocumented 409/422 responses on the validate routes.
+  - **Real parity test**: `openapi.test.ts` now mounts every conditional router via `createOneSubMiddleware` (adminSecret + entitlements + both mock platforms + offer keys + DLQ queue), walks the express router stack, and asserts spec ⊇ routes and routes ⊇ spec — the "every mounted path is described" claim in openapi.ts is now mechanically enforced instead of spot-checked.
+
+- e09a531: RedisSubscriptionStore: add an `onesub:sub:owner:<originalTransactionId>` side-key (→ userId, written in the same MULTI as the record). `save()` now reads this small key to detect userId rebinds instead of GET + JSON.parse of the full record on every save. Records written by older versions have no side-key; `save()` falls back to the full record once and backfills the side-key on the next write. No migration needed.
+
 ## 0.16.0
 
 ### Minor Changes
