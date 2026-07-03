@@ -62,6 +62,33 @@ export function createValidateRouter(
         return;
       }
 
+      // Account-binding guard (payment-bypass defense), mirroring the one-time
+      // purchase route: when the receipt carries an account identity baked in at
+      // purchase time (Apple appAccountToken / Google obfuscatedExternalAccountId),
+      // the subscription may only be bound to a matching userId. Without this, a
+      // leaked/shared receipt can be re-bound to any attacker-chosen userId.
+      // Apple compares case-insensitively (appAccountToken is normalized to a
+      // lowercase UUID); Google ids are verbatim — a case-insensitive compare
+      // would let a case-flipped userId through on hosts with case-sensitive ids.
+      const boundAccountId = sub.boundAccountId;
+      delete sub.boundAccountId;
+      const bindingMismatch = platform === 'apple'
+        ? boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()
+        : boundAccountId && boundAccountId !== userId;
+      if (bindingMismatch) {
+        log.warn(
+          `[onesub/validate] account binding mismatch for ${sub.originalTransactionId}: receipt token does not match userId ${userId}`,
+        );
+        sendError(
+          res,
+          409,
+          ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER,
+          'TRANSACTION_BELONGS_TO_OTHER_USER',
+          NO_SUB,
+        );
+        return;
+      }
+
       sub.userId = userId;
       await store.save(sub);
 

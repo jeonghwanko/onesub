@@ -180,6 +180,40 @@ describe('server error codes', () => {
       expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND);
     });
 
+    it('transfer whose row vanishes between lookup and reassign → 404, not ok:true', async () => {
+      // Simulates a concurrent refund webhook deleting the row in the TOCTOU
+      // window — the route must not report a transfer that did not happen.
+      class VanishingPurchaseStore extends InMemoryPurchaseStore {
+        override async reassignPurchase(): Promise<boolean> {
+          return false;
+        }
+      }
+      const purchaseStore = new VanishingPurchaseStore();
+      await purchaseStore.savePurchase({
+        userId: 'u1',
+        productId: 'premium',
+        platform: 'apple',
+        type: 'non_consumable',
+        transactionId: 'tx_vanish',
+        purchasedAt: new Date().toISOString(),
+        quantity: 1,
+      });
+      const appVanish = express();
+      appVanish.use(createOneSubMiddleware({
+        database: { url: '' },
+        adminSecret: 'test-admin-secret',
+        store: new InMemorySubscriptionStore(),
+        purchaseStore,
+      }));
+
+      const res = await request(appVanish)
+        .post('/onesub/purchase/admin/transfer')
+        .set('x-admin-secret', 'test-admin-secret')
+        .send({ transactionId: 'tx_vanish', newUserId: 'u2' });
+      expect(res.status).toBe(404);
+      expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND);
+    });
+
     it('grant with bad body → errorCode: INVALID_INPUT', async () => {
       const res = await request(app)
         .post('/onesub/purchase/admin/grant')

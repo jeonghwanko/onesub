@@ -30,13 +30,27 @@ function getGoogleJwks(): ReturnType<typeof createRemoteJWKSet> {
   return googleJwks;
 }
 
-export async function verifyGooglePushToken(req: Request, expectedAudience: string): Promise<boolean> {
+export async function verifyGooglePushToken(
+  req: Request,
+  expectedAudience: string,
+  expectedServiceAccountEmail?: string,
+): Promise<boolean> {
   const authHeader = req.headers['authorization'];
   if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return false;
   try {
-    await jwtVerify(authHeader.slice('Bearer '.length).trim(), getGoogleJwks(), {
+    const { payload } = await jwtVerify(authHeader.slice('Bearer '.length).trim(), getGoogleJwks(), {
       audience: expectedAudience,
+      // Any Google Cloud principal can mint an OIDC token with an arbitrary
+      // audience — issuer (and, when configured, the push service-account
+      // email) narrows acceptance to real Pub/Sub push auth tokens. Google
+      // documents both issuer forms, so accept either.
+      issuer: ['https://accounts.google.com', 'accounts.google.com'],
     });
+    if (expectedServiceAccountEmail) {
+      if (payload['email'] !== expectedServiceAccountEmail || payload['email_verified'] !== true) {
+        return false;
+      }
+    }
     return true;
   } catch {
     return false;
@@ -52,7 +66,11 @@ export async function handleGoogleWebhook(
   webhookEventStore?: WebhookEventStore,
 ): Promise<void> {
   if (config.google?.pushAudience) {
-    const authenticated = await verifyGooglePushToken(req, config.google.pushAudience);
+    const authenticated = await verifyGooglePushToken(
+      req,
+      config.google.pushAudience,
+      config.google.pushServiceAccountEmail,
+    );
     if (!authenticated) {
       sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
       return;
@@ -65,6 +83,14 @@ export async function handleGoogleWebhook(
     sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');
     return;
   }
+
+  // Un-mark the idempotency key when processing fails after markIfNew — the
+  // Pub/Sub retry must be processed, not deduped, or the event is lost forever.
+  const unmarkEvent = async (): Promise<void> => {
+    if (webhookEventStore?.unmark && typeof body.message?.messageId === 'string') {
+      try { await webhookEventStore.unmark('google', body.message.messageId); } catch { /* best-effort */ }
+    }
+  };
 
   if (webhookEventStore && typeof body.message.messageId === 'string') {
     const fresh = await webhookEventStore.markIfNew('google', body.message.messageId);
@@ -103,6 +129,7 @@ export async function handleGoogleWebhook(
       res.status(200).json({ received: true });
     } catch (err) {
       log.error('[onesub/webhook/google] voided notification error:', err);
+      await unmarkEvent();
       sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process voided notification');
     }
     return;
@@ -135,6 +162,7 @@ export async function handleGoogleWebhook(
       res.status(200).json({ received: true });
     } catch (err) {
       log.error('[onesub/webhook/google] oneTimeProduct error:', err);
+      await unmarkEvent();
       sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process oneTimeProduct notification');
     }
     return;
@@ -173,7 +201,10 @@ export async function handleGoogleWebhook(
     } else if (isGoogleExpiredNotification(notificationType)) {
       finalStatus = SUBSCRIPTION_STATUS.EXPIRED;
     } else {
-      finalStatus = SUBSCRIPTION_STATUS.ACTIVE;
+      // Unknown/benign notification types (e.g. PAUSE_SCHEDULE_CHANGED,
+      // DEFERRED) must not resurrect a canceled/expired record — preserve the
+      // stored status; the re-fetch below corrects it when credentials exist.
+      finalStatus = existing?.status ?? SUBSCRIPTION_STATUS.ACTIVE;
     }
 
     if (isGooglePriceChangeConfirmedNotification(notificationType) && config.google?.onPriceChangeConfirmed) {
@@ -189,9 +220,13 @@ export async function handleGoogleWebhook(
       if (config.google?.serviceAccountKey) {
         const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
         if (fresh) {
+          // Preserve grace/on-hold only when the NOTIFICATION said so — a
+          // finalStatus inherited from the stored record (unknown types above)
+          // must not block the re-fetched status, or a lost recovery RTDN
+          // leaves the record stuck on_hold while Google reports active.
           const preserveNotificationStatus =
-            finalStatus === SUBSCRIPTION_STATUS.GRACE_PERIOD ||
-            finalStatus === SUBSCRIPTION_STATUS.ON_HOLD;
+            isGoogleGracePeriodNotification(notificationType) ||
+            isGoogleOnHoldNotification(notificationType);
           updated = {
             ...existing,
             status: preserveNotificationStatus ? finalStatus : fresh.status,
@@ -208,14 +243,19 @@ export async function handleGoogleWebhook(
       if (config.google?.serviceAccountKey) {
         const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
         if (fresh) {
+          // Consume the account identity out of the record: it seeds the
+          // placeholder userId, but must never be persisted (validate route
+          // strips it the same way; stores/status would leak it otherwise).
+          const boundAccountId = fresh.boundAccountId;
+          delete fresh.boundAccountId;
           if (fresh.linkedPurchaseToken) {
             const previous = await store.getByTransactionId(fresh.linkedPurchaseToken);
-            fresh.userId = previous ? previous.userId : purchaseToken;
+            fresh.userId = previous ? previous.userId : boundAccountId ?? purchaseToken;
             if (previous) {
               log.info(`[onesub/webhook/google] inherited userId ${previous.userId} from linkedPurchaseToken ${fresh.linkedPurchaseToken} → new token ${purchaseToken}`);
             }
           } else {
-            fresh.userId = purchaseToken;
+            fresh.userId = boundAccountId ?? purchaseToken;
           }
           await store.save(fresh);
         }
@@ -227,6 +267,7 @@ export async function handleGoogleWebhook(
     res.status(200).json({ received: true });
   } catch (err) {
     log.error('[onesub/webhook/google] Error handling notification:', err);
+    await unmarkEvent();
     sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process notification');
   }
 }

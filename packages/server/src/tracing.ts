@@ -12,6 +12,8 @@
  * actionable traces without doubling latency-tracker overhead.
  */
 
+import { createRequire } from 'node:module';
+
 type Tracer = {
   startActiveSpan: <T>(name: string, fn: (span: Span) => T) => T;
 };
@@ -41,12 +43,14 @@ function getTracer(): Tracer | null {
   if (resolved) return cachedTracer;
   resolved = true;
   try {
-    // Resolve synchronously via require — otel api is CJS-friendly.
-    // require is undefined in pure ESM at runtime; in that case skip otel.
-    const req: NodeRequire | undefined = (
-      globalThis as unknown as { require?: NodeRequire }
-    ).require;
-    if (!req) return null;
+    // Resolve synchronously — otel api is CJS-friendly. In the CJS bundle the
+    // native `require` exists, so use it directly; in ESM we mint one via
+    // createRequire(import.meta.url). The `typeof require` guard matters for
+    // the CJS output: tsup's esbuild pass lowers `import.meta` to an empty
+    // object there (shims are off in tsup.config.ts), so that expression must
+    // only be evaluated on the ESM path — where it is fully supported.
+    const req: NodeRequire =
+      typeof require === 'function' ? require : createRequire(import.meta.url);
     const otel = req('@opentelemetry/api') as { trace: { getTracer: (n: string, v: string) => Tracer } };
     cachedTracer = otel.trace.getTracer('@onesub/server', '1.0.0');
     return cachedTracer;

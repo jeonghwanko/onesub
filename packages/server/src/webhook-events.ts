@@ -25,6 +25,15 @@ export interface WebhookEventStore {
    * messageId never collide.
    */
   markIfNew(provider: 'apple' | 'google', eventId: string): Promise<boolean>;
+
+  /**
+   * Forget a previously marked event id. Called by the webhook routes when
+   * processing fails AFTER `markIfNew` succeeded (e.g. the store was briefly
+   * down) — without it, the source's retry would be deduped and the lifecycle
+   * event permanently dropped. Optional for backward compatibility with
+   * custom implementations.
+   */
+  unmark?(provider: 'apple' | 'google', eventId: string): Promise<void>;
 }
 
 /** Default 7-day retention — covers Apple's 3-day retry window plus headroom. */
@@ -46,6 +55,10 @@ export class InMemoryWebhookEventStore implements WebhookEventStore {
     if (this.seen.has(key)) return false;
     this.seen.set(key, Date.now() + this.ttlSeconds * 1000);
     return true;
+  }
+
+  async unmark(provider: 'apple' | 'google', eventId: string): Promise<void> {
+    this.seen.delete(`${provider}:${eventId}`);
   }
 
   private evictExpired(): void {
@@ -80,5 +93,9 @@ export class CacheWebhookEventStore implements WebhookEventStore {
     if (existing) return false;
     await this.cache.set(key, '1', this.ttlSeconds);
     return true;
+  }
+
+  async unmark(provider: 'apple' | 'google', eventId: string): Promise<void> {
+    await this.cache.del(`webhook:event:${provider}:${eventId}`);
   }
 }

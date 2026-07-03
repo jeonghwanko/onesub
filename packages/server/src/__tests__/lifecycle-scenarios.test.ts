@@ -258,11 +258,9 @@ describe('Scenario 2 — Apple CONSUMPTION_REQUEST without provider hook', () =>
       quantity: 1,
     } satisfies PurchaseInfo);
 
-    // CONSUMPTION_REQUEST is in APPLE_CANCELED_TYPES — for IAP it routes through
-    // the deletePurchaseByTransactionId branch. Document this current behavior:
-    // the row IS removed even on a refund REVIEW (not just confirmed REFUND).
-    // If the host wants to defer removal until confirmation, they should set up
-    // a consumptionInfoProvider that returns a custom decision.
+    // CONSUMPTION_REQUEST is a refund REVIEW request, not a granted refund —
+    // the row must survive it. Only an actual REFUND/REVOKE notification
+    // (which follows if Apple grants the refund) removes the purchase.
     const resp = await server.webhook('/onesub/webhook/apple', applePayload('CONSUMPTION_REQUEST', {
       originalTransactionId: txId,
       transactionId: txId,
@@ -272,8 +270,16 @@ describe('Scenario 2 — Apple CONSUMPTION_REQUEST without provider hook', () =>
 
     expect(resp.status).toBe(200);
     expect(outboundPuts).toHaveLength(0);  // no Apple PUT (no provider configured)
-    // Pinning current behavior: webhook removes the consumable on CONSUMPTION_REQUEST.
-    // If we later want to keep the row until confirmed REFUND, this assertion flips.
+    // The consumable survives the refund review; a subsequent REFUND deletes it.
+    expect(await purchaseStore.getPurchaseByTransactionId(txId)).not.toBeNull();
+
+    const refundResp = await server.webhook('/onesub/webhook/apple', applePayload('REFUND', {
+      originalTransactionId: txId,
+      transactionId: txId,
+      type: 'Consumable',
+      productId: 'credits_100',
+    }));
+    expect(refundResp.status).toBe(200);
     expect(await purchaseStore.getPurchaseByTransactionId(txId)).toBeNull();
   });
 
@@ -481,8 +487,8 @@ describe('Scenario 4 — Google plan upgrade userId continuity', () => {
     // SUBSCRIPTION_PURCHASED for the new yearly token (unknown to store)
     await server.webhook('/onesub/webhook/google', googlePush(4, tokY, 'pro_yearly'));
 
-    // New yearly record created under the v2-returned latestOrderId, userId inherited
-    const newRec = await store.getByTransactionId('GPA.yearly_first');
+    // New yearly record keyed by the new purchaseToken, userId inherited
+    const newRec = await store.getByTransactionId(tokY);
     expect(newRec).not.toBeNull();
     expect(newRec?.userId).toBe('u_link');             // ← continuity
     expect(newRec?.productId).toBe('pro_yearly');

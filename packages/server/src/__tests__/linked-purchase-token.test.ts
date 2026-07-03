@@ -44,6 +44,7 @@ interface V2Response {
   subscriptionState?: string;
   latestOrderId?: string;
   linkedPurchaseToken?: string;
+  externalAccountIdentifiers?: { obfuscatedExternalAccountId?: string };
   lineItems?: Array<{
     productId?: string;
     expiryTime?: string;
@@ -152,14 +153,14 @@ function buildServer(config: OneSubServerConfig): {
   return { store, server: spinUp(app) };
 }
 
-function purchasedNotificationBody(purchaseToken: string, productId = 'pro_yearly') {
+function purchasedNotificationBody(purchaseToken: string, productId = 'pro_yearly', notificationType = 4 /* SUBSCRIPTION_PURCHASED */) {
   const json = JSON.stringify({
     version: '1.0',
     packageName: 'com.example.app',
     eventTimeMillis: String(Date.now()),
     subscriptionNotification: {
       version: '1.0',
-      notificationType: 4,  // SUBSCRIPTION_PURCHASED
+      notificationType,
       purchaseToken,
       subscriptionId: productId,
     },
@@ -182,12 +183,9 @@ const sampleSub = (overrides?: Partial<SubscriptionInfo>): SubscriptionInfo => (
   ...overrides,
 });
 
-// Note: webhook saves the new record indexed by fresh.originalTransactionId
-// (= v2 response's latestOrderId), not by purchaseToken. So the assertions
-// look up new records via the latestOrderId from the mocked v2 response.
-//
-// History assertions (previous record) use the previous original_transaction_id
-// (= the linkedPurchaseToken value, which is itself the prior latestOrderId).
+// Google records are keyed by the purchaseToken (originalTransactionId =
+// token), so webhook-created records are looked up by the token from the
+// notification, and linkedPurchaseToken chains resolve directly.
 
 describe('Google webhook — linkedPurchaseToken userId inheritance', () => {
   it('inherits userId from the previous (linked) record on plan change', async () => {
@@ -207,7 +205,7 @@ describe('Google webhook — linkedPurchaseToken userId inheritance', () => {
     const resp = await server.request('/onesub/webhook/google', purchasedNotificationBody('tok_new_yearly'));
     expect(resp.status).toBe(200);
 
-    const newRecord = await store.getByTransactionId('GPA.new_yearly_order');
+    const newRecord = await store.getByTransactionId('tok_new_yearly');
     expect(newRecord).not.toBeNull();
     expect(newRecord?.userId).toBe('real_user_42');  // inherited, not placeholder
     expect(newRecord?.productId).toBe('pro_yearly');
@@ -230,7 +228,7 @@ describe('Google webhook — linkedPurchaseToken userId inheritance', () => {
 
     await server.request('/onesub/webhook/google', purchasedNotificationBody('tok_new_orphan'));
 
-    const newRecord = await store.getByTransactionId('GPA.orphan_order');
+    const newRecord = await store.getByTransactionId('tok_new_orphan');
     expect(newRecord?.userId).toBe('tok_new_orphan');  // placeholder = purchaseToken
   });
 
@@ -247,8 +245,47 @@ describe('Google webhook — linkedPurchaseToken userId inheritance', () => {
 
     await server.request('/onesub/webhook/google', purchasedNotificationBody('tok_first_buy', 'pro_monthly'));
 
-    const newRecord = await store.getByTransactionId('GPA.first_order');
+    const newRecord = await store.getByTransactionId('tok_first_buy');
     expect(newRecord?.userId).toBe('tok_first_buy');
+  });
+
+  it('seeds userId from the receipt boundAccountId and never persists the binding field', async () => {
+    mockV2Fetch(v2Response({
+      productId: 'pro_monthly',
+      latestOrderId: 'GPA.bound_order',
+      externalAccountIdentifiers: { obfuscatedExternalAccountId: 'real_user_99' },
+    }));  // no linkedPurchaseToken → placeholder path
+
+    const { store, server } = buildServer({
+      google: googleConfig(),
+      database: { url: '' },
+    });
+
+    await server.request('/onesub/webhook/google', purchasedNotificationBody('tok_bound', 'pro_monthly'));
+
+    const newRecord = await store.getByTransactionId('tok_bound');
+    expect(newRecord?.userId).toBe('real_user_99');       // bound id, not the token placeholder
+    expect(newRecord?.boundAccountId).toBeUndefined();    // transient field must not be stored
+  });
+
+  it('unknown notification type does not pin a stale on_hold when the re-fetch says active', async () => {
+    mockV2Fetch(v2Response({ productId: 'pro_monthly' }));  // v2 re-fetch reports ACTIVE
+
+    const { store, server } = buildServer({
+      google: googleConfig(),
+      database: { url: '' },
+    });
+    await store.save(sampleSub({
+      originalTransactionId: 'tok_stuck',
+      productId: 'pro_monthly',
+      status: SUBSCRIPTION_STATUS.ON_HOLD,
+    }));
+
+    // SUBSCRIPTION_DEFERRED (9) — unrecognized type; preserve-stored-status
+    // fallback must not defeat the fresh ACTIVE status from the Play API.
+    await server.request('/onesub/webhook/google', purchasedNotificationBody('tok_stuck', 'pro_monthly', 9));
+
+    expect((await store.getByTransactionId('tok_stuck'))?.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
   });
 
   it('preserves the previous record (history) when issuing the new one', async () => {
@@ -272,7 +309,7 @@ describe('Google webhook — linkedPurchaseToken userId inheritance', () => {
     expect(previous?.productId).toBe('pro_monthly');
 
     // New record carries the inherited userId AND the link backward
-    const next = await store.getByTransactionId('GPA.keep_new_order');
+    const next = await store.getByTransactionId('tok_new_keep');
     expect(next?.userId).toBe('user_keep');
     expect(next?.linkedPurchaseToken).toBe('tok_old_keep');
   });

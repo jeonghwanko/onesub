@@ -73,6 +73,14 @@ export interface SubscriptionInfo {
    * not paused or if Google didn't supply it.
    */
   autoResumeTime?: string;
+  /**
+   * Account identity baked into the receipt at purchase time (Apple
+   * `appAccountToken` / Google `obfuscatedExternalAccountId`). Transient:
+   * populated by the receipt validators, consumed by the validate route's
+   * account-binding guard and the Google webhook's userId seeding, and
+   * stripped by every route before the record is stored.
+   */
+  boundAccountId?: string;
 }
 
 /** Subscription status check response */
@@ -232,6 +240,13 @@ export interface OneSubServerConfig {
      * e.g. `https://your-server.example.com/onesub/webhook/google`.
      */
     pushAudience?: string;
+    /**
+     * Service-account email your Pub/Sub push subscription authenticates as.
+     * When set (together with `pushAudience`), incoming push JWTs must carry a
+     * matching verified `email` claim — without it any Google-signed OIDC
+     * token minted for the same audience passes.
+     */
+    pushServiceAccountEmail?: string;
     /**
      * Mock provider mode — same as `apple.mockMode` but for Google Play.
      * Bypass Play Developer API calls and decide receipt validity from the

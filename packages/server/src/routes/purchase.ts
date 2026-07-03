@@ -150,10 +150,15 @@ export function createPurchaseRouter(
       // the request-body userId otherwise). Backward-compatible: purchases made
       // before the client set appAccountToken have no token → guard is skipped and
       // current behaviour (incl. reinstall reassignment) is unchanged.
-      // Case-insensitive compare: Apple normalizes appAccountToken to a lowercase
-      // UUID in the signed transaction, so a host passing the same UUID uppercased
-      // must not be rejected. Harmless for Google's verbatim account ids.
-      if (boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()) {
+      // Apple compares case-insensitively (appAccountToken is normalized to a
+      // lowercase UUID in the signed transaction, so a host passing the same
+      // UUID uppercased must not be rejected). Google ids are verbatim — a
+      // case-insensitive compare would let a case-flipped userId through on
+      // hosts with case-sensitive ids (e.g. Firebase UIDs).
+      const bindingMismatch = platform === 'apple'
+        ? boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()
+        : boundAccountId && boundAccountId !== userId;
+      if (bindingMismatch) {
         log.warn(
           `[onesub/purchase] account binding mismatch for transaction ${transactionId}: token does not match userId ${userId}`,
         );

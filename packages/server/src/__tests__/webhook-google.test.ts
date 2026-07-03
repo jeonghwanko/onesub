@@ -310,13 +310,14 @@ describe('Google webhook — notification type mapping', () => {
     expect((await store.getByTransactionId('tok_buy'))?.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
   });
 
-  it('unknown notification type (SUBSCRIPTION_DEFERRED=9) falls back to active', async () => {
-    // Type 9 is not handled by any isGoogle*Notification helper → else branch → ACTIVE
+  it('unknown notification type (SUBSCRIPTION_DEFERRED=9) preserves the stored status', async () => {
+    // Type 9 is not handled by any isGoogle*Notification helper — it must NOT
+    // resurrect the record to active; the stored status is preserved.
     await store.save(sampleSub({ originalTransactionId: 'tok_deferred', status: 'on_hold' }));
 
     await server.request(googlePushBody(9, 'tok_deferred'));
 
-    expect((await store.getByTransactionId('tok_deferred'))?.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+    expect((await store.getByTransactionId('tok_deferred'))?.status).toBe(SUBSCRIPTION_STATUS.ON_HOLD);
   });
 
   it('returns 200 even when purchaseToken is unknown (no store record, no serviceAccountKey)', async () => {

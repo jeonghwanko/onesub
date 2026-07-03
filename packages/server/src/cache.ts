@@ -23,11 +23,15 @@ interface Entry {
   expiresAt: number;
 }
 
+/** Sweep expired entries once every this many set() calls. */
+const SWEEP_EVERY_N_SETS = 256;
+
 /**
  * Process-local in-memory cache. Default for single-instance deployments.
  */
 export class InMemoryCacheAdapter implements CacheAdapter {
   private readonly entries = new Map<string, Entry>();
+  private setsSinceSweep = 0;
 
   async get<T>(key: string): Promise<T | null> {
     const entry = this.entries.get(key);
@@ -42,15 +46,37 @@ export class InMemoryCacheAdapter implements CacheAdapter {
   async set<T>(key: string, value: T, ttlSeconds?: number): Promise<void> {
     const expiresAt = ttlSeconds && ttlSeconds > 0 ? Date.now() + ttlSeconds * 1000 : 0;
     this.entries.set(key, { value, expiresAt });
+    // Lazy sweep: get() only evicts the key it touches, so write-once-never-
+    // read keys (e.g. webhook event dedup markers) would otherwise accumulate
+    // forever. Amortized O(1) per set — the O(n) scan runs once per
+    // SWEEP_EVERY_N_SETS writes.
+    if (++this.setsSinceSweep >= SWEEP_EVERY_N_SETS) {
+      this.sweepExpired();
+    }
   }
 
   async del(key: string): Promise<void> {
     this.entries.delete(key);
   }
 
+  /** Evict every entry whose TTL has elapsed. */
+  private sweepExpired(): void {
+    this.setsSinceSweep = 0;
+    const now = Date.now();
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt !== 0 && entry.expiresAt < now) this.entries.delete(key);
+    }
+  }
+
   /** Test helper — clear everything. Not part of the public CacheAdapter contract. */
   clear(): void {
     this.entries.clear();
+    this.setsSinceSweep = 0;
+  }
+
+  /** Test helper — number of entries currently held (including not-yet-swept expired ones). */
+  get size(): number {
+    return this.entries.size;
   }
 }
 

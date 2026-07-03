@@ -72,6 +72,9 @@ export function mockValidateAppleSubscription(receipt: string): SubscriptionInfo
   if (!outcomePasses(outcome, 'apple')) return null;
   const now = Date.now();
   const expiresAt = outcome.kind === 'sandbox' ? now + 1 * HOURS : now + 30 * DAYS;
+  // Test convention: `...#token=<value>` surfaces a boundAccountId, exercising
+  // the account-binding guard in the validate route (mirrors the product mocks).
+  const tokenMatch = receipt.match(/#token=([^#]+)/);
   return {
     userId: '',
     productId: 'mock_subscription',
@@ -81,6 +84,7 @@ export function mockValidateAppleSubscription(receipt: string): SubscriptionInfo
     originalTransactionId: deterministicTransactionId('mock_apple_orig', receipt),
     purchasedAt: new Date(now).toISOString(),
     willRenew: true,
+    ...(tokenMatch ? { boundAccountId: tokenMatch[1] } : {}),
   };
 }
 
@@ -110,15 +114,19 @@ export function mockValidateGoogleSubscription(
   if (!outcomePasses(outcome, 'google')) return null;
   const now = Date.now();
   const expiresAt = outcome.kind === 'sandbox' ? now + 1 * HOURS : now + 30 * DAYS;
+  const tokenMatch = receipt.match(/#token=([^#]+)/);
   return {
     userId: '',
     productId,
     platform: 'google',
     status: SUBSCRIPTION_STATUS.ACTIVE,
     expiresAt: new Date(expiresAt).toISOString(),
-    originalTransactionId: deterministicTransactionId('mock_google_orig', receipt),
+    // Same keying as production: Google records are keyed by the purchaseToken
+    // (the receipt itself) so mock webhooks can find them by token.
+    originalTransactionId: receipt,
     purchasedAt: new Date(now).toISOString(),
     willRenew: true,
+    ...(tokenMatch ? { boundAccountId: tokenMatch[1] } : {}),
   };
 }
 

@@ -38,3 +38,31 @@ describe('CacheWebhookEventStore', () => {
     expect(await store2.markIfNew('google', 'msg-1')).toBe(false);
   });
 });
+
+describe('unmark — failed processing must not eat the retry', () => {
+  // The webhook routes call unmark when processing fails after markIfNew, so
+  // the source's retry is processed instead of being deduped into a dropped
+  // lifecycle event (refund lost, etc.).
+  it('InMemoryWebhookEventStore: unmarked id is treated as new again', async () => {
+    const store = new InMemoryWebhookEventStore();
+    expect(await store.markIfNew('apple', 'uuid-fail')).toBe(true);
+    await store.unmark('apple', 'uuid-fail');
+    expect(await store.markIfNew('apple', 'uuid-fail')).toBe(true);
+  });
+
+  it('CacheWebhookEventStore: unmarked id is treated as new again', async () => {
+    const store = new CacheWebhookEventStore(new InMemoryCacheAdapter());
+    expect(await store.markIfNew('google', 'msg-fail')).toBe(true);
+    await store.unmark('google', 'msg-fail');
+    expect(await store.markIfNew('google', 'msg-fail')).toBe(true);
+  });
+
+  it('unmark only affects the given provider/id pair', async () => {
+    const store = new InMemoryWebhookEventStore();
+    await store.markIfNew('apple', 'shared-id');
+    await store.markIfNew('google', 'shared-id');
+    await store.unmark('apple', 'shared-id');
+    expect(await store.markIfNew('apple', 'shared-id')).toBe(true);
+    expect(await store.markIfNew('google', 'shared-id')).toBe(false);
+  });
+});

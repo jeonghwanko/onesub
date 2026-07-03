@@ -99,6 +99,23 @@ describe('RedisSubscriptionStore', () => {
     expect(all[0].originalTransactionId).toBe('tx-new');
     expect(all[1].originalTransactionId).toBe('tx-old');
   });
+
+  it('re-saving a transaction under a new userId removes it from the old user index', async () => {
+    await store.save({ ...baseSub, originalTransactionId: 'tx-shared', userId: 'alice' });
+    await store.save({ ...baseSub, originalTransactionId: 'tx-shared', userId: 'bob' });
+
+    // alice must no longer resolve the subscription — otherwise one paid
+    // subscription would stay live on both accounts forever.
+    expect(await store.getByUserId('alice')).toBeNull();
+    expect(await store.getAllByUserId('alice')).toEqual([]);
+
+    const bobSub = await store.getByUserId('bob');
+    expect(bobSub?.originalTransactionId).toBe('tx-shared');
+    expect(bobSub?.userId).toBe('bob');
+
+    // Still exactly one record globally.
+    expect(await store.listAll()).toHaveLength(1);
+  });
 });
 
 const basePurchase: PurchaseInfo = {
@@ -131,6 +148,28 @@ describe('RedisPurchaseStore', () => {
     await expect(store.savePurchase({ ...basePurchase, userId: 'mallory' })).rejects.toThrow(
       /TRANSACTION_BELONGS_TO_OTHER_USER/,
     );
+    // Loser's indexes must stay clean — the tx belongs to alice only.
+    expect(await store.getPurchasesByUserId('mallory')).toEqual([]);
+    expect(await store.hasPurchased('mallory', 'remove_ads')).toBe(false);
+  });
+
+  it('savePurchase is idempotent for the same user + transactionId', async () => {
+    await store.savePurchase(basePurchase);
+    await store.savePurchase(basePurchase);
+    expect(await store.getPurchasesByUserId('alice')).toHaveLength(1);
+    expect(await store.getPurchaseByTransactionId('p-1')).toEqual(basePurchase);
+  });
+
+  it('same-user retry backfills indexes after a crash between claim and index writes', async () => {
+    // Simulate a crash after the SET NX claim but before the index pipeline:
+    // the tx key exists, the indexes do not.
+    await redis.set('onesub:purchase:tx:p-1', JSON.stringify(basePurchase));
+    expect(await store.hasPurchased('alice', 'remove_ads')).toBe(false);
+
+    // The client retry must repair the indexes, not early-return.
+    await store.savePurchase(basePurchase);
+    expect(await store.hasPurchased('alice', 'remove_ads')).toBe(true);
+    expect(await store.getPurchasesByUserId('alice')).toHaveLength(1);
   });
 
   it('hasPurchased detects a non-consumable buy', async () => {

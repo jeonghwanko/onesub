@@ -6,7 +6,7 @@
  *   - subscriptionState string enum → onesub SubscriptionStatus mapping
  *   - lineItems productId match (success / mismatch)
  *   - autoRenewingPlan.autoRenewEnabled → willRenew
- *   - latestOrderId → originalTransactionId
+ *   - purchaseToken → originalTransactionId (webhooks look records up by token)
  *   - PENDING / UNSPECIFIED states rejected (return null)
  */
 
@@ -177,19 +177,19 @@ describe('validateGoogleReceipt — lineItems productId match', () => {
 // ── field mapping ───────────────────────────────────────────────────────────
 
 describe('validateGoogleReceipt — field mapping', () => {
-  it('uses latestOrderId as originalTransactionId', async () => {
+  it('uses the purchaseToken as originalTransactionId (RTDN webhooks look up by token)', async () => {
     mockV2Fetch({ ...v2Active('pro_monthly'), latestOrderId: 'GPA.canonical-order-id' });
     const result = await validateGoogleReceipt('tok', 'pro_monthly', makeGoogleConfig());
-    expect(result?.originalTransactionId).toBe('GPA.canonical-order-id');
+    expect(result?.originalTransactionId).toBe('tok');
   });
 
-  it('falls back to truncated purchaseToken when latestOrderId is absent', async () => {
+  it('keys by the full purchaseToken even when latestOrderId is absent', async () => {
     const noOrder = v2Active('pro_monthly');
     delete noOrder.latestOrderId;
     mockV2Fetch(noOrder);
-    const result = await validateGoogleReceipt('a-very-very-long-token-' + 'x'.repeat(100), 'pro_monthly', makeGoogleConfig());
-    expect(result?.originalTransactionId).toBeDefined();
-    expect(result?.originalTransactionId.length).toBeLessThanOrEqual(64);
+    const longToken = 'a-very-very-long-token-' + 'x'.repeat(100);
+    const result = await validateGoogleReceipt(longToken, 'pro_monthly', makeGoogleConfig());
+    expect(result?.originalTransactionId).toBe(longToken);
   });
 
   it('autoRenewEnabled false → willRenew false', async () => {

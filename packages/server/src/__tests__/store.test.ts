@@ -74,6 +74,29 @@ describe('InMemorySubscriptionStore', () => {
     expect(result?.willRenew).toBe(false);
   });
 
+  it('save() rebinding a transaction to a new userId removes it from the old user', async () => {
+    const original = makeSub({ userId: 'user_A', originalTransactionId: 'txn_shared' });
+    await store.save(original);
+
+    const rebound = makeSub({ userId: 'user_B', originalTransactionId: 'txn_shared' });
+    await store.save(rebound);
+
+    // The old owner must not keep a stale copy — webhooks update by
+    // transactionId, so a leftover record would stay 'active' forever.
+    expect(await store.getByUserId('user_A')).toBeNull();
+    expect(await store.getAllByUserId('user_A')).toEqual([]);
+
+    expect(await store.getByUserId('user_B')).toEqual(rebound);
+    expect(await store.getByTransactionId('txn_shared')).toEqual(rebound);
+
+    // listAll and listFiltered agree there is exactly one record.
+    expect(await store.listAll()).toHaveLength(1);
+    const filtered = await store.listFiltered({});
+    expect(filtered.total).toBe(1);
+    expect(filtered.items).toHaveLength(1);
+    expect(filtered.items[0].userId).toBe('user_B');
+  });
+
   it('stores multiple subscriptions independently', async () => {
     const sub1 = makeSub({ userId: 'user_1', originalTransactionId: 'txn_1' });
     const sub2 = makeSub({ userId: 'user_2', originalTransactionId: 'txn_2', platform: 'google' });

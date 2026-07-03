@@ -6,6 +6,7 @@ import type {
   ListFilteredResult,
 } from '../store.js';
 import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
+import { log } from '../logger.js';
 
 /**
  * PostgreSQL-backed subscription store.
@@ -39,7 +40,15 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
           );
         });
         const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
-        return new Pool({ connectionString: this.connectionString, max: 10 });
+        const pool = new Pool({ connectionString: this.connectionString, max: 10 });
+        // node-postgres emits 'error' on the Pool when an idle client's
+        // backend connection dies (e.g. DB failover / restart). Without a
+        // listener that's an unhandled EventEmitter 'error' — it crashes the
+        // process. Log it and let the pool replace the client.
+        pool.on('error', (err) => {
+          log.error('[onesub] PostgresSubscriptionStore pool error (idle client):', err);
+        });
+        return pool;
       })();
     }
     return this.poolPromise;
@@ -242,7 +251,13 @@ export class PostgresPurchaseStore implements PurchaseStore {
           );
         });
         const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
-        return new Pool({ connectionString: this.connectionString, max: 10 });
+        const pool = new Pool({ connectionString: this.connectionString, max: 10 });
+        // See PostgresSubscriptionStore.getPool — an unlistened Pool 'error'
+        // (idle client backend failure) crashes the process.
+        pool.on('error', (err) => {
+          log.error('[onesub] PostgresPurchaseStore pool error (idle client):', err);
+        });
+        return pool;
       })();
     }
     return this.poolPromise;
@@ -265,29 +280,20 @@ export class PostgresPurchaseStore implements PurchaseStore {
     // to a different userId we refuse the save — the second call is either a
     // fraudulent receipt-reuse attempt or a legitimate device migration that
     // should go through an explicit admin transfer instead. Returning silently
-    // (the old ON CONFLICT DO NOTHING behavior) leaves the server reporting
-    // valid:true while the DB has no row for the current user, which lets the
-    // caller keep re-"buying" forever.
-    const existing = await pool.query<{ user_id: string }>(
-      `SELECT user_id FROM onesub_purchases WHERE transaction_id = $1`,
-      [purchase.transactionId],
-    );
-
-    if (existing.rows.length > 0) {
-      const owner = existing.rows[0].user_id;
-      if (owner !== purchase.userId) {
-        const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
-        err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
-        throw err;
-      }
-      // same user — idempotent no-op
-      return;
-    }
-
-    await pool.query(
+    // for a different owner (a blanket ON CONFLICT DO NOTHING) would leave the
+    // server reporting valid:true while the DB has no row for the current
+    // user, which lets the caller keep re-"buying" forever.
+    //
+    // INSERT ... ON CONFLICT (transaction_id) DO NOTHING claims the row
+    // atomically: under two concurrent saves of the same transactionId only
+    // one INSERT wins, and the loser gets zero rows back instead of a raw
+    // PK-violation error (which used to surface as a 500).
+    const inserted = await pool.query(
       `INSERT INTO onesub_purchases
          (transaction_id, user_id, product_id, platform, type, quantity, purchased_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (transaction_id) DO NOTHING
+       RETURNING transaction_id`,
       [
         purchase.transactionId,
         purchase.userId,
@@ -298,6 +304,21 @@ export class PostgresPurchaseStore implements PurchaseStore {
         purchase.purchasedAt,
       ],
     );
+    if (inserted.rows.length > 0) return; // fresh row inserted — we own it
+
+    // Row already existed — enforce ownership.
+    const existing = await pool.query<{ user_id: string }>(
+      `SELECT user_id FROM onesub_purchases WHERE transaction_id = $1`,
+      [purchase.transactionId],
+    );
+    const owner = existing.rows[0]?.user_id;
+    if (owner !== undefined && owner !== purchase.userId) {
+      const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
+      err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
+      throw err;
+    }
+    // same user — idempotent no-op (owner === undefined means the row was
+    // deleted between the INSERT and the SELECT; treat as no-op as well)
   }
 
   async getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]> {

@@ -49,6 +49,11 @@ interface GoogleSubscriptionPurchaseV2 {
     | 'SUBSCRIPTION_STATE_EXPIRED';
   latestOrderId?: string;
   linkedPurchaseToken?: string;
+  externalAccountIdentifiers?: {
+    externalAccountId?: string;
+    obfuscatedExternalAccountId?: string;
+    obfuscatedExternalProfileId?: string;
+  };
   acknowledgementState?:
     | 'ACKNOWLEDGEMENT_STATE_UNSPECIFIED'
     | 'ACKNOWLEDGEMENT_STATE_PENDING'
@@ -560,19 +565,26 @@ export async function validateGoogleReceipt(
       ? purchase.pausedStateContext?.autoResumeTime
       : undefined;
 
+  const boundAccountId = purchase.externalAccountIdentifiers?.obfuscatedExternalAccountId;
+
   return {
     userId: '',  // caller fills this in
     productId,
     platform: 'google',
     status,
     expiresAt,
-    originalTransactionId: purchase.latestOrderId ?? receipt.slice(0, 64),
+    // Keyed by the purchaseToken, NOT latestOrderId: RTDN webhooks and
+    // linkedPurchaseToken chains only carry the token, so records keyed by
+    // order id are invisible to the entire webhook lifecycle (refund/cancel/
+    // renewal would never find them).
+    originalTransactionId: receipt,
     purchasedAt,
     willRenew,
     // Surface the linked token so host apps (and our webhook userId-continuity
     // logic) can follow upgrade/downgrade chains.
     linkedPurchaseToken: purchase.linkedPurchaseToken,
     autoResumeTime,
+    ...(boundAccountId ? { boundAccountId } : {}),
   };
 }
 

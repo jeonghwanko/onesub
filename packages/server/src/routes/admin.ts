@@ -110,10 +110,16 @@ export function createAdminRouter(
       sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
       return;
     }
-    // Delete the old row, then save under new userId
-    await purchaseStore.deletePurchases(existing.userId, existing.productId);
+    // Move only this transaction. deletePurchases(userId, productId) would
+    // also destroy sibling consumable rows for the same product.
+    const moved = await purchaseStore.reassignPurchase(body.transactionId, body.newUserId);
+    if (!moved) {
+      // Row vanished between the lookup above and the reassign (e.g. a
+      // concurrent refund webhook deleted it) — don't report a false success.
+      sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
+      return;
+    }
     const migrated: PurchaseInfo = { ...existing, userId: body.newUserId };
-    await purchaseStore.savePurchase(migrated);
     res.json({ ok: true, purchase: migrated });
   });
 

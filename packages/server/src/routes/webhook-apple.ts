@@ -17,7 +17,12 @@ import { sendError } from '../errors.js';
 import type { WebhookEventStore } from '../webhook-events.js';
 
 const APPLE_ACTIVE_TYPES = new Set(['SUBSCRIBED', 'DID_RENEW', 'DID_RECOVER', 'OFFER_REDEEMED']);
-const APPLE_CANCELED_TYPES = new Set(['REVOKE', 'REFUND', 'CONSUMPTION_REQUEST']);
+// Granted refunds/revocations only. CONSUMPTION_REQUEST is deliberately NOT
+// here: it is Apple *asking for consumption info* while reviewing a refund
+// request — the refund may be declined, so revoking entitlement (or deleting
+// a purchase row) on it is premature. The actual REFUND/REVOKE notification
+// follows if Apple grants it.
+const APPLE_CANCELED_TYPES = new Set(['REVOKE', 'REFUND']);
 const APPLE_EXPIRED_TYPES = new Set(['EXPIRED']);
 
 function mapAppleNotificationStatus(
@@ -94,6 +99,14 @@ export async function handleAppleWebhook(
   const notificationType = payload.notificationType;
   const subtype = payload.subtype;
 
+  // Signature verification proves the notification came from Apple — not that
+  // it is for THIS app. Mirror the Google packageName check.
+  if (config.apple?.bundleId && bundleId && bundleId !== config.apple.bundleId) {
+    log.warn('[onesub/webhook/apple] Bundle ID mismatch:', bundleId, '!==', config.apple.bundleId);
+    sendError(res, 400, ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH, 'Bundle ID mismatch');
+    return;
+  }
+
   const mapped = mapAppleNotificationStatus(notificationType, subtype);
   const finalStatus: SubscriptionInfo['status'] = mapped ?? status;
 
@@ -128,6 +141,14 @@ export async function handleAppleWebhook(
   const isOneTimePurchase = type === 'Consumable' || type === 'Non-Consumable';
   const isRefundOrRevoke = APPLE_CANCELED_TYPES.has(notificationType);
 
+  // CONSUMPTION_REQUEST on a one-time purchase is informational — the
+  // consumptionInfoProvider hook above is the only work to do. Falling through
+  // would run the subscription lookup and a doomed Status API recovery call.
+  if (isOneTimePurchase && notificationType === 'CONSUMPTION_REQUEST') {
+    res.status(200).json({ received: true });
+    return;
+  }
+
   try {
     if (isOneTimePurchase && isRefundOrRevoke) {
       const lookupId = transactionId ?? originalTransactionId;
@@ -141,8 +162,7 @@ export async function handleAppleWebhook(
 
     const existing = await store.getByTransactionId(originalTransactionId);
     if (existing) {
-      const isSubscriptionRefund =
-        isRefundOrRevoke && !isOneTimePurchase && notificationType !== 'CONSUMPTION_REQUEST';
+      const isSubscriptionRefund = isRefundOrRevoke && !isOneTimePurchase;
       const keepEntitlement = isSubscriptionRefund && config.refundPolicy === 'until_expiry';
 
       // If the stored userId was a fallback (originalTransactionId) and we now
@@ -193,6 +213,11 @@ export async function handleAppleWebhook(
     res.status(200).json({ received: true });
   } catch (err) {
     log.error('[onesub/webhook/apple] Store update error:', err);
+    // Un-mark the idempotency key so Apple's retry is processed instead of
+    // being deduped — otherwise a transient store failure drops the event forever.
+    if (webhookEventStore?.unmark && typeof payload.notificationUUID === 'string') {
+      try { await webhookEventStore.unmark('apple', payload.notificationUUID); } catch { /* best-effort */ }
+    }
     sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to update subscription');
   }
 }

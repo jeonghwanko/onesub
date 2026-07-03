@@ -267,3 +267,97 @@ describe('full server in mockMode', () => {
     expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Subscription route account-binding (mirrors the one-time purchase guard)
+// ---------------------------------------------------------------------------
+describe('POST /onesub/validate — subscription account-binding', () => {
+  function mockApp() {
+    const app = express();
+    app.use(createOneSubMiddleware({
+      database: { url: '' },
+      apple: { bundleId: 'com.test.mock', mockMode: true },
+      google: { packageName: 'com.test.mock', mockMode: true },
+      store: new InMemorySubscriptionStore(),
+      purchaseStore: new InMemoryPurchaseStore(),
+    }));
+    return app;
+  }
+
+  it('receipt bound to a matching userId is accepted and stored', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'apple',
+      receipt: 'MOCK_VALID_sub_bind_ok#token=acct-sub-1',
+      userId: 'acct-sub-1',
+      productId: 'premium_monthly',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+    // boundAccountId is transient — must not leak into the stored/returned record
+    expect(res.body.subscription.boundAccountId).toBeUndefined();
+  });
+
+  it('receipt bound to a different account is rejected with 409 (payment-bypass guard)', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'apple',
+      receipt: 'MOCK_VALID_sub_bind_no#token=acct-sub-1',
+      userId: 'attacker-uuid',
+      productId: 'premium_monthly',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
+
+  it('Google subscription binding mismatch is rejected symmetrically', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'google',
+      receipt: 'MOCK_VALID_gsub_bind#token=acct-gsub-1',
+      userId: 'attacker-uuid-g',
+      productId: 'premium_monthly',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
+
+  it('Apple binding is case-insensitive (appAccountToken is a lowercase-normalized UUID)', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'apple',
+      receipt: 'MOCK_VALID_sub_case#token=acct-uuid-ab12',
+      userId: 'ACCT-UUID-AB12',
+      productId: 'premium_monthly',
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+  });
+
+  it('Google binding is case-SENSITIVE — a case-flipped userId must not pass the guard', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'google',
+      receipt: 'MOCK_VALID_gsub_case#token=a1B2c3',
+      userId: 'A1b2C3',
+      productId: 'premium_monthly',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
+
+  it('unbound receipt keeps legacy rebind behavior (backward compatibility)', async () => {
+    const app = mockApp();
+    const receipt = 'MOCK_VALID_sub_unbound';
+    const first = await request(app).post('/onesub/validate').send({
+      platform: 'apple', receipt, userId: 'user_a', productId: 'premium_monthly',
+    });
+    expect(first.status).toBe(200);
+    // No token baked in → guard skipped → rebinding to a new userId still works
+    const second = await request(app).post('/onesub/validate').send({
+      platform: 'apple', receipt, userId: 'user_b', productId: 'premium_monthly',
+    });
+    expect(second.status).toBe(200);
+    expect(second.body.subscription.userId).toBe('user_b');
+  });
+});

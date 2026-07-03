@@ -225,6 +225,7 @@ export async function validateAppleReceipt(
     originalTransactionId: tx.originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
+    ...(tx.appAccountToken ? { boundAccountId: tx.appAccountToken } : {}),
   };
 }
 

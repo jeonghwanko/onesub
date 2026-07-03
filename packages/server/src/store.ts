@@ -75,6 +75,20 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
   private readonly byTransactionId = new Map<string, SubscriptionInfo>();
 
   async save(sub: SubscriptionInfo): Promise<void> {
+    // If this transaction was previously bound to a different userId (the
+    // validate route rebinds ownership on re-validation), remove the stale
+    // copy from the old user's index — otherwise webhooks (which update by
+    // transactionId) can never touch it and the old user keeps a frozen
+    // 'active' record forever.
+    const prev = this.byTransactionId.get(sub.originalTransactionId);
+    if (prev && prev.userId !== sub.userId) {
+      const oldList = (this.byUserId.get(prev.userId) ?? []).filter(
+        (s) => s.originalTransactionId !== sub.originalTransactionId,
+      );
+      if (oldList.length) this.byUserId.set(prev.userId, oldList);
+      else this.byUserId.delete(prev.userId);
+    }
+
     this.byTransactionId.set(sub.originalTransactionId, sub);
 
     const existing = this.byUserId.get(sub.userId) ?? [];

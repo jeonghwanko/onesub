@@ -34,9 +34,10 @@ function applePayload(opts: {
   transactionId?: string;
   expiresDate?: number;
   autoRenewStatus?: 0 | 1;
+  bundleId?: string;
 }): unknown {
   const signedTransactionInfo = makeJws({
-    bundleId: 'com.example.app',
+    bundleId: opts.bundleId ?? 'com.example.app',
     type: opts.type ?? 'Auto-Renewable Subscription',
     productId: 'pro_monthly',
     transactionId: opts.transactionId ?? `tx_${Date.now()}`,
@@ -307,5 +308,62 @@ describe('Apple webhook — notification type mapping', () => {
 
     expect(resp.status).toBe(200);
     expect((resp.body as { received: boolean }).received).toBe(true);
+  });
+});
+
+// ── bundleId enforcement ─────────────────────────────────────────────────────
+
+describe('Apple webhook — bundleId enforcement', () => {
+  it('rejects a validly-signed notification for a different app (400 BUNDLE_ID_MISMATCH)', async () => {
+    const store = new InMemorySubscriptionStore();
+    const server = buildServer(baseConfig, store);
+    await store.save(sampleSub({ originalTransactionId: 'orig_foreign' }));
+
+    const resp = await server.request(applePayload({
+      notificationType: 'REFUND',
+      originalTransactionId: 'orig_foreign',
+      bundleId: 'com.attacker.other',
+    }));
+
+    expect(resp.status).toBe(400);
+    expect((resp.body as { errorCode?: string }).errorCode).toBe('BUNDLE_ID_MISMATCH');
+    // The record is untouched by the foreign notification
+    expect((await store.getByTransactionId('orig_foreign'))?.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+  });
+});
+
+// ── idempotency unmark on processing failure ─────────────────────────────────
+
+describe('Apple webhook — retry after transient store failure', () => {
+  it('unmarks the event on 500 so the retry is processed, not deduped', async () => {
+    class FlakyStore extends InMemorySubscriptionStore {
+      failures = 1;
+      override async save(sub: SubscriptionInfo): Promise<void> {
+        if (this.failures > 0) {
+          this.failures -= 1;
+          throw new Error('simulated transient store outage');
+        }
+        return super.save(sub);
+      }
+    }
+    const store = new FlakyStore();
+    const events = new InMemoryWebhookEventStore();
+    const server = buildServer(baseConfig, store, events);
+    await InMemorySubscriptionStore.prototype.save.call(store, sampleSub({ originalTransactionId: 'orig_flaky' }));
+
+    const payload = applePayload({
+      notificationType: 'EXPIRED',
+      notificationUUID: 'uuid-flaky-1',
+      originalTransactionId: 'orig_flaky',
+    });
+
+    const first = await server.request(payload);
+    expect(first.status).toBe(500);
+
+    // Apple retries with the SAME notificationUUID — it must be processed.
+    const second = await server.request(payload);
+    expect(second.status).toBe(200);
+    expect((second.body as { deduped?: boolean }).deduped).toBeUndefined();
+    expect((await store.getByTransactionId('orig_flaky'))?.status).toBe(SUBSCRIPTION_STATUS.EXPIRED);
   });
 });

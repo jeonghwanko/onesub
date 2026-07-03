@@ -36,7 +36,7 @@ type IORedis = import('ioredis').Redis;
  * Key layout:
  *   onesub:sub:tx:<originalTransactionId>      → JSON SubscriptionInfo
  *   onesub:sub:user:<userId>                   → SortedSet of originalTransactionIds, scored by updatedAt (ms)
- *   onesub:sub:all                             → Set of originalTransactionIds (for listAll/listFiltered)
+ *   onesub:sub:all:sorted                      → SortedSet of originalTransactionIds, scored by save time (for listAll/listFiltered)
  *   onesub:purchase:tx:<transactionId>         → JSON PurchaseInfo
  *   onesub:purchase:user:<userId>              → SortedSet of transactionIds, scored by purchasedAt (ms)
  *   onesub:purchase:user_product:<u>:<p>       → Set of transactionIds (for non-consumable hasPurchased)
@@ -47,7 +47,6 @@ type IORedis = import('ioredis').Redis;
 
 const SUB_TX_PREFIX = 'onesub:sub:tx:';
 const SUB_USER_PREFIX = 'onesub:sub:user:';
-const SUB_ALL = 'onesub:sub:all';
 // Global sorted set (score = save timestamp ms) — enables ordered listAll and
 // O(log n + limit) fast-path pagination when no secondary filters are applied.
 const SUB_ALL_SORTED = 'onesub:sub:all:sorted';
@@ -65,10 +64,19 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     const txKey = SUB_TX_PREFIX + sub.originalTransactionId;
     const userKey = SUB_USER_PREFIX + sub.userId;
 
+    // If this transaction was previously bound to a different userId (the
+    // validate route rebinds ownership on re-validation), drop it from the
+    // old user's index — otherwise both userIds would resolve the same live
+    // subscription forever.
+    const prevRaw = await this.redis.get(txKey);
+    const prevUserId = prevRaw ? (JSON.parse(prevRaw) as SubscriptionInfo).userId : null;
+
     const pipeline = this.redis.multi();
     pipeline.set(txKey, JSON.stringify(sub));
+    if (prevUserId !== null && prevUserId !== sub.userId) {
+      pipeline.zrem(SUB_USER_PREFIX + prevUserId, sub.originalTransactionId);
+    }
     pipeline.zadd(userKey, score, sub.originalTransactionId);
-    pipeline.sadd(SUB_ALL, sub.originalTransactionId);
     pipeline.zadd(SUB_ALL_SORTED, score, sub.originalTransactionId);
     await pipeline.exec();
   }
@@ -154,23 +162,31 @@ export class RedisPurchaseStore implements PurchaseStore {
   async savePurchase(purchase: PurchaseInfo): Promise<void> {
     const txKey = PUR_TX_PREFIX + purchase.transactionId;
 
-    // Owner check — same TRANSACTION_BELONGS_TO_OTHER_USER semantics as
-    // Postgres / InMemory implementations. Without this guard a stolen
-    // receipt could be re-bound to a different account.
-    const existing = await this.redis.get(txKey);
-    if (existing) {
-      const owner = (JSON.parse(existing) as PurchaseInfo).userId;
-      if (owner !== purchase.userId) {
+    // Atomically claim the transaction key with SET NX — only the first
+    // writer wins, which closes the GET-then-write race where two concurrent
+    // saves with different userIds could both pass a read-side owner check
+    // and both index the transaction (account-binding bypass).
+    const claimed = await this.redis.set(txKey, JSON.stringify(purchase), 'NX');
+
+    if (claimed !== 'OK') {
+      // Key already exists — same TRANSACTION_BELONGS_TO_OTHER_USER semantics
+      // as Postgres / InMemory implementations. Without this guard a stolen
+      // receipt could be re-bound to a different account.
+      const existing = await this.redis.get(txKey);
+      const owner = existing ? (JSON.parse(existing) as PurchaseInfo).userId : null;
+      if (owner !== null && owner !== purchase.userId) {
         const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
         err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
         throw err;
       }
-      return; // idempotent — same user
+      // Same user: fall through to the index writes below instead of returning.
+      // They are idempotent (zadd/sadd), and skipping them would make a crash
+      // between the SET NX and the pipeline permanent — the tx key would exist
+      // with no indexes and no retry could ever backfill them.
     }
 
     const score = Date.parse(purchase.purchasedAt) || Date.now();
     const pipeline = this.redis.multi();
-    pipeline.set(txKey, JSON.stringify(purchase));
     pipeline.zadd(PUR_USER_PREFIX + purchase.userId, score, purchase.transactionId);
     pipeline.sadd(PUR_USER_PRODUCT_PREFIX + purchase.userId + ':' + purchase.productId, purchase.transactionId);
     pipeline.sadd(PUR_ALL, purchase.transactionId);
@@ -311,5 +327,9 @@ export class RedisWebhookEventStore implements WebhookEventStore {
     const key = WEBHOOK_EVENT_PREFIX + provider + ':' + eventId;
     const result = await this.redis.set(key, '1', 'EX', this.ttlSeconds, 'NX');
     return result === 'OK';
+  }
+
+  async unmark(provider: 'apple' | 'google', eventId: string): Promise<void> {
+    await this.redis.del(WEBHOOK_EVENT_PREFIX + provider + ':' + eventId);
   }
 }
