@@ -24,7 +24,9 @@
     "build:bundle": "tsup",
     "dev": "tsc --watch",
     "size": "size-limit",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test:e2e:apple": "node scripts/e2e-apple.mjs",
+    "test:e2e:google": "node scripts/e2e-google.mjs"
   },
   "keywords": [
     "react-native-iap",

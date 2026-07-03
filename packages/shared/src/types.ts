@@ -193,6 +193,12 @@ export interface OneSubServerConfig {
     /** Skip JWS signature verification (for development/testing only) */
     skipJwsVerification?: boolean;
     /**
+     * Max age (hours) accepted for one-time-purchase receipts. Default 72 —
+     * the replay-attack window. Raise it when validating historical receipts
+     * on purpose (migrating purchasers from another IAP backend, e2e tests).
+     */
+    productReceiptMaxAgeHours?: number;
+    /**
      * Mock provider mode — when true, bypass all Apple API calls and decide
      * receipt validity from the receipt string pattern (see `providers/mock.ts`).
      * Use for local development, CI, and AI-driven integration testing without
@@ -247,6 +253,12 @@ export interface OneSubServerConfig {
      * token minted for the same audience passes.
      */
     pushServiceAccountEmail?: string;
+    /**
+     * Max age (hours) accepted for one-time-purchase receipts. Default 72 —
+     * the replay-attack window. Raise it when validating historical receipts
+     * on purpose (migrations, e2e tests).
+     */
+    productReceiptMaxAgeHours?: number;
     /**
      * Mock provider mode — same as `apple.mockMode` but for Google Play.
      * Bypass Play Developer API calls and decide receipt validity from the

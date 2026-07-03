@@ -149,8 +149,6 @@ interface GoogleProductPurchase {
   [key: string]: unknown;
 }
 
-/** Maximum age for product receipts (72 hours). */
-const MAX_PRODUCT_RECEIPT_AGE_MS = 72 * 60 * 60 * 1000;
 
 /**
  * Per-key in-flight token mint promises. Used to deduplicate concurrent
@@ -653,11 +651,13 @@ export async function validateGoogleProductReceipt(
     return null;
   }
 
-  // Reject receipts older than 72 hours
+  // Reject receipts older than the configured window (see
+  // productReceiptMaxAgeHours — raise it for migrations / e2e).
   if (purchase.purchaseTimeMillis) {
     const purchaseTime = parseInt(purchase.purchaseTimeMillis, 10);
-    if (Date.now() - purchaseTime > MAX_PRODUCT_RECEIPT_AGE_MS) {
-      log.warn('[onesub/google] Product receipt too old (>72h)');
+    const maxAgeMs = (config.productReceiptMaxAgeHours ?? 72) * 60 * 60 * 1000;
+    if (Date.now() - purchaseTime > maxAgeMs) {
+      log.warn(`[onesub/google] Product receipt too old (>${config.productReceiptMaxAgeHours ?? 72}h)`);
       return null;
     }
   }

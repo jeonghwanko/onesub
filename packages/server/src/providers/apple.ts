@@ -18,9 +18,6 @@ import {
 
 type AppleConfig = NonNullable<OneSubServerConfig['apple']>;
 
-/** Maximum age for consumable receipts (72 hours). Older receipts may indicate replay attacks. */
-const MAX_CONSUMABLE_RECEIPT_AGE_MS = 72 * 60 * 60 * 1000;
-
 /**
  * Decoded Apple signed transaction (JWS payload).
  * Mirrors the fields from App Store Server API / StoreKit 2.
@@ -319,9 +316,12 @@ export async function validateAppleConsumableReceipt(
     return null;
   }
 
-  // Reject receipts older than 72 hours (replay attack prevention)
-  if (tx.purchaseDate && Date.now() - tx.purchaseDate > MAX_CONSUMABLE_RECEIPT_AGE_MS) {
-    log.warn('[onesub/apple] Consumable receipt too old (>72h)');
+  // Reject receipts older than the configured window (replay attack
+  // prevention). Raise productReceiptMaxAgeHours when validating historical
+  // receipts on purpose (migrations from another IAP backend, e2e tests).
+  const maxAgeMs = (config.productReceiptMaxAgeHours ?? 72) * 60 * 60 * 1000;
+  if (tx.purchaseDate && Date.now() - tx.purchaseDate > maxAgeMs) {
+    log.warn(`[onesub/apple] Consumable receipt too old (>${config.productReceiptMaxAgeHours ?? 72}h)`);
     return null;
   }
 
