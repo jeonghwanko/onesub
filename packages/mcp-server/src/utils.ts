@@ -26,12 +26,23 @@ export type FetchJsonResult<T = unknown> =
  * them lets tool output highlight `errorCode` instead of dumping a string.
  * Falls back to the raw string when the body isn't JSON.
  */
-export function tryParseJson(raw: string): unknown {
+function tryParseJson(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
     return raw;
   }
+}
+
+/**
+ * Extract the displayable body from a FetchJsonResult: the parsed data on
+ * success, a best-effort parse of the raw body on HTTP errors (so structured
+ * `{ error, errorCode }` payloads stay objects and tools can highlight
+ * `errorCode`), or the error message when there was no body at all.
+ */
+export function responseBody(result: FetchJsonResult): unknown {
+  if (result.ok) return result.data;
+  return result.raw !== undefined ? tryParseJson(result.raw) : result.error;
 }
 
 export async function fetchJson<T = unknown>(

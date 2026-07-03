@@ -64,6 +64,16 @@ function deterministicTransactionId(prefix: string, receipt: string): string {
   return `${prefix}_${digest}`;
 }
 
+/**
+ * Test convention: `...#token=<value>` in a mock receipt surfaces the store's
+ * account-binding field (Apple appAccountToken / boundAccountId, Google
+ * obfuscatedExternalAccountId), exercising the account-binding guard in the
+ * validate routes. Returns undefined when no token is baked into the receipt.
+ */
+function extractBoundToken(receipt: string): string | undefined {
+  return receipt.match(/#token=([^#]+)/)?.[1];
+}
+
 const HOURS = 60 * 60 * 1000;
 const DAYS = 24 * HOURS;
 
@@ -72,9 +82,7 @@ export function mockValidateAppleSubscription(receipt: string): SubscriptionInfo
   if (!outcomePasses(outcome, 'apple')) return null;
   const now = Date.now();
   const expiresAt = outcome.kind === 'sandbox' ? now + 1 * HOURS : now + 30 * DAYS;
-  // Test convention: `...#token=<value>` surfaces a boundAccountId, exercising
-  // the account-binding guard in the validate route (mirrors the product mocks).
-  const tokenMatch = receipt.match(/#token=([^#]+)/);
+  const boundToken = extractBoundToken(receipt);
   return {
     userId: '',
     productId: 'mock_subscription',
@@ -84,7 +92,7 @@ export function mockValidateAppleSubscription(receipt: string): SubscriptionInfo
     originalTransactionId: deterministicTransactionId('mock_apple_orig', receipt),
     purchasedAt: new Date(now).toISOString(),
     willRenew: true,
-    ...(tokenMatch ? { boundAccountId: tokenMatch[1] } : {}),
+    ...(boundToken ? { boundAccountId: boundToken } : {}),
   };
 }
 
@@ -95,14 +103,12 @@ export function mockValidateAppleProduct(
   const outcome = classifyMockReceipt(receipt);
   if (!outcomePasses(outcome, 'apple')) return null;
   const productId = expectedProductId ?? 'mock_product';
-  // Test convention: `...#token=<value>` in the mock receipt surfaces an
-  // appAccountToken, exercising the account-binding guard in the validate route.
-  const tokenMatch = receipt.match(/#token=([^#]+)/);
+  const boundToken = extractBoundToken(receipt);
   return {
     transactionId: deterministicTransactionId(`mock_apple_${productId}`, receipt),
     productId,
     purchasedAt: new Date().toISOString(),
-    ...(tokenMatch ? { appAccountToken: tokenMatch[1] } : {}),
+    ...(boundToken ? { appAccountToken: boundToken } : {}),
   };
 }
 
@@ -114,7 +120,7 @@ export function mockValidateGoogleSubscription(
   if (!outcomePasses(outcome, 'google')) return null;
   const now = Date.now();
   const expiresAt = outcome.kind === 'sandbox' ? now + 1 * HOURS : now + 30 * DAYS;
-  const tokenMatch = receipt.match(/#token=([^#]+)/);
+  const boundToken = extractBoundToken(receipt);
   return {
     userId: '',
     productId,
@@ -126,7 +132,7 @@ export function mockValidateGoogleSubscription(
     originalTransactionId: receipt,
     purchasedAt: new Date(now).toISOString(),
     willRenew: true,
-    ...(tokenMatch ? { boundAccountId: tokenMatch[1] } : {}),
+    ...(boundToken ? { boundAccountId: boundToken } : {}),
   };
 }
 
@@ -136,12 +142,10 @@ export function mockValidateGoogleProduct(
 ): { transactionId: string; purchasedAt: string; obfuscatedExternalAccountId?: string } | null {
   const outcome = classifyMockReceipt(receipt);
   if (!outcomePasses(outcome, 'google')) return null;
-  // Test convention: `...#token=<value>` surfaces an obfuscatedExternalAccountId,
-  // exercising the account-binding guard in the validate route (mirrors Apple).
-  const tokenMatch = receipt.match(/#token=([^#]+)/);
+  const boundToken = extractBoundToken(receipt);
   return {
     transactionId: deterministicTransactionId(`mock_google_${productId}`, receipt),
     purchasedAt: new Date().toISOString(),
-    ...(tokenMatch ? { obfuscatedExternalAccountId: tokenMatch[1] } : {}),
+    ...(boundToken ? { obfuscatedExternalAccountId: boundToken } : {}),
   };
 }

@@ -8,7 +8,7 @@
 
 import { createHash, createSign } from 'crypto';
 
-import { ZERO_DECIMAL_CURRENCIES } from './currency.js';
+import { ZERO_DECIMAL_CURRENCIES, SUPPORTED_CURRENCIES, unsupportedCurrencyError } from './currency.js';
 
 const ANDROID_BASE = 'https://androidpublisher.googleapis.com/androidpublisher/v3/applications';
 
@@ -216,19 +216,12 @@ function toGooglePriceMicros(price: number, currency: string): string {
   return String(price * 10_000);
 }
 
-const CURRENCY_REGION: Record<string, string> = {
-  USD: 'US', KRW: 'KR', EUR: 'DE', JPY: 'JP',
-  GBP: 'GB', AUD: 'AU', CAD: 'CA', CNY: 'CN', SGD: 'SG',
-};
-
+// Region codes derive from the shared table in currency.ts (single source of
+// truth with the Apple territories).
 // No fallback: defaulting to 'US' pairs a foreign currency with the US region
 // (rejected by the API) and collides extra regions onto the same record key.
 function currencyToRegionCode(currency: string): string | undefined {
-  return CURRENCY_REGION[currency.toUpperCase()];
-}
-
-function unsupportedCurrencyError(currency: string): string {
-  return `Unsupported currency '${currency}' — supported: ${Object.keys(CURRENCY_REGION).join(', ')}.`;
+  return SUPPORTED_CURRENCIES[currency.toUpperCase()]?.googleRegion;
 }
 
 function toBillingPeriod(period: string): string {

@@ -8,7 +8,7 @@
 
 import { createSign } from 'crypto';
 
-import { ZERO_DECIMAL_CURRENCIES } from './currency.js';
+import { ZERO_DECIMAL_CURRENCIES, SUPPORTED_CURRENCIES, unsupportedCurrencyError } from './currency.js';
 
 const BASE_URL = 'https://api.appstoreconnect.apple.com/v1';
 
@@ -219,6 +219,23 @@ async function appleRequest<T>(
   return json;
 }
 
+/**
+ * Iterate every page of a paginated App Store Connect GET endpoint, following
+ * `links.next` until exhausted. Yields whole pages (call sites pick `data` vs
+ * `included`); breaking out of the `for await` stops fetching further pages.
+ */
+async function* applePages<T extends { links?: { next?: string } }>(
+  creds: AppleCredentials,
+  firstPath: string,
+): AsyncGenerator<T, void, undefined> {
+  let next: string | undefined = firstPath;
+  while (next) {
+    const page: T = await appleRequest<T>(creds, 'GET', next);
+    yield page;
+    next = page.links?.next;
+  }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 export async function resolveAppId(creds: AppleCredentials, bundleId: string): Promise<string | null> {
@@ -226,15 +243,10 @@ export async function resolveAppId(creds: AppleCredentials, bundleId: string): P
   return data.data?.[0]?.id ?? null;
 }
 
-// Apple territories are ISO 3166-1 alpha-3 codes; EUR maps to a concrete
-// eurozone base territory (there is no 'EUR' territory).
-const CURRENCY_TERRITORY: Record<string, string> = {
-  KRW: 'KOR', USD: 'USA', EUR: 'DEU', JPY: 'JPN',
-  GBP: 'GBR', AUD: 'AUS', CAD: 'CAN', CNY: 'CHN', SGD: 'SGP',
-};
-
+// Apple territory ↔ currency mappings derive from the shared table in
+// currency.ts (single source of truth with the Google region codes).
 const TERRITORY_CURRENCY: Record<string, string> = Object.fromEntries(
-  Object.entries(CURRENCY_TERRITORY).map(([currency, territory]) => [territory, currency]),
+  Object.entries(SUPPORTED_CURRENCIES).map(([currency, { appleTerritory }]) => [appleTerritory, currency]),
 );
 
 export async function findPricePoint(
@@ -246,15 +258,13 @@ export async function findPricePoint(
   currency?: string,
 ): Promise<FindPricePointResult> {
   const all: PricePointMatch[] = [];
-  let nextPath: string | undefined =
+  const firstPath =
     `/${resourceType}/${encodeURIComponent(resourceId)}/pricePoints` +
     `?filter[territory]=${encodeURIComponent(territory)}&limit=200`;
-  while (nextPath) {
-    const page: ApplePricePointsResponse = await appleRequest<ApplePricePointsResponse>(creds, 'GET', nextPath);
+  for await (const page of applePages<ApplePricePointsResponse>(creds, firstPath)) {
     for (const item of page.data ?? []) {
       all.push({ id: item.id, price: item.attributes.customerPrice });
     }
-    nextPath = page.links?.next;
   }
   // customerPrice is in major units ("4.99") while targetPrice is in the
   // smallest unit (499 cents) — normalize before comparing. When the currency
@@ -272,7 +282,7 @@ export async function findPricePoint(
 }
 
 function currencyToTerritory(currency: string): string | undefined {
-  return CURRENCY_TERRITORY[currency.toUpperCase()];
+  return SUPPORTED_CURRENCIES[currency.toUpperCase()]?.appleTerritory;
 }
 
 function toSubscriptionPeriod(period: string): string {
@@ -324,7 +334,7 @@ async function setPrice(
 ): Promise<{ priceSet: boolean; priceNearest?: PricePointMatch[]; priceError?: string }> {
   const territory = currencyToTerritory(currency);
   if (!territory) {
-    return { priceSet: false, priceError: `Unsupported currency '${currency}' — supported: ${Object.keys(CURRENCY_TERRITORY).join(', ')}.` };
+    return { priceSet: false, priceError: unsupportedCurrencyError(currency) };
   }
   try {
     const result = await findPricePoint(creds, resourceType, resourceId, territory, price, currency);
@@ -396,15 +406,14 @@ async function findSubscriptionByProductId(
   appId: string,
   productId: string,
 ): Promise<SubscriptionLookup | null> {
-  let next: string | undefined = `/apps/${encodeURIComponent(appId)}/subscriptionGroups?include=subscriptions&limit=50`;
-  while (next) {
-    const resp: AppleSubscriptionGroupListResponse = await appleRequest<AppleSubscriptionGroupListResponse>(creds, 'GET', next);
+  for await (const resp of applePages<AppleSubscriptionGroupListResponse>(
+    creds, `/apps/${encodeURIComponent(appId)}/subscriptionGroups?include=subscriptions&limit=50`,
+  )) {
     for (const item of resp.included ?? []) {
       if (item.type === 'subscriptions' && item.attributes.productId === productId) {
         return { internalId: item.id, state: item.attributes.state ?? '' };
       }
     }
-    next = resp.links?.next;
   }
   return null;
 }
@@ -414,15 +423,14 @@ async function findIapByProductId(
   appId: string,
   productId: string,
 ): Promise<IapLookup | null> {
-  let next: string | undefined = `/apps/${encodeURIComponent(appId)}/inAppPurchasesV2?limit=200`;
-  while (next) {
-    const resp: AppleInAppPurchaseListResponse = await appleRequest<AppleInAppPurchaseListResponse>(creds, 'GET', next);
+  for await (const resp of applePages<AppleInAppPurchaseListResponse>(
+    creds, `/apps/${encodeURIComponent(appId)}/inAppPurchasesV2?limit=200`,
+  )) {
     for (const item of resp.data ?? []) {
       if (item.attributes.productId === productId) {
         return { internalId: item.id, state: item.attributes.state ?? '' };
       }
     }
-    next = resp.links?.next;
   }
   return null;
 }
@@ -432,13 +440,12 @@ async function findSubscriptionGroupByName(
   appId: string,
   referenceName: string,
 ): Promise<string | null> {
-  let next: string | undefined = `/apps/${encodeURIComponent(appId)}/subscriptionGroups?limit=50`;
-  while (next) {
-    const resp: AppleSubscriptionGroupListResponse = await appleRequest<AppleSubscriptionGroupListResponse>(creds, 'GET', next);
+  for await (const resp of applePages<AppleSubscriptionGroupListResponse>(
+    creds, `/apps/${encodeURIComponent(appId)}/subscriptionGroups?limit=50`,
+  )) {
     for (const item of resp.data ?? []) {
       if (item.attributes.referenceName === referenceName) return item.id;
     }
-    next = resp.links?.next;
   }
   return null;
 }
@@ -720,9 +727,9 @@ export async function listProducts(opts: {
   const failures: unknown[] = [];
 
   try {
-    let next: string | undefined = `/apps/${encodeURIComponent(opts.appId)}/inAppPurchasesV2?limit=200`;
-    while (next) {
-      const iapResp: AppleInAppPurchaseListResponse = await appleRequest<AppleInAppPurchaseListResponse>(creds, 'GET', next);
+    for await (const iapResp of applePages<AppleInAppPurchaseListResponse>(
+      creds, `/apps/${encodeURIComponent(opts.appId)}/inAppPurchasesV2?limit=200`,
+    )) {
       for (const item of iapResp.data ?? []) {
         const rawType = item.attributes.inAppPurchaseType ?? '';
         const type: AppleProductRecord['type'] =
@@ -736,14 +743,13 @@ export async function listProducts(opts: {
           type,
         });
       }
-      next = iapResp.links?.next;
     }
   } catch (err) { failures.push(err); }
 
   try {
-    let next: string | undefined = `/apps/${encodeURIComponent(opts.appId)}/subscriptionGroups?include=subscriptions&limit=50`;
-    while (next) {
-      const groupsResp: AppleSubscriptionGroupListResponse = await appleRequest<AppleSubscriptionGroupListResponse>(creds, 'GET', next);
+    for await (const groupsResp of applePages<AppleSubscriptionGroupListResponse>(
+      creds, `/apps/${encodeURIComponent(opts.appId)}/subscriptionGroups?include=subscriptions&limit=50`,
+    )) {
       for (const item of groupsResp.included ?? []) {
         if (item.type !== 'subscriptions') continue;
         results.push({
@@ -754,7 +760,6 @@ export async function listProducts(opts: {
           type: 'subscription',
         });
       }
-      next = groupsResp.links?.next;
     }
   } catch (err) { failures.push(err); }
 

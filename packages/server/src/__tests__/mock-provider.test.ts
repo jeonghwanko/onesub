@@ -13,6 +13,22 @@ import {
   mockValidateGoogleProduct,
 } from '../providers/mock.js';
 
+/** Full onesub server in mockMode on both platforms — shared by the HTTP describes. */
+function mockApp() {
+  const config: OneSubServerConfig = {
+    database: { url: '' },
+    apple: { bundleId: 'com.test.mock', mockMode: true },
+    google: { packageName: 'com.test.mock', mockMode: true },
+  };
+  const app = express();
+  app.use(createOneSubMiddleware({
+    ...config,
+    store: new InMemorySubscriptionStore(),
+    purchaseStore: new InMemoryPurchaseStore(),
+  }));
+  return app;
+}
+
 // ---------------------------------------------------------------------------
 // Pure classifier
 // ---------------------------------------------------------------------------
@@ -116,21 +132,6 @@ describe('mockValidateGoogleProduct', () => {
 // credentials, yet the full purchase flow completes end-to-end.
 // ---------------------------------------------------------------------------
 describe('full server in mockMode', () => {
-  function mockApp() {
-    const config: OneSubServerConfig = {
-      database: { url: '' },
-      apple: { bundleId: 'com.test.mock', mockMode: true },
-      google: { packageName: 'com.test.mock', mockMode: true },
-    };
-    const app = express();
-    app.use(createOneSubMiddleware({
-      ...config,
-      store: new InMemorySubscriptionStore(),
-      purchaseStore: new InMemoryPurchaseStore(),
-    }));
-    return app;
-  }
-
   it('validates an Apple subscription without any real credentials', async () => {
     const app = mockApp();
     const res = await request(app).post('/onesub/validate').send({
@@ -272,18 +273,6 @@ describe('full server in mockMode', () => {
 // Subscription route account-binding (mirrors the one-time purchase guard)
 // ---------------------------------------------------------------------------
 describe('POST /onesub/validate — subscription account-binding', () => {
-  function mockApp() {
-    const app = express();
-    app.use(createOneSubMiddleware({
-      database: { url: '' },
-      apple: { bundleId: 'com.test.mock', mockMode: true },
-      google: { packageName: 'com.test.mock', mockMode: true },
-      store: new InMemorySubscriptionStore(),
-      purchaseStore: new InMemoryPurchaseStore(),
-    }));
-    return app;
-  }
-
   it('receipt bound to a matching userId is accepted and stored', async () => {
     const app = mockApp();
     const res = await request(app).post('/onesub/validate').send({

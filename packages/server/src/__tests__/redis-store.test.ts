@@ -116,6 +116,21 @@ describe('RedisSubscriptionStore', () => {
     // Still exactly one record globally.
     expect(await store.listAll()).toHaveLength(1);
   });
+
+  it('rebind still works for records written before the owner side-key existed', async () => {
+    // Simulate a legacy record: full tx key + indexes, no onesub:sub:owner:* key.
+    const legacy = { ...baseSub, originalTransactionId: 'tx-legacy' };
+    await redis.set('onesub:sub:tx:tx-legacy', JSON.stringify(legacy));
+    await redis.zadd('onesub:sub:user:alice', Date.now(), 'tx-legacy');
+    await redis.zadd('onesub:sub:all:sorted', Date.now(), 'tx-legacy');
+
+    // save() must fall back to the full record to detect the rebind, then
+    // backfill the side-key.
+    await store.save({ ...legacy, userId: 'bob' });
+    expect(await store.getAllByUserId('alice')).toEqual([]);
+    expect((await store.getByUserId('bob'))?.originalTransactionId).toBe('tx-legacy');
+    expect(await redis.get('onesub:sub:owner:tx-legacy')).toBe('bob');
+  });
 });
 
 const basePurchase: PurchaseInfo = {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ROUTES, type Platform } from '@onesub/shared';
-import { normalizeUrl, fetchJson, tryParseJson } from '../utils.js';
+import { normalizeUrl, fetchJson, responseBody } from '../utils.js';
 
 // ── Apple notification types ─────────────────────────────────────────────────
 
@@ -252,14 +252,9 @@ export async function runSimulateWebhook(args: {
     };
   }
 
-  // Non-2xx bodies are still structured JSON from the server — parse them so
-  // the errorCode / INVALID_SIGNED_PAYLOAD hints below render; fall back to
-  // the raw string when the body isn't JSON.
-  const response: unknown = result.ok
-    ? result.data
-    : result.raw !== undefined
-      ? tryParseJson(result.raw)
-      : result.error;
+  // Non-2xx bodies are still structured JSON from the server — responseBody
+  // parses them so the errorCode / INVALID_SIGNED_PAYLOAD hints below render.
+  const response = responseBody(result);
   return {
     content: [{
       type: 'text',

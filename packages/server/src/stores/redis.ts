@@ -35,6 +35,7 @@ type IORedis = import('ioredis').Redis;
  *
  * Key layout:
  *   onesub:sub:tx:<originalTransactionId>      → JSON SubscriptionInfo
+ *   onesub:sub:owner:<originalTransactionId>   → userId (cheap prev-owner lookup in save(); written in the same MULTI as the record)
  *   onesub:sub:user:<userId>                   → SortedSet of originalTransactionIds, scored by updatedAt (ms)
  *   onesub:sub:all:sorted                      → SortedSet of originalTransactionIds, scored by save time (for listAll/listFiltered)
  *   onesub:purchase:tx:<transactionId>         → JSON PurchaseInfo
@@ -46,6 +47,7 @@ type IORedis = import('ioredis').Redis;
  */
 
 const SUB_TX_PREFIX = 'onesub:sub:tx:';
+const SUB_OWNER_PREFIX = 'onesub:sub:owner:';
 const SUB_USER_PREFIX = 'onesub:sub:user:';
 // Global sorted set (score = save timestamp ms) — enables ordered listAll and
 // O(log n + limit) fast-path pagination when no secondary filters are applied.
@@ -62,17 +64,25 @@ export class RedisSubscriptionStore implements SubscriptionStore {
   async save(sub: SubscriptionInfo): Promise<void> {
     const score = Date.now();
     const txKey = SUB_TX_PREFIX + sub.originalTransactionId;
+    const ownerKey = SUB_OWNER_PREFIX + sub.originalTransactionId;
     const userKey = SUB_USER_PREFIX + sub.userId;
 
     // If this transaction was previously bound to a different userId (the
     // validate route rebinds ownership on re-validation), drop it from the
     // old user's index — otherwise both userIds would resolve the same live
-    // subscription forever.
-    const prevRaw = await this.redis.get(txKey);
-    const prevUserId = prevRaw ? (JSON.parse(prevRaw) as SubscriptionInfo).userId : null;
+    // subscription forever. The owner side-key keeps that check to a small
+    // string GET on the hot path instead of a GET + JSON.parse of the full
+    // record; records written before the side-key existed fall back to the
+    // full record once and are backfilled by the MULTI below.
+    let prevUserId: string | null = await this.redis.get(ownerKey);
+    if (prevUserId === null) {
+      const prevRaw = await this.redis.get(txKey);
+      prevUserId = prevRaw ? (JSON.parse(prevRaw) as SubscriptionInfo).userId : null;
+    }
 
     const pipeline = this.redis.multi();
     pipeline.set(txKey, JSON.stringify(sub));
+    pipeline.set(ownerKey, sub.userId);
     if (prevUserId !== null && prevUserId !== sub.userId) {
       pipeline.zrem(SUB_USER_PREFIX + prevUserId, sub.originalTransactionId);
     }

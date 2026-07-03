@@ -9,6 +9,30 @@ import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 import { log } from '../logger.js';
 
 /**
+ * Shared pool construction for both Postgres stores.
+ *
+ * `label` names the owning store in the missing-dependency error and in the
+ * pool 'error' log so operators can tell which store hit the problem.
+ */
+async function createPgPool(connectionString: string, label: string): Promise<import('pg').Pool> {
+  // Dynamic import so that `pg` is an optional peer dependency —
+  // consumers who only use InMemorySubscriptionStore pay no cost.
+  const pg = await import('pg').catch(() => {
+    throw new Error(`[onesub] ${label} requires the \`pg\` package. Run: npm install pg`);
+  });
+  const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
+  const pool = new Pool({ connectionString, max: 10 });
+  // node-postgres emits 'error' on the Pool when an idle client's backend
+  // connection dies (e.g. DB failover / restart). Without a listener that's
+  // an unhandled EventEmitter 'error' — it crashes the process. Log it and
+  // let the pool replace the client.
+  pool.on('error', (err) => {
+    log.error(`[onesub] ${label} pool error (idle client):`, err);
+  });
+  return pool;
+}
+
+/**
  * PostgreSQL-backed subscription store.
  *
  * Uses raw `pg` (node-postgres) to avoid Prisma / ORM dependencies.
@@ -30,26 +54,7 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
 
   private getPool(): Promise<import('pg').Pool> {
     if (!this.poolPromise) {
-      this.poolPromise = (async () => {
-        // Dynamic import so that `pg` is an optional peer dependency —
-        // consumers who only use InMemorySubscriptionStore pay no cost.
-        const pg = await import('pg').catch(() => {
-          throw new Error(
-            '[onesub] PostgresSubscriptionStore requires the `pg` package. ' +
-              'Run: npm install pg'
-          );
-        });
-        const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
-        const pool = new Pool({ connectionString: this.connectionString, max: 10 });
-        // node-postgres emits 'error' on the Pool when an idle client's
-        // backend connection dies (e.g. DB failover / restart). Without a
-        // listener that's an unhandled EventEmitter 'error' — it crashes the
-        // process. Log it and let the pool replace the client.
-        pool.on('error', (err) => {
-          log.error('[onesub] PostgresSubscriptionStore pool error (idle client):', err);
-        });
-        return pool;
-      })();
+      this.poolPromise = createPgPool(this.connectionString, 'PostgresSubscriptionStore');
     }
     return this.poolPromise;
   }
@@ -243,22 +248,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
 
   private getPool(): Promise<import('pg').Pool> {
     if (!this.poolPromise) {
-      this.poolPromise = (async () => {
-        const pg = await import('pg').catch(() => {
-          throw new Error(
-            '[onesub] PostgresPurchaseStore requires the `pg` package. ' +
-              'Run: npm install pg'
-          );
-        });
-        const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
-        const pool = new Pool({ connectionString: this.connectionString, max: 10 });
-        // See PostgresSubscriptionStore.getPool — an unlistened Pool 'error'
-        // (idle client backend failure) crashes the process.
-        pool.on('error', (err) => {
-          log.error('[onesub] PostgresPurchaseStore pool error (idle client):', err);
-        });
-        return pool;
-      })();
+      this.poolPromise = createPgPool(this.connectionString, 'PostgresPurchaseStore');
     }
     return this.poolPromise;
   }
