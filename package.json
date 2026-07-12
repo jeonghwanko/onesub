@@ -4,7 +4,13 @@
   "private": true,
   "description": "One subscription. That's it. AI-native subscription + paywall for mobile apps.",
   "workspaces": [
-    "packages/*"
+    "packages/cli",
+    "packages/dashboard",
+    "packages/mcp-server",
+    "packages/providers",
+    "packages/sdk",
+    "packages/server",
+    "packages/shared"
   ],
   "scripts": {
     "build": "npm run build -w @onesub/shared && npm run build -w @onesub/providers && npm run build -w @onesub/server && npm run build -w @jeonghwanko/onesub-sdk && npm run build -w @onesub/mcp-server && npm run build -w @onesub/cli",

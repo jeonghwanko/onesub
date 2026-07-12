@@ -1,0 +1,13 @@
+{
+  "name": "com.onesub.unity",
+  "version": "0.1.0",
+  "displayName": "onesub Unity SDK",
+  "description": "Unity IAP adapter with server-side receipt validation for onesub.",
+  "unity": "2022.3",
+  "author": {
+    "name": "onesub"
+  },
+  "dependencies": {
+    "com.unity.purchasing": "5.4.0"
+  }
+}
