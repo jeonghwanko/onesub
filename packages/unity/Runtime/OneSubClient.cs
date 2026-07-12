@@ -34,19 +34,22 @@ namespace OneSub.Unity
         {
             if (string.IsNullOrWhiteSpace(ServerUrl))
             {
-                completed?.Invoke(Failure("ONESUB_NOT_CONFIGURED", "onesub server URL is empty."));
+                completed?.Invoke(Failure(
+                    OneSubValidationResult.ERROR_NOT_CONFIGURED, "onesub server URL is empty."));
                 yield break;
             }
 
             if (string.IsNullOrWhiteSpace(userId))
             {
-                completed?.Invoke(Failure("USER_ID_REQUIRED", "A stable signed-in user ID is required."));
+                completed?.Invoke(Failure(
+                    OneSubValidationResult.ERROR_USER_ID_REQUIRED, "A stable signed-in user ID is required."));
                 yield break;
             }
 
             if (string.IsNullOrWhiteSpace(receipt))
             {
-                completed?.Invoke(Failure("NO_RECEIPT_DATA", "The store returned no receipt or purchase token."));
+                completed?.Invoke(Failure(
+                    OneSubValidationResult.ERROR_NO_RECEIPT_DATA, "The store returned no receipt or purchase token."));
                 yield break;
             }
 
@@ -74,15 +77,27 @@ namespace OneSub.Unity
             if (webRequest.result != UnityWebRequest.Result.Success)
             {
                 var body = webRequest.downloadHandler.text;
-                var serverFailure = Parse(body);
+                // Only a rejection aimed at the receipt itself is a verdict. Timeouts, 5xx, throttling
+                // and auth problems are our fault, not the player's, and must stay non-authoritative
+                // so a live subscription is never revoked because the server was unreachable.
+                var serverFailure = IsReceiptVerdict(webRequest.responseCode) ? Parse(body) : null;
                 completed?.Invoke(serverFailure ?? Failure(
-                    "NETWORK_ERROR",
+                    OneSubValidationResult.ERROR_NETWORK,
                     string.IsNullOrWhiteSpace(body) ? webRequest.error : body));
                 yield break;
             }
 
-            completed?.Invoke(Parse(webRequest.downloadHandler.text) ??
-                Failure("INVALID_SERVER_RESPONSE", "onesub returned an invalid or empty response."));
+            completed?.Invoke(Parse(webRequest.downloadHandler.text) ?? Failure(
+                OneSubValidationResult.ERROR_INVALID_RESPONSE,
+                "onesub returned an invalid or empty response."));
+        }
+
+        private static bool IsReceiptVerdict(long statusCode)
+        {
+            if (statusCode < 400 || statusCode >= 500) return false;
+
+            // 401/403 (credentials), 408 (timeout) and 429 (throttled) say nothing about the receipt.
+            return statusCode != 401 && statusCode != 403 && statusCode != 408 && statusCode != 429;
         }
 
         private static string PlatformName

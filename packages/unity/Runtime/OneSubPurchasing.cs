@@ -12,6 +12,7 @@ namespace OneSub.Unity
         private static OneSubPurchasing instance;
         private readonly Dictionary<string, OneSubProductType> productTypes = new();
         private readonly HashSet<string> validationsInFlight = new();
+        private readonly HashSet<string> userInitiated = new();
         private StoreController storeController;
         private OneSubClient client;
 
@@ -33,8 +34,17 @@ namespace OneSub.Unity
         public bool IsInitialized { get; private set; }
         public event Action<bool> Initialized;
         public event Action<string, OneSubValidationResult> PurchaseSucceeded;
+
+        /// <summary>Raised only for a purchase the player actually started. Safe to surface in UI.</summary>
         public event Action<string, string> PurchaseFailed;
-        public event Action<string, bool> SubscriptionChanged;
+
+        /// <summary>
+        /// Raised when a background check (launch-time fetch, restore, pending-order replay) fails.
+        /// The player did not ask for this, so it must not be shown as a failed purchase.
+        /// </summary>
+        public event Action<string, string> ValidationFailed;
+
+        public event Action<string, OneSubEntitlementState> SubscriptionChanged;
 
         public async void Initialize(
             IEnumerable<OneSubProductDefinition> products,
@@ -67,19 +77,21 @@ namespace OneSub.Unity
 
         public void Buy(string productId)
         {
+            userInitiated.Add(productId);
+
             if (!IsInitialized || storeController == null)
             {
-                PurchaseFailed?.Invoke(productId, "The store is not initialized.");
+                FailPurchase(productId, "The store is not initialized.");
                 return;
             }
             if (GetProduct(productId) == null)
             {
-                PurchaseFailed?.Invoke(productId, $"Product '{productId}' was not returned by the store.");
+                FailPurchase(productId, $"Product '{productId}' was not returned by the store.");
                 return;
             }
             if (string.IsNullOrWhiteSpace(UserIdProvider?.Invoke()))
             {
-                PurchaseFailed?.Invoke(productId, "Sign in before purchasing so onesub can bind the receipt to an account.");
+                FailPurchase(productId, "Sign in before purchasing so onesub can bind the receipt to an account.");
                 return;
             }
             storeController.PurchaseProduct(productId);
@@ -89,10 +101,22 @@ namespace OneSub.Unity
         {
             if (storeController == null)
             {
-                PurchaseFailed?.Invoke(string.Empty, "The store is not initialized.");
+                ValidationFailed?.Invoke(string.Empty, "The store is not initialized.");
                 return;
             }
             storeController.FetchPurchases();
+        }
+
+        /// <summary>
+        /// Reports a failure to the player only if they started this purchase; otherwise it is
+        /// background noise (a launch-time revalidation, a restore) and goes to ValidationFailed.
+        /// </summary>
+        private void FailPurchase(string productId, string message)
+        {
+            if (userInitiated.Remove(productId))
+                PurchaseFailed?.Invoke(productId, message);
+            else
+                ValidationFailed?.Invoke(productId, message);
         }
 
         public Product GetProduct(string productId)
@@ -137,27 +161,61 @@ namespace OneSub.Unity
 
         private void OnPurchasesFetched(Orders orders)
         {
+            var ownedSubscriptions = new HashSet<string>();
+
             foreach (var order in orders?.ConfirmedOrders ?? Array.Empty<ConfirmedOrder>())
             {
                 var productId = ProductId(order);
-                if (productTypes.TryGetValue(productId, out var type) && type != OneSubProductType.Consumable)
-                    ValidateOrder(order, false);
+                if (!productTypes.TryGetValue(productId, out var type) || type == OneSubProductType.Consumable)
+                    continue;
+
+                if (type == OneSubProductType.Subscription)
+                    ownedSubscriptions.Add(productId);
+
+                ValidateOrder(order, false);
+            }
+
+            // A subscription can also be sitting in a pending or deferred order (just bought and not
+            // yet acknowledged, or awaiting parental approval). It is still owned, so it must not be
+            // treated as gone below -- the pending-order replay validates it a moment later.
+            MarkSubscriptionsOwned(orders?.PendingOrders, ownedSubscriptions);
+            MarkSubscriptionsOwned(orders?.DeferredOrders, ownedSubscriptions);
+
+            // The store answered and did not list this subscription at all, so it is genuinely gone
+            // (cancelled or expired). This is the only signal that may clear a cached entitlement --
+            // without it a lapsed subscriber would keep their benefits forever.
+            foreach (var pair in productTypes)
+            {
+                if (pair.Value == OneSubProductType.Subscription && !ownedSubscriptions.Contains(pair.Key))
+                    SubscriptionChanged?.Invoke(pair.Key, OneSubEntitlementState.NotEntitled);
+            }
+        }
+
+        private void MarkSubscriptionsOwned<T>(IReadOnlyList<T> orders, HashSet<string> owned) where T : Order
+        {
+            foreach (var order in orders ?? (IReadOnlyList<T>)Array.Empty<T>())
+            {
+                var productId = ProductId(order);
+                if (productTypes.TryGetValue(productId, out var type) && type == OneSubProductType.Subscription)
+                    owned.Add(productId);
             }
         }
 
         private void OnPurchasesFetchFailed(PurchasesFetchFailureDescription failure)
         {
-            PurchaseFailed?.Invoke(string.Empty, failure.Message);
+            // We never heard from the store, so we know nothing about entitlements. Stay silent and
+            // leave every cached entitlement standing.
+            ValidationFailed?.Invoke(string.Empty, failure.Message);
         }
 
         private void OnPurchaseFailed(FailedOrder order)
         {
-            PurchaseFailed?.Invoke(ProductId(order), $"{order.FailureReason}: {order.Details}");
+            FailPurchase(ProductId(order), $"{order.FailureReason}: {order.Details}");
         }
 
         private void OnPurchaseDeferred(DeferredOrder order)
         {
-            PurchaseFailed?.Invoke(ProductId(order), "Purchase is pending store or parental approval.");
+            FailPurchase(ProductId(order), "Purchase is pending store or parental approval.");
         }
 
         private void ValidateOrder(Order order, bool confirmAfterValidation)
@@ -165,7 +223,7 @@ namespace OneSub.Unity
             var productId = ProductId(order);
             if (!productTypes.TryGetValue(productId, out var type))
             {
-                PurchaseFailed?.Invoke(productId, "The order contains an unknown product.");
+                FailPurchase(productId, "The order contains an unknown product.");
                 return;
             }
 
@@ -194,17 +252,23 @@ namespace OneSub.Unity
             validationsInFlight.Remove(validationKey);
 
             var productId = ProductId(order);
-            if (type == OneSubProductType.Subscription && result != null)
-                SubscriptionChanged?.Invoke(productId, result.IsEntitled);
+            if (type == OneSubProductType.Subscription)
+            {
+                // Unknown when onesub never answered -- the listener keeps its cached entitlement
+                // rather than pulling a paid subscription out from under an offline player.
+                SubscriptionChanged?.Invoke(
+                    productId, result?.Entitlement ?? OneSubEntitlementState.Unknown);
+            }
 
             if (result == null || !result.IsEntitled)
             {
-                PurchaseFailed?.Invoke(productId, result?.error ?? "onesub rejected the receipt.");
+                FailPurchase(productId, result?.error ?? "onesub rejected the receipt.");
                 yield break;
             }
 
             if (confirmAfterValidation && order is PendingOrder pendingOrder)
             {
+                userInitiated.Remove(productId);
                 PurchaseSucceeded?.Invoke(productId, result);
                 storeController.ConfirmPurchase(pendingOrder);
             }
