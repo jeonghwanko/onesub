@@ -1,0 +1,9 @@
+{
+  "name": "OneSub.Unity",
+  "rootNamespace": "OneSub.Unity",
+  "references": [
+    "Unity.Purchasing",
+    "UnityNative.Sharing"
+  ],
+  "autoReferenced": true
+}

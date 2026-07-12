@@ -1,0 +1,12 @@
+{
+  "name": "OneSub.Unity.Tests",
+  "references": [
+    "OneSub.Unity"
+  ],
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ]
+}
