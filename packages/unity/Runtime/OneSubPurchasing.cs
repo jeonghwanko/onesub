@@ -46,18 +46,52 @@ namespace OneSub.Unity
 
         public event Action<string, OneSubEntitlementState> SubscriptionChanged;
 
+        public void Initialize(
+            OneSubSettings settings,
+            IOneSubUserIdProvider userIdProvider)
+        {
+            Func<string> resolver = userIdProvider == null ? null : userIdProvider.GetUserId;
+            Initialize(settings, resolver);
+        }
+
+        public void Initialize(
+            OneSubSettings settings,
+            Func<string> userIdProvider)
+        {
+            if (settings == null)
+            {
+                FailInitialization("OneSub settings are required.");
+                return;
+            }
+
+            if (!settings.TryValidate(out var error))
+            {
+                FailInitialization(error);
+                return;
+            }
+
+            Initialize(settings.Products, settings.ServerUrl, userIdProvider);
+        }
+
         public async void Initialize(
             IEnumerable<OneSubProductDefinition> products,
             string serverUrl,
             Func<string> userIdProvider)
         {
+            IsInitialized = false;
+            var definitions = (products ?? Array.Empty<OneSubProductDefinition>()).ToList();
+            if (!OneSubSettings.TryValidateConfiguration(serverUrl, definitions, out var error))
+            {
+                FailInitialization(error);
+                return;
+            }
+
             UserIdProvider = userIdProvider;
             client = new OneSubClient(serverUrl);
             productTypes.Clear();
-            foreach (var definition in products ?? Array.Empty<OneSubProductDefinition>())
+            foreach (var definition in definitions)
             {
-                if (!string.IsNullOrWhiteSpace(definition?.id))
-                    productTypes[definition.id] = definition.type;
+                productTypes[definition.id] = definition.type;
             }
 
             DetachStoreEvents();

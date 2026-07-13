@@ -1,0 +1,32 @@
+name: Docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - '**/*.md'
+      - 'package.json'
+      - 'scripts/validate-docs.mjs'
+      - 'packages/cli/src/index.ts'
+      - 'packages/mcp-server/src/index.ts'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - '**/*.md'
+      - 'package.json'
+      - 'scripts/validate-docs.mjs'
+      - 'packages/cli/src/index.ts'
+      - 'packages/mcp-server/src/index.ts'
+      - '.github/workflows/docs.yml'
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Validate documentation
+        run: npm run docs:check

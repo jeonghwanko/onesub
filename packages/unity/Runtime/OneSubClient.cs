@@ -28,7 +28,7 @@ namespace OneSub.Unity
 
         public OneSubClient(string serverUrl)
         {
-            ServerUrl = (serverUrl ?? string.Empty).TrimEnd('/');
+            ServerUrl = OneSubSettings.NormalizeServerUrl(serverUrl);
         }
 
         public IEnumerator Validate(

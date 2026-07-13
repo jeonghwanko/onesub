@@ -1,0 +1,19 @@
+{
+  "name": "OneSub.Unity.PlatformServices",
+  "rootNamespace": "OneSub.Unity",
+  "references": [
+    "OneSub.Unity",
+    "UnityNative.Sharing"
+  ],
+  "autoReferenced": true,
+  "defineConstraints": [
+    "ONESUB_NATIVE_SHARING"
+  ],
+  "versionDefines": [
+    {
+      "name": "com.unitynative.sharing",
+      "expression": "[1.0.0,2.0.0)",
+      "define": "ONESUB_NATIVE_SHARING"
+    }
+  ]
+}

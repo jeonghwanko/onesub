@@ -282,7 +282,7 @@ export class RedisPurchaseStore implements PurchaseStore {
 }
 
 /**
- * Redis-backed cache adapter — share JWKS / OAuth tokens across cluster nodes.
+ * Redis-backed cache adapter — share Apple API JWT / Google OAuth tokens across cluster nodes.
  *
  * Implements `CacheAdapter` so it plugs into the same default-cache slot used
  * by the Apple JWT minter and Google OAuth token minter.

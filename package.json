@@ -18,6 +18,7 @@
     "type-check": "tsc --noEmit -p packages/shared && tsc --noEmit -p packages/providers && tsc --noEmit -p packages/server && tsc --noEmit -p packages/sdk && tsc --noEmit -p packages/mcp-server && tsc --noEmit -p packages/cli && npm run type-check -w @onesub/dashboard",
     "clean": "rm -rf packages/*/dist",
     "test": "vitest run",
+    "docs:check": "node scripts/validate-docs.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "npm run build && changeset publish"

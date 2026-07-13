@@ -1,0 +1,19 @@
+{
+  "name": "com.onesub.unity.platform-services",
+  "version": "0.2.0",
+  "displayName": "OneSub Unity Platform Services",
+  "description": "Optional PenguinRun sharing, review, leaderboard, and authentication helpers for OneSub Unity Core.",
+  "unity": "2022.3",
+  "author": {
+    "name": "onesub"
+  },
+  "dependencies": {
+    "com.onesub.unity": "0.2.0"
+  },
+  "keywords": [
+    "iap",
+    "review",
+    "sharing",
+    "social"
+  ]
+}

@@ -5,6 +5,7 @@
  *
  * Usage:
  *   npx @onesub/cli init [directory]
+ *   npx @onesub/cli dev [--port N]
  *   npx @onesub/cli --help
  */
 
