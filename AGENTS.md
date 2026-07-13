@@ -159,8 +159,10 @@ set, then let the tests confirm.
 
 **Adding or changing a route:** `packages/shared/src/constants.ts` (`ROUTES`) → the router under
 `packages/server/src/routes/` → `packages/server/src/openapi.ts` (parity-tested) →
-`packages/server/README.md` (the canonical route list) → `docs/ARCHITECTURE.md` if the middleware
-flow changes.
+`packages/server/README.md` (the canonical route list, `docs:check`-enforced against the spec) →
+`docs/ARCHITECTURE.md` if the middleware flow changes. Both links in that chain are machine-checked,
+so a route cannot ship undocumented — but only `packages/server/README.md` is checked. Route tables in
+`README.md` and `SKILL.md` are prose and still drift by hand.
 
 **Adding a persisted field to `SubscriptionInfo` or `PurchaseInfo`:** `packages/shared/src/types.ts`
 → `packages/server/src/stores/schema.ts` (embedded DDL plus the additive `ALTER TABLE` backfill) →
@@ -277,7 +279,7 @@ Each fact has one owner. Link to the owner rather than restating it.
 | `docs/MIGRATE-FROM-REVENUECAT.md` | Moving an app and its data off RevenueCat |
 | `docs/UNITY-INTEGRATION.md` | Unity Core installation, runtime flow, events, host responsibilities |
 | `docs/UNITY-PRO.md` | The Core/Pro boundary |
-| `packages/server/README.md` | The canonical route list and middleware API |
+| `packages/server/README.md` | The canonical route list (`docs:check`-enforced) and middleware API |
 | `packages/shared/README.md` | Lifecycle states and the `active` formula |
 | `packages/mcp-server/README.md` | The MCP tool catalog (`docs:check`-enforced) |
 | `packages/cli/README.md` | The CLI command list (`docs:check`-enforced) |
@@ -289,6 +291,12 @@ Each fact has one owner. Link to the owner rather than restating it.
 
 Avoid volatile claims: hard-coded test counts, tool counts, package counts, or version numbers.
 Derive command order, tool names, route names, and package names from the current code.
-`scripts/validate-docs.mjs` mechanizes part of this — it checks local links, that every npm workspace
-appears in the Repository Map, and that every registered MCP tool and CLI command is documented — but
-it cannot catch a wrong version number or a stale prose claim. Verify those against the source.
+`scripts/validate-docs.mjs` mechanizes part of this. It checks local links and referenced file paths,
+that every npm workspace appears in the Repository Map, that every registered MCP tool and CLI command
+is documented, and that the route list in `packages/server/README.md` matches the OpenAPI spec — which
+`openapi.test.ts` in turn holds to the actually mounted routers. It cannot catch a wrong version
+number or a stale prose claim. Verify those against the source.
+
+When adding a check there, also add its inputs to the `paths` filter in `.github/workflows/docs.yml`,
+or the check will not run on the change that breaks it. Keep the script dependency-free: that workflow
+has no `npm ci` step.

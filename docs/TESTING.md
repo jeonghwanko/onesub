@@ -201,8 +201,13 @@ assembly references, dependencies, and separation of optional platform services.
 npm run docs:check
 ```
 
-This validates local Markdown links, trailing whitespace, npm workspace coverage in `AGENTS.md`, MCP
-tool documentation, and CLI command documentation. It requires no network access.
+This validates local Markdown links and referenced file paths, trailing whitespace, npm workspace
+coverage in `AGENTS.md`, MCP tool documentation, CLI command documentation, and the route list in
+`packages/server/README.md` against `packages/server/src/openapi.ts` — which `openapi.test.ts` in turn
+holds to the actually mounted routers. It requires no network access and no `npm ci`.
+
+If you add a check, add its inputs to the `paths` filter in `.github/workflows/docs.yml` too, or it
+will not run on the change that breaks it.
 
 ## CI-Parity Checklist
 
