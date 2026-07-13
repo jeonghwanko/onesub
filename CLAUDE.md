@@ -17,6 +17,8 @@ onesub/
 ├── packages/providers/    # @onesub/providers — App Store Connect + Google Play API wrappers (standalone, no deps)
 ├── packages/server/       # @onesub/server — Express middleware (receipt validation + webhooks)
 ├── packages/sdk/          # @onesub/sdk — React Native SDK (useOneSub + Paywall)
+├── packages/unity/        # com.onesub.unity — free Unity runtime SDK
+├── packages/unity-platform-services/ # optional PenguinRun sharing/review/social helpers
 └── packages/mcp-server/   # @onesub/mcp-server — MCP tools (AI integration)
 ```
 
@@ -35,6 +37,15 @@ onesub/
 2. **Open Source**: MIT license, self-hostable
 3. **Pluggable**: Express middleware — one line: `app.use(createOneSubMiddleware(config))`
 4. **AI-native**: MCP tools for product creation, paywall generation, troubleshooting
+
+## Product Boundary
+
+- This repository is the public MIT-licensed OneSub Core source of truth.
+- `packages/unity` remains the complete manual Unity purchasing and validation SDK.
+- Commercial Unity Editor automation and MCP for Unity custom tools live in the separate private
+  `onesub-unity-pro` repository. Never copy Pro sources into this repository.
+- Public APIs shared with Pro must remain backward compatible within a minor release line. Document
+  compatibility changes in `docs/UNITY-PRO.md`.
 
 ## Dev Commands
 
@@ -84,6 +95,15 @@ React Native SDK:
 // In any component
 const { isActive, subscribe } = useOneSub();
 ```
+
+### com.onesub.unity
+Free Unity runtime SDK. Provides Unity IAP purchase, restore, localized pricing, server receipt
+validation, and entitlement events. Project-specific adapters and UI wiring are manual in Core.
+See `docs/UNITY-PRO.md` for the commercial automation boundary.
+
+### com.onesub.unity.platform-services
+Optional public package for PenguinRun sharing, review, leaderboard, and authentication helpers.
+It must never be folded back into the purchasing Core package.
 
 ### @onesub/mcp-server
 10 MCP tools:

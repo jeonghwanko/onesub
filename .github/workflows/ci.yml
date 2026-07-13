@@ -25,6 +25,9 @@ jobs:
         run: npm run build  # tsc per-workspace — fails on type errors
       - name: Test
         run: npm test
+      - name: Validate Unity UPM boundaries
+        shell: pwsh
+        run: ./validate-unity-packages.ps1
       - name: Bundle size check
         run: npm run size -w @onesub/server
 

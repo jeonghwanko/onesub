@@ -26,6 +26,10 @@ namespace OneSub.Unity
         public string id;
         public OneSubProductType type;
 
+        public OneSubProductDefinition()
+        {
+        }
+
         public OneSubProductDefinition(string id, OneSubProductType type)
         {
             this.id = id;
