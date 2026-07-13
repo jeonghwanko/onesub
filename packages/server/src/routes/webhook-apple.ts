@@ -14,6 +14,7 @@ import {
   fetchAppleSubscriptionStatus,
 } from '../providers/apple.js';
 import { log } from '../logger.js';
+import { getAppRegistry } from '../apps.js';
 import { sendError } from '../errors.js';
 import type { WebhookEventStore } from '../webhook-events.js';
 import { unmarkWebhookEvent } from '../webhook-events.js';
@@ -88,17 +89,21 @@ export async function processAppleNotification(
     inAppOwnershipType,
   } = work.decoded;
 
+  // The notification names its own app; use that app's Apple credentials rather
+  // than whichever app happens to be the default.
+  const appleConfigForApp = getAppRegistry(config).configFor({ bundleId }).apple;
+
   const mapped = mapAppleNotificationStatus(notificationType, subtype);
   const finalStatus: SubscriptionInfo['status'] = mapped ?? status;
 
   if (
     notificationType === 'CONSUMPTION_REQUEST' &&
-    config.apple?.consumptionInfoProvider &&
+    appleConfigForApp?.consumptionInfoProvider &&
     transactionId &&
     productId
   ) {
-    const provider = config.apple.consumptionInfoProvider;
-    const appleConfig = config.apple;
+    const provider = appleConfigForApp.consumptionInfoProvider;
+    const appleConfig = appleConfigForApp;
     void (async () => {
       try {
         const info = await provider({
@@ -164,8 +169,8 @@ export async function processAppleNotification(
           expiresAt: expiresAt ?? existing.expiresAt,
         };
     await store.save(updated);
-  } else if (config.apple?.issuerId && config.apple?.keyId && config.apple?.privateKey) {
-    const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, config.apple, {
+  } else if (appleConfigForApp?.issuerId && appleConfigForApp?.keyId && appleConfigForApp?.privateKey) {
+    const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, appleConfigForApp, {
       sandbox: environment === 'Sandbox',
     });
     if (fresh) {
@@ -238,10 +243,13 @@ export async function handleAppleWebhook(
     return;
   }
 
-  // Signature verification proves the notification came from Apple — not that
-  // it is for THIS app. Mirror the Google packageName check.
-  if (config.apple?.bundleId && decoded.bundleId && decoded.bundleId !== config.apple.bundleId) {
-    log.warn('[onesub/webhook/apple] Bundle ID mismatch:', decoded.bundleId, '!==', config.apple.bundleId);
+  // Signature verification proves the notification came from Apple — not that it
+  // is for an app we serve. Resolve the notification's bundleId against the app
+  // registry, so a multi-app instance accepts every app it is configured for and
+  // still rejects everything else.
+  const notifiedApp = getAppRegistry(config).configFor({ bundleId: decoded.bundleId });
+  if (decoded.bundleId && !notifiedApp.apple) {
+    log.warn('[onesub/webhook/apple] No app configured for bundleId:', decoded.bundleId);
     sendError(res, 400, ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH, 'Bundle ID mismatch');
     return;
   }

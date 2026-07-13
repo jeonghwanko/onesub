@@ -23,6 +23,7 @@ import type {
   GoogleOneTimeProductNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
+import { getAppRegistry } from '../apps.js';
 import { sendError } from '../errors.js';
 import type { WebhookEventStore } from '../webhook-events.js';
 import { unmarkWebhookEvent } from '../webhook-events.js';
@@ -95,6 +96,27 @@ const GOOGLE_FAILURE_MESSAGES: Record<GoogleWebhookWork['kind'], { logPrefix: st
 };
 
 /**
+ * Resolves an RTDN's package to an app.
+ *
+ * When no configured app declares a packageName the instance is in legacy "open
+ * mode" — it accepts notifications for any package and uses the default
+ * credentials. Once any app names a package, only known packages are served.
+ */
+function googleResolver(config: OneSubServerConfig) {
+  const registry = getAppRegistry(config);
+  const restricted = registry.apps.some((app) => !!app.google?.packageName);
+  return {
+    registry,
+    serves: (packageName: string): boolean =>
+      !restricted || !!registry.configFor({ appId: packageName }).google,
+    googleFor: (packageName: string) =>
+      restricted
+        ? registry.configFor({ appId: packageName }).google
+        : (registry.defaultApp?.google ?? config.google),
+  };
+}
+
+/**
  * State-mutating half of the Google webhook: everything AFTER the gate
  * (push-token auth, body validation, idempotency markIfNew, packageName
  * check, RTDN decode) has passed. Called from two places:
@@ -109,6 +131,10 @@ export async function processGoogleNotification(
   store: SubscriptionStore,
   purchaseStore: PurchaseStore,
 ): Promise<void> {
+  // Each notification names its own package; use that app's Google credentials
+  // rather than whichever app happens to be the default.
+  const { googleFor } = googleResolver(config);
+
   if (work.kind === 'voided') {
     const { voided } = work;
     if (voided.productType === 1) {
@@ -138,8 +164,9 @@ export async function processGoogleNotification(
     const { notificationType, purchaseToken, sku } = work.oneTimeProduct;
     if (notificationType === 1 /* PURCHASED */) {
       log.info('[onesub/webhook/google] oneTimeProduct PURCHASED:', sku);
-      if (config.google?.serviceAccountKey && config.google.packageName) {
-        void acknowledgeGoogleProduct(purchaseToken, sku, config.google).catch(
+      const googleCfg = googleFor(work.oneTimeProduct.packageName);
+      if (googleCfg?.serviceAccountKey && googleCfg.packageName) {
+        void acknowledgeGoogleProduct(purchaseToken, sku, googleCfg).catch(
           (err) => log.warn(`[onesub/webhook/google] oneTimeProduct ack failed for SKU ${sku} — 3-day auto-refund risk:`, err),
         );
       }
@@ -176,8 +203,10 @@ export async function processGoogleNotification(
     finalStatus = existing?.status ?? SUBSCRIPTION_STATUS.ACTIVE;
   }
 
-  if (isGooglePriceChangeConfirmedNotification(notificationType) && config.google?.onPriceChangeConfirmed) {
-    const hook = config.google.onPriceChangeConfirmed;
+  const subGoogleCfg = googleFor(packageName);
+
+  if (isGooglePriceChangeConfirmedNotification(notificationType) && subGoogleCfg?.onPriceChangeConfirmed) {
+    const hook = subGoogleCfg.onPriceChangeConfirmed;
     void Promise.resolve()
       .then(() => hook({ purchaseToken, subscriptionId, packageName }))
       .catch((err) => log.warn('[onesub/webhook/google] onPriceChangeConfirmed hook failed:', err));
@@ -186,8 +215,8 @@ export async function processGoogleNotification(
   if (existing) {
     let updated: SubscriptionInfo = { ...existing, status: finalStatus };
 
-    if (config.google?.serviceAccountKey) {
-      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
+    if (subGoogleCfg?.serviceAccountKey) {
+      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, subGoogleCfg);
       if (fresh) {
         // Preserve grace/on-hold only when the NOTIFICATION said so — a
         // finalStatus inherited from the stored record (unknown types above)
@@ -209,8 +238,8 @@ export async function processGoogleNotification(
 
     await store.save(updated);
   } else {
-    if (config.google?.serviceAccountKey) {
-      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, config.google);
+    if (subGoogleCfg?.serviceAccountKey) {
+      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, subGoogleCfg);
       if (fresh) {
         // Consume the account identity out of the record: it seeds the
         // placeholder userId, but must never be persisted (validate route
@@ -243,12 +272,21 @@ export async function handleGoogleWebhook(
   webhookEventStore?: WebhookEventStore,
   webhookQueue?: WebhookQueue,
 ): Promise<void> {
-  if (config.google?.pushAudience) {
-    const authenticated = await verifyGooglePushToken(
-      req,
-      config.google.pushAudience,
-      config.google.pushServiceAccountEmail,
-    );
+  // Push auth runs before the payload is decoded, so the app is not known yet.
+  // Each app pushes from its own GCP project (its own service account), so accept
+  // the token when it verifies against any configured app's push identity.
+  const pushIdentities = getAppRegistry(config)
+    .apps.map((app) => app.google)
+    .filter((g): g is NonNullable<typeof g> => !!g?.pushAudience);
+
+  if (pushIdentities.length > 0) {
+    let authenticated = false;
+    for (const google of pushIdentities) {
+      if (await verifyGooglePushToken(req, google.pushAudience!, google.pushServiceAccountEmail)) {
+        authenticated = true;
+        break;
+      }
+    }
     if (!authenticated) {
       sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
       return;
@@ -281,10 +319,16 @@ export async function handleGoogleWebhook(
   // come from the request cycle — a queued job can't tell the source "don't
   // retry this payload").
   let work: GoogleWebhookWork;
+
+  // The RTDN names its own package. Accept it when a configured app serves that
+  // package, so a multi-app instance takes notifications for every app it knows
+  // and still rejects the rest.
+  const { serves: servesPackage } = googleResolver(config);
+
   const voided = decodeGoogleVoidedNotification(body as GoogleNotificationPayload);
   if (voided) {
-    if (config.google?.packageName && voided.packageName !== config.google.packageName) {
-      log.warn('[onesub/webhook/google] voided package name mismatch:', voided.packageName, '!==', config.google.packageName);
+    if (!servesPackage(voided.packageName)) {
+      log.warn('[onesub/webhook/google] voided package name not served:', voided.packageName);
       sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
       return;
     }
@@ -292,8 +336,8 @@ export async function handleGoogleWebhook(
   } else {
     const oneTimeProduct = decodeGoogleOneTimeProductNotification(body as GoogleNotificationPayload);
     if (oneTimeProduct) {
-      if (config.google?.packageName && oneTimeProduct.packageName !== config.google.packageName) {
-        log.warn('[onesub/webhook/google] oneTimeProduct package name mismatch:', oneTimeProduct.packageName, '!==', config.google.packageName);
+      if (!servesPackage(oneTimeProduct.packageName)) {
+        log.warn('[onesub/webhook/google] oneTimeProduct package name not served:', oneTimeProduct.packageName);
         sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
         return;
       }
@@ -304,8 +348,8 @@ export async function handleGoogleWebhook(
         res.status(200).json({ received: true });
         return;
       }
-      if (config.google?.packageName && notification.packageName !== config.google.packageName) {
-        log.warn('[onesub/webhook/google] Package name mismatch:', notification.packageName, '!==', config.google.packageName);
+      if (!servesPackage(notification.packageName)) {
+        log.warn('[onesub/webhook/google] Package name not served:', notification.packageName);
         sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
         return;
       }

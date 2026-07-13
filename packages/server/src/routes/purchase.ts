@@ -9,6 +9,7 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
+import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
 import {
   validateGoogleProductReceipt,
@@ -26,6 +27,8 @@ const validatePurchaseSchema = z.object({
   userId: z.string().min(1).max(256),
   productId: z.string().min(1).max(256),
   type: z.enum([PURCHASE_TYPE.CONSUMABLE, PURCHASE_TYPE.NON_CONSUMABLE]),
+  /** Which app this receipt belongs to. Optional — see OneSubServerConfig.apps. */
+  appId: z.string().min(1).max(256).optional(),
 });
 
 const purchaseStatusQuerySchema = z.object({
@@ -38,6 +41,7 @@ export function createPurchaseRouter(
   purchaseStore: PurchaseStore
 ): Router {
   const router = Router();
+  const registry = getAppRegistry(config);
 
   /**
    * POST /onesub/purchase/validate
@@ -66,7 +70,14 @@ export function createPurchaseRouter(
       throw err;
     }
 
-    const { platform, receipt, userId, productId, type } = body;
+    const { platform, receipt, userId, productId, type, appId } = body;
+
+    // An Apple receipt names its own app; a Google purchase token does not, so it
+    // relies on appId (or the default app).
+    const appConfig = registry.configFor({
+      appId,
+      bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
+    });
 
     try {
       // Non-consumable idempotent restore. If the user already owns this
@@ -109,25 +120,25 @@ export function createPurchaseRouter(
       let boundAccountId: string | null = null;
 
       if (platform === 'apple') {
-        if (!config.apple) {
+        if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);
           return;
         }
-        const result = await validateAppleConsumableReceipt(receipt, config.apple, productId);
+        const result = await validateAppleConsumableReceipt(receipt, appConfig.apple, productId);
         if (result) {
           transactionId = result.transactionId;
           purchasedAt = result.purchasedAt;
           boundAccountId = result.appAccountToken ?? null;
         }
       } else {
-        if (!config.google) {
+        if (!appConfig.google) {
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_PURCHASE);
           return;
         }
         const result = await validateGoogleProductReceipt(
           receipt,
           productId,
-          config.google,
+          appConfig.google,
           type === PURCHASE_TYPE.CONSUMABLE ? 'consumable' : 'non_consumable',
         );
         if (result) {
@@ -227,11 +238,11 @@ export function createPurchaseRouter(
       // Both must run after savePurchase — if called before, a DB failure would
       // leave the receipt acknowledged/consumed but the entitlement ungranted
       // with no retry path.
-      if (platform === 'google' && config.google) {
+      if (platform === 'google' && appConfig.google) {
         if (type === PURCHASE_TYPE.CONSUMABLE) {
-          void consumeGoogleProductReceipt(receipt, productId, config.google);
+          void consumeGoogleProductReceipt(receipt, productId, appConfig.google);
         } else {
-          void acknowledgeGoogleProduct(receipt, productId, config.google);
+          void acknowledgeGoogleProduct(receipt, productId, appConfig.google);
         }
       }
 

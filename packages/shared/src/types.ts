@@ -182,6 +182,26 @@ export interface OneSubLogger {
   error: (...args: unknown[]) => void;
 }
 
+/** Apple provider credentials for one app. */
+export type OneSubAppleConfig = NonNullable<OneSubServerConfig['apple']>;
+
+/** Google provider credentials for one app. */
+export type OneSubGoogleConfig = NonNullable<OneSubServerConfig['google']>;
+
+/**
+ * One app served by a multi-app onesub instance. See `OneSubServerConfig.apps`.
+ */
+export interface OneSubAppConfig {
+  /**
+   * Stable identifier a client can send as `appId`. Matching also accepts the
+   * app's Apple bundleId or Google packageName, so a client that sends its
+   * platform identifier (`Application.identifier`) resolves without extra config.
+   */
+  id: string;
+  apple?: OneSubAppleConfig;
+  google?: OneSubGoogleConfig;
+}
+
 /** Server config */
 export interface OneSubServerConfig {
   apple?: {
@@ -280,6 +300,34 @@ export interface OneSubServerConfig {
   database: {
     url: string;
   };
+  /**
+   * Additional apps served by this one onesub instance.
+   *
+   * `apple`/`google` above configure a single app and stay the default, so an
+   * existing single-app deployment keeps working untouched. Listing apps here
+   * lets one server validate receipts for N bundles — each app carries its own
+   * Apple bundleId and Google packageName + service account.
+   *
+   * How an incoming request is matched to an app:
+   *   1. the request's `appId`, when the client sends one;
+   *   2. otherwise, for Apple, the `bundleId` baked into the receipt itself;
+   *   3. otherwise `defaultAppId` (or the top-level `apple`/`google` config).
+   *
+   * Google purchase tokens do not name their package, so a Google request for a
+   * non-default app must carry `appId`.
+   *
+   * @example
+   * apps: [
+   *   { id: 'coffee',     apple: { bundleId: 'gg.pryzm.coffee' },     google: { packageName: 'gg.pryzm.coffee',     serviceAccountKey: coffeeSa } },
+   *   { id: 'penguinrun', apple: { bundleId: 'gg.pryzm.penguinrun' }, google: { packageName: 'gg.pryzm.penguinrun', serviceAccountKey: penguinSa } },
+   * ]
+   */
+  apps?: OneSubAppConfig[];
+  /**
+   * App used when a request names none and the receipt cannot identify one.
+   * Defaults to the top-level `apple`/`google` config, or the first `apps` entry.
+   */
+  defaultAppId?: string;
   webhookSecret?: string;
   /**
    * Shared secret required for admin endpoints (purchase reset / manual grant).
