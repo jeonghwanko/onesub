@@ -61,6 +61,10 @@ function isExternalOrAnchor(target) {
   );
 }
 
+function referencesGeneratedArtifact(target) {
+  return target.split('/').some((segment) => ignoredDirectories.has(segment));
+}
+
 async function validateMarkdown(path) {
   const text = await readFile(path, 'utf8');
   const name = displayPath(path);
@@ -88,6 +92,9 @@ async function validateMarkdown(path) {
   // Markdown links. Catch stale package paths such as renamed focused tests.
   for (const match of text.matchAll(/\bpackages\/[A-Za-z0-9_./\-[\]]+\.(?:cs|js|json|md|mjs|ps1|sql|ts|tsx)\b/gu)) {
     const target = match[0];
+    // Commands may legitimately reference build output that is absent in a
+    // fresh checkout. Source links are still checked for drift.
+    if (referencesGeneratedArtifact(target)) continue;
     if (!existsSync(resolve(root, target))) {
       failures.push(`${name}:${lineNumberAt(text, match.index)} missing referenced file: ${target}`);
     }
