@@ -27,7 +27,7 @@ copy Pro sources into this repository. See `docs/UNITY-PRO.md` for the compatibi
 | `packages/dashboard` | Private npm workspace for the self-hosted Next.js operations dashboard; shipped as a Docker image |
 | `packages/unity` | `com.onesub.unity`: public Unity 2022.3+ purchasing and server-validation Core package |
 | `packages/unity-platform-services` | Optional Unity sharing, review, leaderboard, and authentication helpers; not part of purchasing Core |
-| `examples` | Runnable server and Expo examples. Not npm workspaces — they install OneSub from npm, not from this checkout |
+| `examples` | Runnable server and Expo examples. Not npm workspaces, but inside this checkout they still resolve `@onesub/server` through the root `node_modules` symlink to `packages/server` — so they do exercise your local build. The version pin in their own `package.json` only applies to a standalone copy |
 | `bench` | k6 status/webhook load tests, run by the scheduled `bench` workflow |
 | `scripts` | `validate-docs.mjs`, which backs `npm run docs:check` |
 | `docs` | Architecture, security, deployment, migration, receipt-error, and Unity boundary documentation |
@@ -77,12 +77,15 @@ Read this before your first edit. These traps fire on ordinary tasks and two of 
 
 **`@onesub/shared` is consumed as compiled output, not as source.** Dependents resolve
 `@onesub/shared` to `packages/shared/dist`, which is gitignored, is not rebuilt automatically, and
-has no Vitest alias. After any edit under `packages/shared/src` you must run
+has no Vitest alias or tsconfig path mapping. After any edit under `packages/shared/src` you must run
 `npm run build -w @onesub/shared` before `npm test`, `npm run type-check`, or any dependent build
-observes it. A stale `dist` fails loudly for type-only changes but **silently for value exports** —
-a new member added to `SUBSCRIPTION_STATUS` resolves to `undefined` at runtime, so a comparison
-quietly never matches and no error is thrown. To recover from a confusing state, delete
-`packages/*/dist` and re-run `npm run build`.
+observes it.
+
+The stale `dist` is stale in its `.d.ts` too, so `tsc` usually catches it loudly. The dangerous case
+is **`npm test`**: Vitest transpiles without type-checking, so a new value export that is missing
+from the stale `dist` is simply `undefined` at runtime — a comparison quietly never matches and no
+error is thrown. A green `npm test` on a shared change you did not rebuild proves nothing. To recover
+from a confusing state, delete `packages/*/dist` and re-run `npm run build`.
 
 **Two tests enforce contract parity mechanically, and both are easy to trip.**
 
@@ -96,9 +99,9 @@ quietly never matches and no error is thrown. To recover from a confusing state,
 When either test fails, the message is "you changed one side of a contract," not "you broke
 behavior."
 
-**Line endings are load-bearing.** `.gitattributes` forces LF on text sources because the schema
-parity test anchors on `/--.*$/` per line and misbehaves on CRLF. Do not write CRLF content, and add
-any new text file type to `.gitattributes`.
+**Line endings.** `.gitattributes` forces LF on text sources; the schema parity test additionally
+strips `\r` itself, so it is CRLF-proof today. Keep both defenses: add any new text file type to
+`.gitattributes`, and do not assume a parser downstream is as forgiving.
 
 **This repository is developed on Windows.** Command blocks in `docs/` are written for bash. In
 PowerShell, translate them: `rm -rf` is not available, `\` line continuations must become backticks,
@@ -139,11 +142,12 @@ and let CI apply them.
   deletion, which can revoke valid sibling consumable purchases.
 - MCP product tools import App Store Connect/Google Play operations from `@onesub/providers`; do not
   recreate provider clients inside `packages/mcp-server`.
-- The React Native SDK has exactly one purchase adapter: `react-native-iap`, required at runtime and
-  loaded lazily in `packages/sdk/src/OneSubProvider.tsx`. `expo-in-app-purchases` remains a vestigial
-  optional peer in `package.json` with no adapter behind it — do not treat it as a code path to
-  preserve, and do not "restore" it without an explicit product decision. Keep the structured
-  `OneSubError` behavior working.
+- The React Native SDK has exactly one purchase adapter: `react-native-iap`, `require`d at module
+  scope inside a `try/catch` in `packages/sdk/src/OneSubProvider.tsx`. When it is absent the provider
+  still imports and renders, and the purchase paths throw a clear error instead.
+  `expo-in-app-purchases` is listed alongside it in `peerDependenciesMeta` as optional, but has **no
+  adapter behind it** — do not treat it as a code path to preserve, and do not "restore" it without
+  an explicit product decision. Keep the structured `OneSubError` behavior working.
 - Keep purchasing-only code in `packages/unity`. Sharing, review, social, leaderboard, and auth
   helpers belong in `packages/unity-platform-services`. Run the UPM boundary validator after Unity
   package changes.
@@ -215,8 +219,11 @@ Plus a **separate `dashboard` job** — `npm run build -w @onesub/shared` → `t
 green. Plus `codeql.yml` (`security-extended`, can fail a PR) and a path-filtered `docs.yml` running
 `npm run docs:check`.
 
-`ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs **no build and no tests** —
-`docs:check` is its only gate. Conversely, `docs.yml` is path-filtered and does not fire on ordinary
+`ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs **no build and no tests** — its
+gates are `docs.yml` and CodeQL, which has no path filter and runs on every PR.
+
+`docs.yml` is path-filtered to Markdown plus `package.json`, `scripts/validate-docs.mjs`,
+`packages/cli/src/index.ts`, and `packages/mcp-server/src/index.ts`. It does **not** fire on other
 source changes, so renaming a file that documentation references can ship green. Run
 `npm run docs:check` yourself when you rename or move anything the docs cite.
 

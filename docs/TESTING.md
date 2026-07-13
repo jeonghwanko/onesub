@@ -32,8 +32,8 @@ behavior, and their message reads as a puzzle unless you know that:
 | `packages/server/src/__tests__/openapi.test.ts` | Every mounted route is documented in `packages/server/src/openapi.ts`, and every documented path is actually mounted | You added, renamed, or removed a route without editing the spec |
 | `packages/server/src/__tests__/schema.test.ts` | `packages/server/sql/schema.sql` matches the DDL constants in `packages/server/src/stores/schema.ts` | You changed a persisted column in only one of the two |
 
-The schema test compares line by line, which is why `.gitattributes` forces LF. CRLF content can make
-it misbehave.
+The schema test strips SQL comments, collapses whitespace, and does a normalized substring check — it
+also strips `\r` first, so a CRLF checkout does not break it.
 
 ## Build and Type Checks
 
@@ -49,8 +49,9 @@ read `packages/shared/dist`, which is gitignored and never rebuilt automatically
 npm run build -w @onesub/shared
 ```
 
-A stale `dist` produces a *silent* failure for new value exports (they resolve to `undefined`), not
-just a type error.
+`tsc` usually catches a stale `dist` loudly, because the stale `.d.ts` ships with it. `npm test` does
+not — Vitest transpiles without type-checking, so a value export missing from the stale `dist` is
+simply `undefined` at runtime. A green test run on an unbuilt shared change proves nothing.
 
 The root build excludes the dashboard, so dashboard changes also require:
 
@@ -230,7 +231,8 @@ separately and can fail a PR.
 
 Use focused checks for package-local changes. Documentation-only changes normally need only
 `npm run docs:check` — `ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs no build
-and no tests at all. Real store E2E runs only when provider/verification behavior warrants it.
+and no tests (CodeQL still runs; it has no path filter). Real store E2E runs only when
+provider/verification behavior warrants it.
 
 ## When a Check Goes Red
 
@@ -239,7 +241,7 @@ and no tests at all. Real store E2E runs only when provider/verification behavio
 | Type error on `@onesub/shared` symbols inside another package | You edited `packages/shared/src` and did not run `npm run build -w @onesub/shared` |
 | A shared constant is `undefined` at runtime, no error thrown | The same stale `dist`, in its silent form |
 | `openapi.test.ts` fails | A route and `openapi.ts` disagree — one side of a contract moved |
-| `schema.test.ts` fails | `sql/schema.sql` and the embedded DDL constants disagree; or CRLF crept into the SQL |
+| `schema.test.ts` fails | `sql/schema.sql` and the embedded DDL constants in `stores/schema.ts` disagree |
 | `npm run size` fails with a missing file | You did not build `@onesub/server` first |
 | `npm run size` fails on the budget | Shrink the addition, or raise the ceiling in `.size-limit.cjs` with a dated justification |
 | CI red but the whole root build is green locally | The separate `dashboard` job — run the three dashboard commands |

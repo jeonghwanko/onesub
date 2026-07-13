@@ -21,8 +21,8 @@ Two things to know before your first edit:
 
 - **`@onesub/shared` is consumed as compiled output.** After editing `packages/shared/src`, run
   `npm run build -w @onesub/shared` or every dependent build, test, and type-check keeps reading the
-  old `dist`. Type changes fail loudly; new *value* exports (a new `SUBSCRIPTION_STATUS` member) go
-  silently `undefined` instead.
+  old `dist`. `tsc` usually complains, but `npm test` does not type-check — there a missing value
+  export is just `undefined` at runtime, so a green test run proves nothing.
 - **Never run `npm run version-packages` or `npm run release` locally.** They belong to the Release
   workflow and rewrite every version field and changelog.
 
@@ -126,8 +126,8 @@ what your change touched — [`AGENTS.md`](AGENTS.md) has the table — and at m
 - [ ] No new `any` or `// @ts-ignore` without a comment explaining why (reviewer-enforced; there is
       no ESLint config in this repository)
 
-A Markdown-only PR skips CI entirely (`ci.yml` sets `paths-ignore: '**/*.md'`), so `docs:check` is
-its only gate.
+A Markdown-only PR skips the build and test job (`ci.yml` sets `paths-ignore: '**/*.md'`). Its gates
+are the `docs` workflow and CodeQL, which has no path filter and runs on every PR.
 
 ## Reporting security issues
 
