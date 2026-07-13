@@ -15,6 +15,12 @@ namespace OneSub.Unity
             public string userId;
             public string productId;
             public string type;
+            /// <summary>
+            /// Which app this receipt belongs to, so one onesub server can serve several.
+            /// An Apple receipt names its own bundle, but a Google purchase token does not —
+            /// without this the server would fall back to its default app.
+            /// </summary>
+            public string appId;
         }
 
         public string ServerUrl { get; set; }
@@ -59,7 +65,8 @@ namespace OneSub.Unity
                 receipt = receipt,
                 userId = userId,
                 productId = productId,
-                type = ApiType(productType)
+                type = ApiType(productType),
+                appId = Application.identifier
             };
             var path = productType == OneSubProductType.Subscription
                 ? "/onesub/validate"
