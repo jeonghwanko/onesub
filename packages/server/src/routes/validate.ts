@@ -8,6 +8,7 @@ import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError, sendZodError } from '../errors.js';
+import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 
 const NO_SUB = { valid: false, subscription: null } as const;
 
@@ -16,6 +17,8 @@ const validateSchema = z.object({
   receipt: z.string().min(1).max(10000),
   userId: z.string().min(1).max(256),
   productId: z.string().min(1).max(256),
+  /** Which app this receipt belongs to. Optional — see OneSubServerConfig.apps. */
+  appId: z.string().min(1).max(256).optional(),
 });
 
 export function createValidateRouter(
@@ -23,15 +26,17 @@ export function createValidateRouter(
   store: SubscriptionStore
 ): Router {
   const router = Router();
+  const registry = getAppRegistry(config);
 
   router.post(ROUTES.VALIDATE, async (req: Request, res: Response) => {
     let platform: string;
     let receipt: string;
     let userId: string;
     let productId: string;
+    let appId: string | undefined;
 
     try {
-      ({ platform, receipt, userId, productId } = validateSchema.parse(req.body));
+      ({ platform, receipt, userId, productId, appId } = validateSchema.parse(req.body));
     } catch (err) {
       if (err instanceof z.ZodError) {
         sendZodError(res, err, NO_SUB);
@@ -43,18 +48,25 @@ export function createValidateRouter(
     try {
       let sub = null;
 
+      // An Apple receipt names its own app, so an Apple client needs no appId.
+      // A Google purchase token does not, so it relies on appId (or the default).
+      const appConfig = registry.configFor({
+        appId,
+        bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
+      });
+
       if (platform === 'apple') {
-        if (!config.apple) {
+        if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_SUB);
           return;
         }
-        sub = await validateAppleReceipt(receipt, config.apple);
+        sub = await validateAppleReceipt(receipt, appConfig.apple);
       } else {
-        if (!config.google) {
+        if (!appConfig.google) {
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_SUB);
           return;
         }
-        sub = await validateGoogleReceipt(receipt, productId, config.google);
+        sub = await validateGoogleReceipt(receipt, productId, appConfig.google);
       }
 
       if (!sub) {
@@ -95,8 +107,8 @@ export function createValidateRouter(
       // Google requires acknowledgement within 3 days of purchase or the
       // transaction is auto-refunded. Fire-and-forget — entitlement is already
       // saved, ack is idempotent on the Play side.
-      if (platform === 'google' && config.google) {
-        void acknowledgeGoogleSubscription(receipt, productId, config.google);
+      if (platform === 'google' && appConfig.google) {
+        void acknowledgeGoogleSubscription(receipt, productId, appConfig.google);
       }
 
       const response: ValidateReceiptResponse = { valid: true, subscription: sub };
