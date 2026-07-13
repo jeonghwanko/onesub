@@ -5,9 +5,13 @@
 ## Affected packages
 
 - [ ] `@onesub/shared`
+- [ ] `@onesub/providers`
 - [ ] `@onesub/server`
-- [ ] `@onesub/sdk`
+- [ ] `@jeonghwanko/onesub-sdk`
 - [ ] `@onesub/mcp-server`
+- [ ] `@onesub/cli`
+- [ ] `com.onesub.unity` / `com.onesub.unity.platform-services` (UPM)
+- [ ] `@onesub/dashboard` (private — Docker image, no changeset needed)
 - [ ] examples / docs / CI only
 
 ## Type of change

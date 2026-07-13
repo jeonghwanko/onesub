@@ -252,13 +252,21 @@ Previously `savePurchase` used `ON CONFLICT (transaction_id) DO NOTHING`, so the
 
 ---
 
-## `@onesub/sdk` 0.2.x → 0.3.x
+## React Native SDK 0.2.x → 0.3.x
 
-**What changed:** `react-native-iap` peer dependency bumped to **v15**. v15 switched from promise-returning `requestPurchase()` to an event-based model (`purchaseUpdatedListener`). The SDK now uses the new pattern internally.
+**What changed:**
+
+1. **The package was renamed** from `@onesub/sdk` to **`@jeonghwanko/onesub-sdk`** in this release.
+   `@onesub/sdk` receives no further updates. Every version from 0.3.0 onward is published under the
+   new name; all other documentation refers to it that way.
+2. `react-native-iap` peer dependency bumped to **v15**. v15 switched from promise-returning
+   `requestPurchase()` to an event-based model (`purchaseUpdatedListener`). The SDK now uses the new
+   pattern internally.
 
 **Action:**
+- `npm uninstall @onesub/sdk && npm i @jeonghwanko/onesub-sdk`, and update your import specifiers.
 - `npm i react-native-iap@^15` in your app.
-- No source change required if you only use `useOneSub()` — the pattern change is internal.
+- No other source change required if you only use `useOneSub()` — the pattern change is internal.
 
 ---
 

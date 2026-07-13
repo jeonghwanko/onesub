@@ -101,6 +101,12 @@ docker compose up
 Use fake/local credentials only for mock mode. Real Apple and Google credentials belong in a secret
 manager or an untracked local environment file.
 
+`examples/` is not an npm workspace, but it has no `node_modules` of its own, so inside this checkout
+Node resolution walks up to the root `node_modules/@onesub/server` — a symlink to `packages/server`.
+The example therefore runs **your local build**, not the version pinned in its own `package.json`
+(that pin only applies to a standalone copy). Run `npm run build` first, or you will exercise a stale
+`dist`.
+
 ## Run the Dashboard
 
 Start a OneSub server with `adminSecret` configured, then in another terminal:

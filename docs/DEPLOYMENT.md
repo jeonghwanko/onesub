@@ -171,7 +171,7 @@ OpenAPI route:
 ```ts
 import { openapiHandler } from '@onesub/server';
 
-app.get('/openapi.json', openapiHandler);
+app.get('/openapi.json', openapiHandler());
 ```
 
 Protect or omit internal/admin operations in externally published API portals as required by the

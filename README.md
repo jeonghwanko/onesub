@@ -170,6 +170,22 @@ Mounted only when `config.adminSecret` is set. All requests must include the `X-
 | `GET /onesub/admin/customers/:userId` | Full per-user profile: subscriptions + purchases + entitlements (when configured) |
 | `GET /onesub/admin/webhook-deadletters` | List failed webhook jobs (requires BullMQ queue) |
 | `POST /onesub/admin/webhook-replay/:id` | Replay a failed webhook job (requires BullMQ queue) |
+| `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh one subscription from the Apple Status API (requires App Store Server API credentials) |
+
+### Apple promotional offers (opt-in — separate mount and separate header)
+
+| Endpoint | What it does |
+|----------|-------------|
+| `POST /onesub/apple/offer-signature` | Sign an Apple promotional offer |
+
+Mounted when `apple.offerKeyId` **and** `apple.offerPrivateKey` are set — independently of
+`adminSecret`. Its auth header is **`X-Onesub-Offer-Secret`** (compared against `adminSecret`), not
+`X-Admin-Secret`. If `adminSecret` is unset the endpoint is unauthenticated and the host is
+responsible for securing it.
+
+The full route list lives in [`packages/server/README.md`](packages/server/README.md). Note that no
+test validates that list — `openapi.test.ts` checks the mounted routers against
+`packages/server/src/openapi.ts`, not against any Markdown.
 
 ### Entitlements (opt-in — requires `config.entitlements`)
 
@@ -449,7 +465,7 @@ run it for you on startup.
 
 ```bash
 git clone https://github.com/jeonghwanko/onesub.git
-cd onesub && npm install && npm run build && npm test
+cd onesub && npm ci && npm run build && npm test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, [docs/README.md](docs/README.md)

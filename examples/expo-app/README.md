@@ -1,6 +1,6 @@
 # onesub Expo example
 
-Expo Router app that exercises every public surface of `@onesub/sdk`:
+Expo Router app that exercises every public surface of `@jeonghwanko/onesub-sdk`:
 subscriptions, consumables, non-consumables, and entitlement gates.
 
 ## Quick start (5 minutes)
