@@ -12,7 +12,7 @@ npm ci                # reproducible. Use `npm install` only when changing depen
 npm run build         # shared → providers → server → sdk → mcp-server → cli
 npm test              # vitest
 npm run type-check
-npm run docs:check    # trailing whitespace, local links, and documented workspace/tool/CLI coverage
+npm run docs:check    # links, workspace/tool/CLI coverage, and server route parity vs the OpenAPI spec
 ```
 
 Node 20+ is required (uses `node:crypto.X509Certificate`). CI runs Node 22.

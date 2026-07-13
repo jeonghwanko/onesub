@@ -183,9 +183,10 @@ Mounted when `apple.offerKeyId` **and** `apple.offerPrivateKey` are set — inde
 `X-Admin-Secret`. If `adminSecret` is unset the endpoint is unauthenticated and the host is
 responsible for securing it.
 
-The full route list lives in [`packages/server/README.md`](packages/server/README.md). Note that no
-test validates that list — `openapi.test.ts` checks the mounted routers against
-`packages/server/src/openapi.ts`, not against any Markdown.
+The full route list lives in [`packages/server/README.md`](packages/server/README.md) and is
+machine-checked: `openapi.test.ts` asserts the mounted routers against
+`packages/server/src/openapi.ts`, and `npm run docs:check` asserts that spec against the README. A
+route cannot ship undocumented.
 
 ### Entitlements (opt-in — requires `config.entitlements`)
 

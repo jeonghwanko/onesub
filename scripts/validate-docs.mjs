@@ -135,6 +135,72 @@ async function validateMcpTools() {
   return compareSets('MCP tools', registered, documented);
 }
 
+// Canonical route names live in @onesub/shared as ROUTES; openapi.ts keys its
+// `paths` off them (or off a literal, for parameterized routes). openapi.test.ts
+// already asserts openapi.ts against the actually mounted routers, so binding
+// the server README to openapi.ts makes the whole chain machine-checked:
+// mounted routers -> openapi.ts -> packages/server/README.md.
+function parseRoutesConstant(source) {
+  const block = /export const ROUTES = \{([\s\S]*?)\n\} as const;/u.exec(source);
+  if (!block) throw new Error('could not locate ROUTES in packages/shared/src/constants.ts');
+  const routes = new Map();
+  for (const match of block[1].matchAll(/^\s*([A-Z_]+):\s*'([^']+)'/gmu)) {
+    routes.set(match[1], match[2]);
+  }
+  if (!routes.size) throw new Error('parsed no entries from ROUTES');
+  return routes;
+}
+
+// Express writes `:userId`, OpenAPI writes `{userId}`. Compare in one form.
+function canonicalPath(path) {
+  return path.split('?')[0].trim().replace(/\{([^}]+)\}/gu, ':$1');
+}
+
+function parseOpenApiOperations(source, routes) {
+  const operations = [];
+  let currentPath = null;
+  for (const line of source.split('\n')) {
+    const pathKey = /^ {4}(?:\[ROUTES\.([A-Z_]+)\]|'([^']+)'):\s*\{/u.exec(line);
+    if (pathKey) {
+      const [, routeName, literal] = pathKey;
+      if (routeName && !routes.has(routeName)) {
+        throw new Error(`openapi.ts references unknown ROUTES.${routeName}`);
+      }
+      currentPath = canonicalPath(routeName ? routes.get(routeName) : literal);
+      continue;
+    }
+    // Any other line at path-key depth closes the current block. Without this a
+    // path key we failed to parse would silently donate its methods to the
+    // previous route.
+    if (/^ {4}\S/u.test(line)) {
+      currentPath = null;
+      continue;
+    }
+    const method = /^ {6}(get|post|put|patch|delete):\s*\{/u.exec(line);
+    if (method && currentPath) operations.push(`${method[1].toUpperCase()} ${currentPath}`);
+  }
+  if (!operations.length) {
+    throw new Error('parsed no operations from packages/server/src/openapi.ts — the shape changed');
+  }
+  return operations;
+}
+
+async function validateServerRoutes() {
+  const constants = await readFile(join(root, 'packages/shared/src/constants.ts'), 'utf8');
+  const openapi = await readFile(join(root, 'packages/server/src/openapi.ts'), 'utf8');
+  const docs = await readFile(join(root, 'packages/server/README.md'), 'utf8');
+
+  const specified = parseOpenApiOperations(openapi, parseRoutesConstant(constants));
+
+  // Only middleware-mounted routes are compared. `/openapi.json` is mounted by
+  // the host via openapiHandler(), so it is documented without being in the spec.
+  const documented = [...docs.matchAll(/^\|\s*`(GET|POST|PUT|PATCH|DELETE)\s+([^`]+)`/gmu)]
+    .map((match) => `${match[1]} ${canonicalPath(match[2])}`)
+    .filter((entry) => entry.includes(' /onesub/'));
+
+  return compareSets('server routes', specified, documented);
+}
+
 async function validateCliCommands() {
   const source = await readFile(join(root, 'packages/cli/src/index.ts'), 'utf8');
   const docs = await readFile(join(root, 'packages/cli/README.md'), 'utf8');
@@ -149,6 +215,7 @@ await Promise.all(markdownFiles.map(validateMarkdown));
 const workspaceCount = await validateWorkspaceMap();
 const mcpToolCount = await validateMcpTools();
 const cliCommandCount = await validateCliCommands();
+const routeCount = await validateServerRoutes();
 
 if (failures.length) {
   console.error(`Documentation validation failed (${failures.length} issue${failures.length === 1 ? '' : 's'}):`);
@@ -158,5 +225,5 @@ if (failures.length) {
 
 console.log(
   `Documentation OK: ${markdownFiles.length} Markdown files, ${workspaceCount} workspaces, ` +
-  `${mcpToolCount} MCP tools, ${cliCommandCount} CLI commands.`,
+  `${mcpToolCount} MCP tools, ${cliCommandCount} CLI commands, ${routeCount} server routes.`,
 );

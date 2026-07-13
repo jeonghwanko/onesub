@@ -1,5 +1,7 @@
 name: Docs
 
+# The trigger paths must list every input `scripts/validate-docs.mjs` reads, or a
+# source change can silently invalidate the docs and still ship green.
 on:
   push:
     branches: [master]
@@ -9,6 +11,8 @@ on:
       - 'scripts/validate-docs.mjs'
       - 'packages/cli/src/index.ts'
       - 'packages/mcp-server/src/index.ts'
+      - 'packages/server/src/openapi.ts'
+      - 'packages/shared/src/constants.ts'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [master]
@@ -18,6 +22,8 @@ on:
       - 'scripts/validate-docs.mjs'
       - 'packages/cli/src/index.ts'
       - 'packages/mcp-server/src/index.ts'
+      - 'packages/server/src/openapi.ts'
+      - 'packages/shared/src/constants.ts'
       - '.github/workflows/docs.yml'
 
 jobs:
@@ -28,5 +34,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+      # No `npm ci`: validate-docs.mjs deliberately imports nothing outside
+      # node:fs/node:path/node:url. Keep it dependency-free or add an install step.
       - name: Validate documentation
         run: npm run docs:check
