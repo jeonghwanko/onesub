@@ -19,6 +19,10 @@ OneSubPurchasing.Instance.Initialize(settings, userIdProvider);
 credentials, database URLs, admin secrets, receipts, and purchase tokens must never be stored in the
 asset.
 
+For installation, server setup, settings creation, event handling, entitlement caching, fulfillment,
+restore behavior, local testing, and troubleshooting, follow the complete
+[`Unity Integration Guide`](../../docs/UNITY-INTEGRATION.md).
+
 ## Optional PenguinRun platform services
 
 `OneSubPlatformServices` is the optional game-services/review/sharing adapter used by PenguinRun. It

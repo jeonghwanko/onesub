@@ -347,7 +347,7 @@ export interface OneSubServerConfig {
    * productIds ("pro_monthly"), insulating it from SKU changes / promos.
    *
    * When set, `/onesub/entitlement` and `/onesub/entitlements` routes are
-   * mounted. Without it, those routes return 503 ENTITLEMENTS_NOT_CONFIGURED.
+   * mounted. Without it, the routes are not mounted and Express returns 404.
    *
    * @example
    * entitlements: {

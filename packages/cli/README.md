@@ -16,6 +16,17 @@ Or full stack (Postgres + server) in one command:
 docker compose up
 ```
 
+For local integration and lifecycle testing without Apple/Google credentials, start the fully mocked
+development server:
+
+```bash
+npx @onesub/cli dev --port 4100
+```
+
+It listens on port 4100 by default, enables Apple and Google mock providers, and prints the mock
+receipt scenarios, webhook URLs, and development admin secret at startup. Never use this mode for a
+production deployment.
+
 ## What it generates
 
 | File | Purpose |
@@ -31,6 +42,7 @@ That's it. No prompts, no interactive questionnaire — same scaffold every time
 
 ```
 onesub init [directory]   Scaffold into <directory> (default: .)
+onesub dev [--port N]     Start a fully mocked local server (default port: 4100)
 onesub --help             Show help
 ```
 

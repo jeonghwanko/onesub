@@ -3,15 +3,27 @@
 ## Package Dependency Graph
 
 ```
-@onesub/shared (leaf — no dependencies on other onesub packages)
+@onesub/providers (standalone product-management API wrappers)
     ↑
-    ├── @onesub/server (depends on shared)
-    ├── @jeonghwanko/onesub-sdk (depends on shared)
-    ├── @onesub/mcp-server (depends on shared)
-    └── @onesub/cli (depends on shared; generates server-project templates)
+    └── @onesub/mcp-server
+
+@onesub/shared (canonical contracts; no OneSub package dependencies)
+    ↑
+    ├── @onesub/server
+    │       ↑
+    │       └── @onesub/cli (also depends directly on shared)
+    ├── @jeonghwanko/onesub-sdk
+    ├── @onesub/mcp-server
+    └── @onesub/dashboard
+
+com.onesub.unity ──HTTP──> @onesub/server
+    ↑
+    └── com.onesub.unity.platform-services
 ```
 
-No circular dependencies. SDK and server are independent of each other.
+No circular dependencies. The SDK and server share contracts but do not depend on one another. The
+dashboard and Unity SDK consume the server over HTTP. Unity packages are UPM packages and are not
+part of the npm workspace graph.
 
 ## SSOT Rules
 
@@ -23,6 +35,9 @@ No circular dependencies. SDK and server are independent of each other.
 | Apple/Google config | `shared/types.ts` → `OneSubServerConfig` | server providers use `NonNullable<Config['apple']>` |
 | Default port | `shared/constants.ts` → `DEFAULT_PORT` | server, MCP tools |
 | SDK hook API | `sdk/useOneSub.ts` → `useOneSub()` | MCP code generation must match |
+| Error codes | `shared/constants.ts` → `ONESUB_ERROR_CODE` | server responses, SDK errors, host applications |
+| Multi-app selection | `server/apps.ts` → `getAppRegistry()` | validation and webhook routes |
+| OpenAPI contract | `server/openapi.ts` → `ONESUB_OPENAPI` | host applications and generated clients |
 
 ## Server Middleware Architecture
 
@@ -59,15 +74,46 @@ createOneSubMiddleware(config)
       │                                     (Google non-consumable: acknowledgeGoogleProduct fire-and-forget)
       ├── GET  /onesub/purchase/status    → purchaseStore.getPurchasesByUserId → { purchases }
       │
-      └── Admin (only if config.adminSecret is set; requires X-Admin-Secret header):
+      │── Entitlements (only if config.entitlements is set):
+      ├── GET  /onesub/entitlement        → evaluate one configured entitlement
+      ├── GET  /onesub/entitlements       → evaluate every configured entitlement
+      │
+      │── Apple offer signing (only if offerKeyId + offerPrivateKey are set):
+      ├── POST /onesub/apple/offer-signature → sign StoreKit promotional offer payload
+      │
+      └── Admin and metrics (only if config.adminSecret is set; requires X-Admin-Secret):
           ├── DELETE /onesub/purchase/admin/:userId/:productId   → purchaseStore.deletePurchases
           ├── POST   /onesub/purchase/admin/grant                → purchaseStore.savePurchase
-          └── POST   /onesub/purchase/admin/transfer             → purchaseStore.reassignPurchase
+          ├── POST   /onesub/purchase/admin/transfer             → purchaseStore.reassignPurchase
+          ├── GET    /onesub/admin/subscriptions                 → filtered/paginated subscriptions
+          ├── GET    /onesub/admin/subscriptions/:transactionId  → subscription detail
+          ├── GET    /onesub/admin/customers/:userId             → customer profile
+          ├── POST   /onesub/admin/sync-apple/:originalTransactionId → Apple Status API sync
+          ├── GET    /onesub/admin/webhook-deadletters           → failed BullMQ jobs
+          ├── POST   /onesub/admin/webhook-replay/:id            → replay a failed job
+          └── GET    /onesub/metrics/*                            → active/started/expired counts
 ```
 
 All runtime logging goes through `config.logger` (OneSubLogger interface; defaults to `console`). Providers and routes import `log` from the internal `logger.ts` singleton instead of calling `console.*` directly.
 
-All outbound HTTP calls (Apple Status API, Apple Consumption Response, Google subscriptionsv2, Google OAuth, Google ack/consume) go through `http.ts/fetchWithTimeout` — `AbortController` with a 10s default budget so a hung upstream can't pile up webhook handlers.
+All outbound HTTP calls (Apple Status/History APIs, Apple Consumption Response, Google
+subscriptionsv2, Google OAuth, Google ack/consume) go through `http.ts/fetchWithTimeout` —
+`AbortController` with a 10s default budget so a hung upstream cannot pile up handlers.
+
+### Multi-app Resolution
+
+`OneSubServerConfig.apps` lets one process serve multiple Apple bundle IDs and Google package names.
+The legacy top-level `apple` and `google` configuration remains the single-app/default path.
+
+`server/apps.ts` resolves requests in this order:
+
+1. Explicit request `appId` (also accepts a configured bundle ID or package name).
+2. Apple bundle ID decoded from the receipt, followed by normal cryptographic verification.
+3. `defaultAppId`, the legacy top-level config, or the only configured app.
+
+Google purchase tokens do not contain a package name, so non-default Google apps must send `appId`.
+Unknown explicit identifiers fail closed by returning a config with no provider; they never fall back
+to another app's credentials.
 
 ## Store Interfaces
 
@@ -78,6 +124,9 @@ interface SubscriptionStore {
   save(subscription: SubscriptionInfo): Promise<void>;
   getByUserId(userId: string): Promise<SubscriptionInfo | null>;
   getByTransactionId(txId: string): Promise<SubscriptionInfo | null>;
+  getAllByUserId(userId: string): Promise<SubscriptionInfo[]>;
+  listAll(): Promise<SubscriptionInfo[]>;
+  listFiltered(options: ListFilteredOptions): Promise<ListFilteredResult>;
 }
 ```
 
@@ -88,6 +137,7 @@ interface PurchaseStore {
   savePurchase(purchase: PurchaseInfo): Promise<void>;
   getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
+  listAll(): Promise<PurchaseInfo[]>;
   hasPurchased(userId: string, productId: string): Promise<boolean>;
   reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>;       // 0.6.1+
   deletePurchases(userId: string, productId: string): Promise<number>;                // 0.4.0+
@@ -111,7 +161,13 @@ Postgres columns added in `0.8.0` (`linked_purchase_token`) and `0.9.0` (`auto_r
 
 Implementations:
 - `InMemorySubscriptionStore` / `InMemoryPurchaseStore` — development/testing only
-- `PostgresSubscriptionStore` / `PostgresPurchaseStore` — production (raw pg, UPSERT, auto-schema)
+- `PostgresSubscriptionStore` / `PostgresPurchaseStore` — durable SQL storage (raw pg, UPSERT, auto-schema)
+- `RedisSubscriptionStore` / `RedisPurchaseStore` — multi-instance Redis storage
+
+Short-lived provider credentials use the separate `CacheAdapter` abstraction. Built-in in-memory
+and Redis cache adapters are also used by webhook idempotency stores. Webhook processing is
+synchronous by default; `InProcessWebhookQueue` or `BullMQWebhookQueue` can move state mutation out
+of the request path. BullMQ jobs that exhaust retries are exposed through the admin dead-letter APIs.
 
 ### Non-consumable Duplicate Prevention
 
@@ -125,23 +181,30 @@ Application-level `hasPurchased()` check is a fast path; the DB constraint is th
 
 ## MCP Tool Design
 
-All 7 tools return `{ content: [{ type: 'text', text: string }] }`:
+The registered tools return MCP text content:
 - `onesub_setup` — generates integration code matching actual SDK API (`useOneSub`)
 - `onesub_add_paywall` — generates paywall component (3 styles)
 - `onesub_check_status` — live API call to server
 - `onesub_troubleshoot` — pattern-matching diagnostics
 - `onesub_create_product` — create products on App Store Connect / Google Play via API
 - `onesub_list_products` — list registered products from stores
+- `onesub_manage_product` — update product display names or delete products
 - `onesub_view_subscribers` — query subscriber status
+- `onesub_simulate_purchase` — exercise mock receipt validation without store credentials
+- `onesub_simulate_webhook` — send lifecycle webhook fixtures to a development server
+- `onesub_inspect_state` — inspect a user's subscription and purchase state
 
-MCP output is regression-tested: tests assert generated code contains `useOneSub` (not `useSubscription`).
+Product-management tools delegate to `@onesub/providers`; integration/simulation tools use shared
+contracts and the public server HTTP surface. Generated output is regression-tested against the
+actual `useOneSub` SDK API.
 
 ## Concurrency Model
 
 - Node.js single-threaded — no mutex needed for InMemoryStore Map operations
 - Google OAuth token: promise deduplication prevents thundering herd, 60s pre-expiry refresh window
 - **Apple App Store Server API JWT**: same pattern — module-level cache keyed by `${issuerId}|${keyId}`, 20-minute TTL, refresh 60s before expiry, in-flight Promise dedup so concurrent burst pays one ECDSA-sign (`0.9.0+`)
-- Apple JWKS: `jose.createRemoteJWKSet` handles caching/refresh internally
+- Apple JWS: each payload's `x5c` chain is verified through its intermediates to the pinned Apple
+  Root CA G3 before the leaf key verifies the signature
 - PostgresStore UPSERT: atomic `ON CONFLICT DO UPDATE` — no read-then-write race
 - Outbound `fetchWithTimeout` (`http.ts`, `0.9.0+`): every upstream call wrapped with `AbortController` (default 10s). Caller signals composed via `addEventListener('abort', { once: true })`. Timer cleared in `finally` — no leaked handles
 

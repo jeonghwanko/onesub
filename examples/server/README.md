@@ -43,10 +43,10 @@ Apply it manually if you manage migrations yourself:
 psql "$DATABASE_URL" -f ../../packages/server/sql/schema.sql
 ```
 
-## With Docker Compose (server + Postgres)
+## With Docker Compose (server + Postgres + Redis)
 
 Fastest way to get a full stack running — Postgres auto-initialized with the
-onesub schema, server wired up to it:
+onesub schema, Redis available for cache/idempotency/queue, and the server wired to both:
 
 ```bash
 cd examples/server

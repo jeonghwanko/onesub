@@ -66,12 +66,16 @@ app.listen(4100);
 | `GET  /onesub/admin/subscriptions?userId=&status=&productId=&platform=&limit=&offset=` | Filtered + paginated subscription list (admin) |
 | `GET  /onesub/admin/subscriptions/:transactionId` | Single subscription detail by originalTransactionId (admin) |
 | `GET  /onesub/admin/customers/:userId` | Full per-user profile: subscriptions + purchases + entitlements (admin) |
+| `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh one subscription from Apple Status API (admin) |
+| `GET  /onesub/admin/webhook-deadletters` | List failed durable webhook jobs (admin + BullMQ) |
+| `POST /onesub/admin/webhook-replay/:id` | Replay a failed durable webhook job (admin + BullMQ) |
 | `GET  /onesub/entitlement?userId=&id=` | Single entitlement check (requires `config.entitlements`) |
 | `GET  /onesub/entitlements?userId=` | All entitlements in one round-trip (requires `config.entitlements`) |
 | `GET  /onesub/metrics/active` | Current active subscriber + purchaser counts (admin) |
 | `GET  /onesub/metrics/started?from=&to=&groupBy=` | Subscriptions started in a date range (admin) |
 | `GET  /onesub/metrics/expired?from=&to=&groupBy=` | Subscriptions expired/canceled in a date range (admin) |
 | `GET  /onesub/metrics/purchases/started?from=&to=&groupBy=` | Non-consumable purchases started in a date range (admin) |
+| `POST /onesub/apple/offer-signature` | Sign an Apple promotional offer (requires offer credentials) |
 
 ### Postgres schema
 
@@ -146,6 +150,11 @@ interface OneSubServerConfig {
     bundleId: string;
     sharedSecret?: string;     // legacy App Store shared secret (optional for StoreKit 2 JWS)
     skipJwsVerification?: boolean;  // DEV ONLY — warns in production
+    keyId?: string;            // App Store Server API key
+    issuerId?: string;
+    privateKey?: string;
+    offerKeyId?: string;       // separate subscription-offer key
+    offerPrivateKey?: string;
   };
   google?: {
     packageName: string;
@@ -153,11 +162,22 @@ interface OneSubServerConfig {
     pushAudience?: string;       // Pub/Sub push endpoint URL for JWT verification
   };
   database: { url: string };
+  apps?: Array<{             // optional: isolate credentials for multiple apps
+    id: string;
+    apple?: OneSubAppleConfig;
+    google?: OneSubGoogleConfig;
+  }>;
+  defaultAppId?: string;
   adminSecret?: string;          // enables /onesub/purchase/admin/* + /onesub/admin/* + /onesub/metrics/* routes
   entitlements?: Record<string, { productIds: string[] }>;  // enables /onesub/entitlement(s) routes
   logger?: OneSubLogger;         // { info, warn, error } — defaults to console
 }
 ```
+
+For multi-app deployments, validation requests may send `appId`. Apple receipts can also resolve by
+their embedded bundle ID. Google purchase tokens do not identify their package, so non-default
+Google apps must send `appId`. Unknown explicit IDs fail closed instead of using another app's
+credentials.
 
 Environment variables the CLI template reads: `APPLE_BUNDLE_ID`, `APPLE_SHARED_SECRET`, `GOOGLE_PACKAGE_NAME`, `GOOGLE_SERVICE_ACCOUNT_KEY`, `GOOGLE_PUSH_AUDIENCE`, `DATABASE_URL`, `ADMIN_SECRET`, `PORT`, `ONESUB_ALLOW_SANDBOX`.
 

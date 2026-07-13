@@ -232,12 +232,20 @@ const { valid, purchase } = await res.json();
 - **Webhooks**: Lifecycle classification for grace_period / on_hold / paused (Apple subtype + Google notification types), `acknowledgePurchase` auto-called for Google subs+IAP, `voidedPurchasesNotification` routed to right store, `linkedPurchaseToken` chain tracking for plan changes
 - **Refund policy**: Choose `'immediate'` (default — flip status=canceled) or `'until_expiry'` (keep entitlement until original expiry)
 - **Outbound calls**: All upstream fetches (Apple/Google APIs) wrapped with `AbortController` timeout (default 10s) so a hung upstream doesn't pile up webhook handlers
-- **Storage**: Pluggable `SubscriptionStore` + `PurchaseStore` — built-in PostgreSQL (auto-backfilled columns via `ALTER TABLE IF NOT EXISTS`) + in-memory
+- **Storage**: Pluggable `SubscriptionStore` + `PurchaseStore` — built-in in-memory, PostgreSQL (auto-backfilled columns via `ALTER TABLE IF NOT EXISTS`), and Redis implementations
+- **Scale-out**: Redis-backed cache/idempotency plus optional BullMQ webhook processing and dead-letter replay
+- **Multi-app**: One server can isolate credentials for multiple Apple bundle IDs and Google package names via `config.apps`; existing single-app config remains compatible
+- **Operations**: Admin/metrics endpoints, generated OpenAPI document, optional OpenTelemetry spans, and a self-hosted dashboard
 - **Validation**: zod input validation, 50KB body limit, userId length checks
-- **Tests**: 296+ tests (single-notification units + multi-notification e2e lifecycle scenarios)
+- **Tests**: Unit, integration-style, and multi-notification lifecycle scenarios run with Vitest
 - **Security**: [Full details →](docs/SECURITY.md)
 - **Troubleshooting**: [errorCode → cause → fix](docs/RECEIPT-ERRORS.md)
 - **Migration**: [Per-version upgrade notes](docs/MIGRATION.md)
+- **Local development**: [Clone, mock server, dashboard, and Unity →](docs/LOCAL-DEVELOPMENT.md)
+- **Configuration**: [Server, SDK, multi-app, and environment options →](docs/CONFIGURATION.md)
+- **Deployment**: [PostgreSQL, Redis, BullMQ, webhooks, and operations →](docs/DEPLOYMENT.md)
+- **Testing**: [Vitest, mock lifecycle, store E2E, and Unity →](docs/TESTING.md)
+- **Unity integration**: [Install, configure, purchase, restore, and entitlement handling →](docs/UNITY-INTEGRATION.md)
 
 ---
 
@@ -287,17 +295,39 @@ The SDK is optional. You can use `@onesub/server` with any client — React Nati
 
 ## Optional: MCP Server (AI Integration)
 
-For Claude Code / Cursor users — AI helps set up your subscription:
+For Codex, Claude Code, and other MCP clients — AI helps set up and test your subscription:
 
 ```json
-{ "mcpServers": { "onesub": { "command": "npx", "args": ["@onesub/mcp-server"] } } }
+{ "mcpServers": { "onesub": { "command": "npx", "args": ["-y", "@onesub/mcp-server"] } } }
 ```
 
 > "Add a monthly subscription to my Expo app"
 
-### Skill document for AI agents
+Useful first prompts:
 
-A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`](SKILL.md). Point Claude / Cursor / any agent at it for complete onesub context:
+```text
+Read AGENTS.md and docs/README.md. Explain how to develop and validate this repository locally.
+Do not modify files yet.
+```
+
+```text
+Analyze this app and plan a OneSub integration for product pro_monthly. List required files,
+environment variables, native dependencies, webhooks, and validation steps before editing.
+```
+
+```text
+Use the OneSub mock server at http://localhost:4100 to simulate a subscription purchase, transition
+it to grace_period, and inspect the resulting user state.
+```
+
+See [`docs/AI-WORKFLOW.md`](docs/AI-WORKFLOW.md) for implementation, diagnosis, local simulation,
+and safe store-product management prompt templates.
+
+### Documents for AI agents
+
+Use [`SKILL.md`](SKILL.md) as portable context when an agent is integrating OneSub into another
+application. Contributors working in this repository should use [`AGENTS.md`](AGENTS.md); Claude's
+[`CLAUDE.md`](CLAUDE.md) imports that same canonical guide so the two instruction sets do not drift.
 
 > Read `https://raw.githubusercontent.com/jeonghwanko/onesub/master/SKILL.md` then integrate onesub into this project.
 
@@ -314,6 +344,8 @@ A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`
 | [`@onesub/cli`](https://www.npmjs.com/package/@onesub/cli) | ![npm](https://img.shields.io/npm/v/@onesub/cli.svg) | Scaffolds a starter server project | `npx @onesub/cli init` |
 | [`@onesub/shared`](https://www.npmjs.com/package/@onesub/shared) | ![npm](https://img.shields.io/npm/v/@onesub/shared.svg) | Shared TypeScript types | Auto-installed |
 | `onesub-dashboard` | [![ghcr](https://img.shields.io/badge/ghcr.io-latest-blue)](https://github.com/jeonghwanko/onesub/pkgs/container/onesub-dashboard) | Self-hosted operations dashboard (Docker) | `docker run -p 4101:4101 -e ONESUB_SERVER_URL=... ghcr.io/jeonghwanko/onesub-dashboard:latest` |
+| [`com.onesub.unity`](packages/unity) | `0.2.0` | Unity purchasing, restore, localized price, and server validation Core | Unity Package Manager (Git URL + `?path=/packages/unity`) |
+| [`com.onesub.unity.platform-services`](packages/unity-platform-services) | `0.2.0` | Optional Unity sharing, review, leaderboard, and authentication helpers | Unity Package Manager (Git URL + `?path=/packages/unity-platform-services`) |
 
 ---
 
@@ -325,10 +357,12 @@ A single-file integration guide optimized for LLM ingestion lives at [`SKILL.md`
 | Revenue share | 1% after $2.5K | **0% forever** |
 | Data ownership | Their database | **Your database** |
 | Vendor lock-in | Yes | **No (MIT open source)** |
-| Dashboard | Yes | Not yet |
+| Dashboard | Hosted | **Self-hosted operations dashboard** |
 | Setup time | 2-3 hours | **10 minutes** |
 
-**onesub is not a RevenueCat replacement.** RevenueCat offers analytics, experiments, and a dashboard. onesub is for developers who want to own their subscription infrastructure.
+**onesub is not a full RevenueCat replacement.** RevenueCat provides hosted infrastructure,
+experiments, and deeper revenue analytics. OneSub provides a self-hosted operational dashboard and
+core lifecycle metrics for developers who want to own their subscription infrastructure.
 
 Already on RevenueCat and curious? See [`docs/MIGRATE-FROM-REVENUECAT.md`](docs/MIGRATE-FROM-REVENUECAT.md) — a step-by-step guide covering client code, historical data, webhook switchover, and rollback.
 
@@ -349,7 +383,7 @@ cd examples/server
 cp .env.example .env   # add your Apple/Google credentials
 npm install && npm start
 
-# ── or, full stack (server + Postgres) in one command ──
+# ── or, full stack (server + Postgres + Redis) in one command ──
 docker compose up      # http://localhost:4100
 
 # 2. Start the app (in another terminal)
@@ -384,7 +418,7 @@ run it for you on startup.
 
 ## Roadmap
 
-- [x] Apple StoreKit 2 receipt validation (JWKS verified, x5c chain → Apple Root CA G3)
+- [x] Apple StoreKit 2 receipt validation (JWS `x5c` chain → Apple Root CA G3)
 - [x] Google Play Billing v3 (`subscriptionsv2.get` resource)
 - [x] Webhook handlers (Apple V2 + Google RTDN, voided purchases included)
 - [x] Lifecycle states: `grace_period` / `on_hold` / `paused` (correct classification, not inferred)
@@ -400,10 +434,12 @@ run it for you on startup.
 - [x] Security hardening (zod validation, body limits, signature verification)
 - [x] e2e lifecycle scenario test suite (multi-notification sequences)
 - [x] CLI scaffolding (`npx @onesub/cli init`)
-- [ ] Apple Family Sharing (`FAMILY_SHARED`)
-- [ ] Apple Promotional Offer server-side signing
-- [ ] Google `oneTimeProductNotification` (currently only voided purchases handled for IAP)
-- [ ] Apple Transaction History API (replay past transactions)
+- [x] Apple Family Sharing (`FAMILY_SHARED` ownership mapping)
+- [x] Apple Promotional Offer server-side signing
+- [x] Google `oneTimeProductNotification` acknowledgement handling
+- [x] Apple Transaction History API client
+- [x] Multi-app receipt validation (multiple bundle IDs/package names on one server)
+- [x] Unity purchasing and server-validation Core package
 - [x] Analytics dashboard (self-hosted Docker — `ghcr.io/jeonghwanko/onesub-dashboard`)
 - [ ] Hosted service (no server needed)
 
@@ -416,7 +452,8 @@ git clone https://github.com/jeonghwanko/onesub.git
 cd onesub && npm install && npm run build && npm test
 ```
 
-See [CLAUDE.md](CLAUDE.md) for architecture and conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, [docs/README.md](docs/README.md)
+for the documentation index, and [AGENTS.md](AGENTS.md) for Codex/Claude repository conventions.
 
 ---
 

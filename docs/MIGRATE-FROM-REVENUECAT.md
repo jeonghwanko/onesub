@@ -2,7 +2,10 @@
 
 A pragmatic guide for teams switching from RevenueCat (RC) to onesub — covering client code, server setup, historical data, webhook switchover, and rollback.
 
-> **TL;DR**: onesub handles the same receipt-validation + subscription-tracking problem as RC, minus the dashboard and analytics, plus full data ownership and zero revenue share. The switchover is doable in a day for small apps if your entitlements are simple.
+> **TL;DR**: onesub handles receipt validation and subscription tracking with a self-hosted
+> operational dashboard and core lifecycle metrics, plus full data ownership and zero revenue share.
+> It does not replace RevenueCat's hosted service, experiments, or cohort/LTV analytics. The
+> switchover is doable in a day for small apps if your entitlements are simple.
 
 ---
 
@@ -16,10 +19,10 @@ A pragmatic guide for teams switching from RevenueCat (RC) to onesub — coverin
 | `Purchases.purchaseProduct()` | `useOneSub().purchaseProduct(id, type)` | For consumables / non-consumables |
 | `Purchases.restorePurchases()` | `useOneSub().restore()` + `restoreProduct(id, type)` | Separate per product type |
 | `PurchasesDelegate.purchases(didUpdate:)` | Automatic — `OneSubProvider` attaches a mount-level listener | onesub handles StoreKit queue automatically; no delegate needed |
-| `EntitlementInfo` | `SubscriptionInfo` + `PurchaseInfo` | Direct shape, no entitlements layer |
+| `EntitlementInfo` | `config.entitlements` + `GET /onesub/entitlement(s)` | Static product-to-entitlement mapping evaluated from subscription/purchase state |
 | `Offering` / `Package` | **none** — use raw `productId` strings | Model store offerings in your app layer if needed |
 | RC Paywall Builder | `<Paywall />` component (basic) | onesub's paywall is minimal — build your own or keep RC's paywall code |
-| RC Dashboard (MRR, cohorts) | **none** | Roll your own from `onesub_subscriptions` / `onesub_purchases` tables |
+| RC Dashboard (MRR, cohorts) | Self-hosted operations dashboard | Covers lifecycle/customer operations; query your DB or add BI for MRR, cohorts, and LTV |
 | Apple/Google webhooks | `POST /onesub/webhook/apple` + `POST /onesub/webhook/google` | You point stores directly at your server |
 | RC data export | `pg_dump onesub_subscriptions` | It's your DB |
 | Revenue share | 0% | RC: 1% above $2.5K MRR |
@@ -266,11 +269,15 @@ Practical advice: keep **RC webhooks enabled for 72 hours** after cutover so you
 onesub deliberately doesn't implement a few RC features. If any of these are hard requirements, either delay the migration or plan to build them.
 
 - **Offerings / Packages / experiments**: RC models "which products to show" as first-class. In onesub, that's your app's job — use remote config, A/B tool, or hardcoded arrays.
-- **Cohort analytics, LTV, churn dashboards**: zero. You have SQL.
+- **Cohort analytics, LTV, and revenue experiments**: the built-in dashboard is operational, not a
+  RevenueCat-style analytics suite. Use the owned database with your BI stack.
 - **Attribution** (install referrer, ad-network integration): none. Use a separate attribution SDK (AppsFlyer, Adjust).
 - **Paywall builder / remote paywall config**: the `<Paywall />` component is minimal. For A/B-testable paywalls use your existing solution.
-- **Promotional offers UX**: supported at the raw receipt-validation level, but onesub doesn't expose a higher-level helper. You handle `introPrice` / `promotionalOffer` in your client logic.
-- **Customer support**: RC has a dashboard for refunds / subscription management. onesub's admin routes (`/onesub/purchase/admin/*`) cover manual grants and transfers but not the "fix a customer's problem" flow. Build a thin admin UI if you need one.
+- **Promotional offers UX**: the server signs Apple promotional offers, but selecting/displaying the
+  offer and passing the signature to StoreKit remain host-app responsibilities.
+- **Customer support depth**: the self-hosted dashboard provides customer/subscription detail,
+  purchase grants, transfers, and deletion. It does not provide RevenueCat's full refund and
+  subscription-management workflow.
 
 ---
 

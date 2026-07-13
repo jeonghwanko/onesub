@@ -19,13 +19,15 @@
 - `receipt`: max 10,000 chars
 - `userId`: max 256 chars
 - `productId`: max 256 chars
+- optional `appId`: max 256 chars; unknown explicit IDs fail closed in multi-app mode
 - `platform`: enum `['apple', 'google']`
 - Request body size limited to 50KB (`express.json({ limit: '50kb' })`)
 
 ## Authentication
 
 ### Webhook Endpoints
-- **Apple**: Only JWS-signed `signedPayload` accepted. Signature verified via Apple JWKS
+- **Apple**: Only JWS-signed `signedPayload` accepted. The embedded `x5c` certificate chain is
+  validated to the pinned Apple Root CA G3, then the leaf key verifies the payload signature
 - **Google**: When `pushAudience` is configured, `Authorization: Bearer` JWT is verified against Google JWKS with audience claim check
 
 ### Validate / Status Endpoints
@@ -49,13 +51,26 @@ Legitimate account/device migrations should go through `POST /onesub/purchase/ad
 
 ## Admin Routes
 
-Mounted only when `config.adminSecret` is set. Every request requires a matching `X-Admin-Secret` header (`401` otherwise). These routes bypass receipt verification — treat the secret like a database password.
+Mounted only when `config.adminSecret` is set. Every request requires a matching `X-Admin-Secret`
+header (`401` otherwise). Purchase grant/transfer/delete routes can mutate ownership without a new
+receipt, and the same secret gates subscription detail, metrics, Apple sync, and webhook dead-letter
+operations. Treat it like a database password.
+
+The Apple promotional-offer route uses `X-Onesub-Offer-Secret` with the same value when
+`adminSecret` is configured. Without `adminSecret`, the host must protect that route with its own
+authentication middleware.
 
 ## Known Limitations
 
-1. **userId is client-provided**: The `validate` endpoint trusts the `userId` from the request body. In production, extract `userId` from your auth token instead of trusting client input
-2. **Single subscription per user**: Store returns only the most recent subscription per userId
-3. **InMemoryStore**: For development only. No eviction policy — memory grows unbounded. Use PostgresSubscriptionStore for production
+1. **Host authentication is required**: validation and status routes do not authenticate end users,
+   and validation accepts a client-provided `userId`. Mount host authentication and derive `userId`
+   server-side when exposing these routes publicly
+2. **In-memory stores/cache**: Development and single-process use only. State is lost on restart and
+   maps have no eviction policy. Use PostgreSQL or Redis stores and Redis-backed cache/idempotency for
+   durable or multi-instance deployments
+3. **Mock/degraded verification modes**: `apple.mockMode`, `google.mockMode`, and
+   `skipJwsVerification` are for local testing only. Mock provider modes are rejected when
+   `NODE_ENV=production`; do not rely on environment guards as a substitute for production config review
 
 ## Reporting Vulnerabilities
 

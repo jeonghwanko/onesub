@@ -44,13 +44,40 @@ app.use(createOneSubMiddleware({
   store:         new PostgresSubscriptionStore(process.env.DATABASE_URL),
   purchaseStore: new PostgresPurchaseStore(process.env.DATABASE_URL),
   // Optional:
-  adminSecret: process.env.ADMIN_SECRET,   // enables /onesub/purchase/admin/*
+  adminSecret: process.env.ADMIN_SECRET,   // enables admin + metrics routes
   logger: require('pino')(),               // any { info, warn, error } logger
   refundPolicy: 'immediate',               // 'immediate' (default) | 'until_expiry'
 }));
 
 app.listen(4100);
 ```
+
+### Serving multiple apps
+
+Keep the top-level `apple`/`google` fields for a single app. To validate several bundle IDs and
+package names from one process, configure `apps` and send `appId` in validation requests:
+
+```ts
+app.use(createOneSubMiddleware({
+  database: { url: process.env.DATABASE_URL },
+  apps: [
+    { id: 'coffee', apple: { bundleId: 'gg.pryzm.coffee' } },
+    {
+      id: 'penguinrun',
+      apple: { bundleId: 'gg.pryzm.penguinrun' },
+      google: {
+        packageName: 'gg.pryzm.penguinrun',
+        serviceAccountKey: process.env.PENGUINRUN_GOOGLE_SERVICE_ACCOUNT_KEY,
+      },
+    },
+  ],
+  defaultAppId: 'coffee',
+}));
+```
+
+Apple receipts carry their bundle ID and can be resolved automatically. Google purchase tokens do
+not carry a package name, so requests for a non-default Google app must include `appId`. Unknown
+explicit app IDs fail closed and are never validated with another app's credentials.
 
 ## Endpoints
 
@@ -65,8 +92,19 @@ app.listen(4100);
 | `DELETE /onesub/purchase/admin/:userId/:productId` | Wipe a non-consumable (requires `adminSecret`) |
 | `POST /onesub/purchase/admin/grant` | Manually grant a purchase (requires `adminSecret`) |
 | `POST /onesub/purchase/admin/transfer` | Reassign a `transactionId` to a new `userId` (requires `adminSecret`) |
+| `GET  /onesub/admin/subscriptions` | Filter and paginate subscriptions (requires `adminSecret`) |
+| `GET  /onesub/admin/subscriptions/:transactionId` | Get subscription detail (requires `adminSecret`) |
+| `GET  /onesub/admin/customers/:userId` | Get a customer profile (requires `adminSecret`) |
+| `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh a subscription from Apple (requires `adminSecret`) |
 | `GET  /onesub/admin/webhook-deadletters` | List failed webhook jobs in DLQ (requires `adminSecret` + BullMQ) |
 | `POST /onesub/admin/webhook-replay/:id` | Replay a dead-letter job (requires `adminSecret` + BullMQ) |
+| `GET  /onesub/entitlement?userId=&id=` | Evaluate one configured entitlement |
+| `GET  /onesub/entitlements?userId=` | Evaluate all configured entitlements |
+| `GET  /onesub/metrics/active` | Current entitled counts (requires `adminSecret`) |
+| `GET  /onesub/metrics/started` | Subscriptions started in a range (requires `adminSecret`) |
+| `GET  /onesub/metrics/expired` | Subscriptions ended in a range (requires `adminSecret`) |
+| `GET  /onesub/metrics/purchases/started` | Non-consumables started in a range (requires `adminSecret`) |
+| `POST /onesub/apple/offer-signature` | Sign an Apple promotional offer when offer credentials are configured |
 | `GET  /openapi.json` | OpenAPI 3.1 spec (opt-in via `openapiHandler()`) |
 
 ## Lifecycle states (`0.4.0+`)
@@ -111,6 +149,20 @@ const sub = await fetchAppleSubscriptionStatus(originalTxId, config.apple, { san
 // sub: SubscriptionInfo | null  — null on missing creds / 404 / network failure
 ```
 
+### Transaction History API client
+
+`fetchAppleTransactionHistory()` follows Apple's revision pagination and returns verified transaction
+records. It is a low-level recovery/migration primitive; the host decides how to reconcile returned
+records with its stores.
+
+```ts
+import { fetchAppleTransactionHistory } from '@onesub/server';
+
+const transactions = await fetchAppleTransactionHistory(originalTxId, config.apple, {
+  sandbox: false,
+});
+```
+
 ### CONSUMPTION_REQUEST response hook
 
 When Apple sends a `CONSUMPTION_REQUEST` notification (consumable refund review), without a hook Apple has no usage signal and tends to grant the refund. Provide a hook to PUT consumption info back to `/inApps/v1/transactions/consumption/{txId}`:
@@ -129,6 +181,13 @@ apple: {
 ```
 
 Fire-and-forget; failures are logged but don't block the webhook 200.
+
+### Promotional offer signing
+
+Configure the separate subscription-offer key as `apple.offerKeyId` and `apple.offerPrivateKey` to
+mount `POST /onesub/apple/offer-signature`. If `adminSecret` is configured, callers must send the
+same value in `X-Onesub-Offer-Secret`. The endpoint returns StoreKit's `keyId`, `nonce`, `timestamp`,
+and `signature`; never expose the private key to the client.
 
 ## Optional Google hooks (`0.8.0+`)
 
