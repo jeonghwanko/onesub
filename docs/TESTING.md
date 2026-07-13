@@ -22,12 +22,35 @@ npm test -- packages/server/src/__tests__/webhook-google.test.ts \
 Do not document a fixed test count; it changes frequently. A feature is covered by the relevant
 behavioral assertions, not by a repository-wide number.
 
+### Contract parity tests
+
+Two tests assert that a contract's two halves still agree. They fail on *drift*, not on broken
+behavior, and their message reads as a puzzle unless you know that:
+
+| Test | Asserts | Fails when |
+|---|---|---|
+| `packages/server/src/__tests__/openapi.test.ts` | Every mounted route is documented in `packages/server/src/openapi.ts`, and every documented path is actually mounted | You added, renamed, or removed a route without editing the spec |
+| `packages/server/src/__tests__/schema.test.ts` | `packages/server/sql/schema.sql` matches the DDL constants in `packages/server/src/stores/schema.ts` | You changed a persisted column in only one of the two |
+
+The schema test compares line by line, which is why `.gitattributes` forces LF. CRLF content can make
+it misbehave.
+
 ## Build and Type Checks
 
 ```bash
 npm run build
 npm run type-check
 ```
+
+After editing `packages/shared/src`, rebuild it before anything downstream is meaningful — dependents
+read `packages/shared/dist`, which is gitignored and never rebuilt automatically:
+
+```bash
+npm run build -w @onesub/shared
+```
+
+A stale `dist` produces a *silent* failure for new value exports (they resolve to `undefined`), not
+just a type error.
 
 The root build excludes the dashboard, so dashboard changes also require:
 
@@ -37,11 +60,17 @@ npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
 ```
 
-Server bundle-size changes can be checked with:
+Server bundle size is a required CI check. It measures the emitted files, so it needs a build first:
 
 ```bash
+npm run build -w @onesub/server
 npm run size -w @onesub/server
 ```
+
+It gates the gzipped ESM and CJS bundles against the ceilings in `packages/server/.size-limit.cjs`.
+If a deliberate surface addition exceeds a ceiling, raise the limit there and add a dated comment
+recording the reason and the measured size, following the existing entry. Do not delete the check or
+a budget entry to make it pass.
 
 ## Local Mock Provider
 
@@ -185,17 +214,44 @@ npm test
 npm run type-check
 pwsh ./validate-unity-packages.ps1
 npm run size -w @onesub/server
+
+# the dashboard is a separate CI job — it can be red while the root build is green
+npm run build -w @onesub/shared
+npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
+
 npm run docs:check
 ```
 
+This is a superset of CI, not a mirror of it. CI's `ci.yml` job runs `npm ci` → `build` → `test` →
+the Unity validator → the size check; it never runs root `npm run type-check`, because `build` is the
+type gate. `docs:check` runs in its own path-filtered workflow, and CodeQL (`security-extended`) runs
+separately and can fail a PR.
+
 Use focused checks for package-local changes. Documentation-only changes normally need only
-`npm run docs:check`; real store E2E runs only when provider/verification behavior warrants it.
+`npm run docs:check` — `ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs no build
+and no tests at all. Real store E2E runs only when provider/verification behavior warrants it.
+
+## When a Check Goes Red
+
+| Symptom | Usually means |
+|---|---|
+| Type error on `@onesub/shared` symbols inside another package | You edited `packages/shared/src` and did not run `npm run build -w @onesub/shared` |
+| A shared constant is `undefined` at runtime, no error thrown | The same stale `dist`, in its silent form |
+| `openapi.test.ts` fails | A route and `openapi.ts` disagree — one side of a contract moved |
+| `schema.test.ts` fails | `sql/schema.sql` and the embedded DDL constants disagree; or CRLF crept into the SQL |
+| `npm run size` fails with a missing file | You did not build `@onesub/server` first |
+| `npm run size` fails on the budget | Shrink the addition, or raise the ceiling in `.size-limit.cjs` with a dated justification |
+| CI red but the whole root build is green locally | The separate `dashboard` job — run the three dashboard commands |
+| `docs:check` fails after a rename | A document cites the old path; `docs.yml` is path-filtered and will not have caught it earlier |
 
 ## Adding Tests
 
 - Put TypeScript tests beside source under a `src/**/__tests__` directory.
-- Use fixtures/mocks for routine Apple/Google behavior; do not call real store APIs from PR tests.
+- There is no `fixtures/` directory. Drive deterministic Apple/Google behavior through
+  `packages/server/src/providers/mock.ts` — selected by `apple.mockMode` / `google.mockMode` in the
+  config you pass to the middleware, and keyed on the receipt prefixes in the table above — together
+  with `packages/server/src/__tests__/test-utils.ts`. Do not call real store APIs from PR tests.
 - Add multi-step lifecycle tests when order or preserved state matters.
 - Test security failures as well as success: signature, audience, ownership, app isolation, body
   limits, and production mock guards.

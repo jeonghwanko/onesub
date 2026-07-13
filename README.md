@@ -170,6 +170,12 @@ Mounted only when `config.adminSecret` is set. All requests must include the `X-
 | `GET /onesub/admin/customers/:userId` | Full per-user profile: subscriptions + purchases + entitlements (when configured) |
 | `GET /onesub/admin/webhook-deadletters` | List failed webhook jobs (requires BullMQ queue) |
 | `POST /onesub/admin/webhook-replay/:id` | Replay a failed webhook job (requires BullMQ queue) |
+| `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh one subscription from the Apple Status API (requires App Store Server API credentials) |
+| `POST /onesub/apple/offer-signature` | Sign an Apple promotional offer (requires `apple.offerKeyId` + `offerPrivateKey`) |
+
+The canonical, always-current route list is in
+[`packages/server/README.md`](packages/server/README.md); `openapi.test.ts` keeps it honest against
+the mounted routers.
 
 ### Entitlements (opt-in — requires `config.entitlements`)
 
@@ -449,7 +455,7 @@ run it for you on startup.
 
 ```bash
 git clone https://github.com/jeonghwanko/onesub.git
-cd onesub && npm install && npm run build && npm test
+cd onesub && npm ci && npm run build && npm test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, [docs/README.md](docs/README.md)

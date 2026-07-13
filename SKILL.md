@@ -5,13 +5,14 @@ description: Use this skill when the user wants to add in-app purchases (subscri
 
 # onesub — integration skill
 
-onesub is a TypeScript monorepo published to npm as 5 packages:
+onesub is a TypeScript monorepo. The npm packages you can install:
 
 | Package | Install | Use in |
 |---------|---------|--------|
 | `@onesub/server` | `npm i express @onesub/server` | Node.js backend (Express 4 or 5) |
 | `@jeonghwanko/onesub-sdk` | `npm i react-native-iap @jeonghwanko/onesub-sdk` | React Native / Expo app |
 | `@onesub/shared` | (transitive) | types only — auto-installed |
+| `@onesub/providers` | `npm i @onesub/providers` | Managing App Store Connect / Play products from your own code |
 | `@onesub/mcp-server` | `npx -y @onesub/mcp-server` | MCP-compatible AI clients |
 | `@onesub/cli` | `npx @onesub/cli init` | Scaffolds a starter server project |
 
@@ -144,22 +145,33 @@ Peer dep: **`react-native-iap` v15+** (event-based purchase flow).
 
 ## Config reference
 
+The commonly used fields. The full, canonical reference is
+[`docs/CONFIGURATION.md`](https://github.com/jeonghwanko/onesub/blob/master/docs/CONFIGURATION.md) —
+consult it before concluding an option doesn't exist.
+
 ```ts
 interface OneSubServerConfig {
   apple?: {
     bundleId: string;
     sharedSecret?: string;     // legacy App Store shared secret (optional for StoreKit 2 JWS)
     skipJwsVerification?: boolean;  // DEV ONLY — warns in production
+    mockMode?: boolean;        // DEV ONLY — synthetic provider, never enable in production
     keyId?: string;            // App Store Server API key
     issuerId?: string;
     privateKey?: string;
     offerKeyId?: string;       // separate subscription-offer key
     offerPrivateKey?: string;
+    productReceiptMaxAgeHours?: number;  // one-time-purchase receipt age limit, default 72
   };
   google?: {
     packageName: string;
     serviceAccountKey?: string;  // JSON string of service account
     pushAudience?: string;       // Pub/Sub push endpoint URL for JWT verification
+    pushServiceAccountEmail?: string;  // STRONGLY RECOMMENDED in production: with pushAudience,
+                                       // requires the push JWT to carry this exact email, so any
+                                       // Google-signed token no longer suffices
+    mockMode?: boolean;          // DEV ONLY
+    productReceiptMaxAgeHours?: number;  // default 72
   };
   database: { url: string };
   apps?: Array<{             // optional: isolate credentials for multiple apps
@@ -170,6 +182,7 @@ interface OneSubServerConfig {
   defaultAppId?: string;
   adminSecret?: string;          // enables /onesub/purchase/admin/* + /onesub/admin/* + /onesub/metrics/* routes
   entitlements?: Record<string, { productIds: string[] }>;  // enables /onesub/entitlement(s) routes
+  refundPolicy?: 'immediate' | 'until_expiry';   // how a refund webhook affects an active subscription
   logger?: OneSubLogger;         // { info, warn, error } — defaults to console
 }
 ```

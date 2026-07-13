@@ -101,6 +101,11 @@ docker compose up
 Use fake/local credentials only for mock mode. Real Apple and Google credentials belong in a secret
 manager or an untracked local environment file.
 
+`examples/` is not an npm workspace. It installs `@onesub/server` from npm at the version pinned in
+its own `package.json`, so **it does not exercise your working tree** — a change you just made to
+`packages/server` will not appear here. Use it to check the published integration story; use the
+checkout-built mock server above to validate local changes.
+
 ## Run the Dashboard
 
 Start a OneSub server with `adminSecret` configured, then in another terminal:

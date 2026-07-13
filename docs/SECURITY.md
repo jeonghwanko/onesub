@@ -6,7 +6,8 @@
 - JWS signature verified with the leaf certificate from the `x5c` header
 - **Full certificate chain verified up to Apple Root CA G3** (as of `@onesub/server@0.6.0`) using `node:crypto.X509Certificate` — each cert in the chain must be signed by the next, be within its validity window, and the final cert must be issued by a bundled Apple root. Leaf-only verification was insufficient because a self-signed cert could mint a passing signature
 - Sandbox receipts rejected in `NODE_ENV=production` unless `ONESUB_ALLOW_SANDBOX=true` is set (for TestFlight / pre-launch QA)
-- 72-hour receipt age limit enforced
+- One-time-purchase receipt age limit, defaulting to 72 hours. It is a default, not an invariant: a
+  host can raise or disable it with `apple.productReceiptMaxAgeHours` (see `docs/CONFIGURATION.md`)
 - Apple webhooks accept only `signedPayload` JWS format. Pre-decoded payloads are rejected
 
 ### Google Play Billing

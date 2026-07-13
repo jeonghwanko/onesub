@@ -20,6 +20,15 @@ npx @onesub/cli dev --port 4100
 npx @onesub/cli --help
 ```
 
+`npx @onesub/cli` resolves to the **published** package. That is what you want from an application
+repository. It is not what you want **inside this repository**: a change you just made to the OneSub
+source will appear to have no effect, and you will chase a phantom bug. When working in the OneSub
+repository, run the CLI built from the current checkout instead:
+
+```bash
+npm run build && node packages/cli/dist/index.js dev --port 4100
+```
+
 ## First Prompt After Cloning
 
 Run `npm ci`, open the repository in Codex or Claude, and start with a read-only orientation:
@@ -97,7 +106,8 @@ Requirements:
 
 ### Test locally without store credentials
 
-Start the mocked server first:
+Start the mocked server first (from the application repository — inside the OneSub repository, use
+the checkout-built CLI shown above):
 
 ```bash
 npx @onesub/cli dev --port 4100

@@ -103,9 +103,17 @@ Equivalent `Packages/manifest.json` entry:
 }
 ```
 
-For reproducible production builds, append a known tag or commit revision after the path URL rather
-than tracking the default branch. When developing from a local clone, Package Manager can add
-`packages/unity/package.json` from disk.
+The URLs above track the default branch, so a Package Manager resolve picks up whatever is on
+`master` at that moment. **For reproducible production builds, pin the release tag** by appending it
+as a `#` revision fragment after the path query. Release tags are named `<upm-package-name>@<version>`:
+
+```text
+https://github.com/jeonghwanko/onesub.git?path=/packages/unity#com.onesub.unity@0.2.0
+https://github.com/jeonghwanko/onesub.git?path=/packages/unity-platform-services#com.onesub.unity.platform-services@0.2.0
+```
+
+Check the repository's tag list for the current release. When developing from a local clone, Package
+Manager can add `packages/unity/package.json` from disk instead.
 
 The Core runtime assembly references only `Unity.Purchasing`. Do not install
 `com.onesub.unity.platform-services` unless the project specifically needs its optional PenguinRun

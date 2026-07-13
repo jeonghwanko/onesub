@@ -24,7 +24,7 @@ docker run -p 4101:4101 -e ONESUB_SERVER_URL=http://host.docker.internal:4100 on
 
 ```bash
 # from the monorepo root
-npm install
+npm ci
 npm run build -w @onesub/shared
 
 cd packages/dashboard
