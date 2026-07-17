@@ -173,6 +173,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         receipt: receiptToken,
         userId: deps.userId,
         productId,
+        ...(deps.config.appId ? { appId: deps.config.appId } : {}),
       });
       if (!deps.isCancelled?.() && result.valid && result.subscription) {
         deps.onSubscriptionActivated?.(result.subscription);
@@ -200,6 +201,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         userId: deps.userId,
         productId,
         type: purchaseType,
+        ...(deps.config.appId ? { appId: deps.config.appId } : {}),
       });
       if (result.valid) {
         deps.logger?.trace('purchase validated', { productId, action: result.action, type: purchaseType });

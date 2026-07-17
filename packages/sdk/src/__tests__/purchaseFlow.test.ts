@@ -803,3 +803,50 @@ describe('scenario: TestFlight replay at mount then user taps Subscribe', () => 
     expect(onSubscriptionActivated).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// handlePurchaseEvent — appId forwarding (multi-app servers)
+// ---------------------------------------------------------------------------
+describe('handlePurchaseEvent — appId forwarding', () => {
+  it('includes config.appId in the subscription validate body', async () => {
+    const validateReceipt = vi.fn().mockResolvedValue({ valid: true, subscription: null });
+    const deps = makeDeps({
+      config: { serverUrl: 'https://api.test', productId: 'default', appId: 'gg.pryzm.weather' },
+      api: { validateReceipt, validatePurchase: vi.fn() },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productType: 'subs' }), deps);
+
+    expect(validateReceipt).toHaveBeenCalledWith(
+      'https://api.test',
+      expect.objectContaining({ appId: 'gg.pryzm.weather' }),
+    );
+  });
+
+  it('includes config.appId in the one-time purchase validate body', async () => {
+    const validatePurchase = vi.fn().mockResolvedValue({ valid: true, purchase: null });
+    const deps = makeDeps({
+      config: { serverUrl: 'https://api.test', productId: 'default', appId: 'gg.pryzm.weather' },
+      api: { validateReceipt: vi.fn(), validatePurchase },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productType: 'inapp' }), deps);
+
+    expect(validatePurchase).toHaveBeenCalledWith(
+      'https://api.test',
+      expect.objectContaining({ appId: 'gg.pryzm.weather' }),
+    );
+  });
+
+  it('omits the appId key entirely when config.appId is unset (default-app clients)', async () => {
+    const validateReceipt = vi.fn().mockResolvedValue({ valid: true, subscription: null });
+    const deps = makeDeps({
+      api: { validateReceipt, validatePurchase: vi.fn() },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productType: 'subs' }), deps);
+
+    const body = validateReceipt.mock.calls[0]![1] as Record<string, unknown>;
+    expect('appId' in body).toBe(false);
+  });
+});

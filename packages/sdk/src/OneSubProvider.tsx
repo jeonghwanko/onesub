@@ -550,6 +550,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         receipt: receiptToken,
         userId,
         productId,
+        ...(config.appId ? { appId: config.appId } : {}),
       });
 
       if (result.valid && result.subscription) {
@@ -680,6 +681,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
           userId,
           productId,
           type: purchaseType,
+          ...(config.appId ? { appId: config.appId } : {}),
         });
 
         if (validationResult.valid && validationResult.purchase) {

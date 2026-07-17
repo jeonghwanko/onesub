@@ -39,6 +39,7 @@ function PaywallScreen() {
 | `serverUrl` | Base URL of your `@onesub/server` backend |
 | `productId` | Default subscription product ID |
 | `appleProductId` / `googleProductId` | Platform-specific overrides (optional) |
+| `appId` | Which app this client is on a multi-app server (`OneSubServerConfig.apps`) — the app's `id`, Apple bundleId, or Google packageName. **Required for non-default apps on Android**: a Google purchase token doesn't name its package, so without it validation falls back to the default app's credentials and is rejected. |
 | `mockMode` | Return synthetic success without calling `react-native-iap` or the server. For Expo Go / simulator UI testing. **Never enable in production.** |
 | `debug` | When `true`, emit verbose `[onesub]` traces at every step (IAP connection, listener events, in-flight matches, server validations, `finishTransaction`, drain transitions). Recommended when diagnosing an integration. |
 | `logger` | Custom log sink (`{ info, warn, error }`). Defaults to `console`. Works with `pino` / `winston` / any compatible logger. |

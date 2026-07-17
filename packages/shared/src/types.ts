@@ -36,6 +36,8 @@ export interface ValidateReceiptRequest {
   receipt: string;
   userId: string;
   productId: string;
+  /** Which app this receipt belongs to on a multi-app server. See `OneSubConfig.appId`. */
+  appId?: string;
 }
 
 /** Receipt validation response */
@@ -456,6 +458,8 @@ export interface ValidatePurchaseRequest {
   userId: string;
   productId: string;
   type: PurchaseType;
+  /** Which app this receipt belongs to on a multi-app server. See `OneSubConfig.appId`. */
+  appId?: string;
 }
 
 /** Purchase validation response */
@@ -600,6 +604,17 @@ export interface OneSubConfig {
   appleProductId?: string;
   /** Google product ID (defaults to productId) */
   googleProductId?: string;
+  /**
+   * Which app this client belongs to on a multi-app server (see
+   * `OneSubServerConfig.apps`). Sent with every validate request. The server
+   * matches it against an app's `id`, Apple bundleId, or Google packageName.
+   *
+   * Required for a non-default app on Android: a Google purchase token does
+   * not name its package, so without `appId` the server falls back to the
+   * default app's credentials and rejects the receipt. Optional (but harmless
+   * and slightly faster) on iOS, where the receipt carries its own bundleId.
+   */
+  appId?: string;
   /**
    * Mock mode — when true, purchase/subscribe/restore return synthetic
    * success responses without calling react-native-iap or the server.
