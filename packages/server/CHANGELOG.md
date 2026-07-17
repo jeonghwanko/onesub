@@ -1,5 +1,12 @@
 # @onesub/server
 
+## 0.18.1
+
+### Patch Changes
+
+- Updated dependencies [d41314e]
+  - @onesub/shared@0.12.0
+
 ## 0.18.0
 
 ### Minor Changes
