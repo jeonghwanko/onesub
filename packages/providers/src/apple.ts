@@ -372,8 +372,11 @@ async function setPrice(
           },
         });
       } else {
-        // IAP price schedule
-        const tempId = 'p_0';
+        // IAP price schedule. Apple requires inline-created entities to carry a
+        // *local id* of the literal form `${...}` — a plain string like 'p_0' is
+        // rejected with ENTITY_ERROR.INCLUDED.INVALID_ID and the price silently
+        // never gets set (the IAP itself is created, just priceless).
+        const tempId = '${price-0}';
         await appleRequest(creds, 'POST', '/inAppPurchasePriceSchedules', {
           data: {
             type: 'inAppPurchasePriceSchedules',

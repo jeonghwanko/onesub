@@ -299,6 +299,29 @@ describe('createOneTimePurchase — price schedule', () => {
     const rel = (schedule?.body as { data: { relationships: Record<string, { data: { type: string; id: string } }> } }).data.relationships;
     expect(rel['baseTerritory']).toEqual({ data: { type: 'territories', id: 'KOR' } });
   });
+
+  it('uses a `${...}` local id for the inline-created price', async () => {
+    // A plain id ('p_0') is rejected with ENTITY_ERROR.INCLUDED.INVALID_ID and the
+    // IAP is left priceless — the create still "succeeds", so only this pins it.
+    const calls = mockFetch([
+      { match: (u, m) => u.endsWith('/v2/inAppPurchases') && m === 'POST', body: { data: { id: 'iap1', attributes: {} } } },
+      { match: (u) => u.includes('/pricePoints'), body: { data: [pricePoint('pp1', '4900')] } },
+      { match: (u, m) => u.endsWith('/inAppPurchasePriceSchedules') && m === 'POST', body: { data: {} } },
+    ]);
+
+    await createOneTimePurchase({
+      productId: 'coins', name: 'Coins', price: 4900, currency: 'KRW', type: 'consumable',
+      keyId: creds.keyId, issuerId: creds.issuerId, privateKey: creds.privateKey, appId: 'app1',
+    });
+
+    const schedule = calls.find((c) => c.url.endsWith('/inAppPurchasePriceSchedules'));
+    const body = schedule?.body as {
+      data: { relationships: { manualPrices: { data: Array<{ id: string }> } } };
+      included: Array<{ id: string }>;
+    };
+    expect(body.included[0].id).toMatch(/^\$\{.+\}$/);
+    expect(body.data.relationships.manualPrices.data[0].id).toBe(body.included[0].id);
+  });
 });
 
 describe('deleteProduct — empty-body success responses', () => {

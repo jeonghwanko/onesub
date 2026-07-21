@@ -253,6 +253,9 @@ describe('createSubscription', () => {
 describe('createOneTimePurchase', () => {
   it('does not let an unmapped extra region overwrite the primary price', async () => {
     const calls = mockFetch([
+      { match: (u, m) => u.endsWith('/edits') && m === 'POST', body: { id: 'edit1' } },
+      { match: (u, m) => u.includes('/edits/edit1/details') && m === 'GET', body: { defaultLanguage: 'ko-KR' } },
+      { match: (u, m) => u.includes('/edits/edit1') && m === 'DELETE', status: 204 },
       { match: (u, m) => u.includes('/onetimeproducts') && m === 'PATCH', body: {} },
     ]);
 
@@ -271,6 +274,11 @@ describe('createOneTimePurchase', () => {
     // BRL is unmapped → skipped, so only the US primary config remains.
     expect(configs).toHaveLength(1);
     expect(configs[0]).toEqual({ regionCode: 'US', price: { currencyCode: 'USD', units: '4', nanos: 990000000 }, availability: 'AVAILABLE' });
+    // The listing must use the app's *default* language (detected via the edit),
+    // not a hardcoded en-US — Play rejects the create with
+    // "Missing the listing for the default language ko-KR" otherwise.
+    const listings = (create!.body as { listings: Array<{ languageCode: string }> }).listings;
+    expect(listings[0].languageCode).toBe('ko-KR');
   });
 });
 

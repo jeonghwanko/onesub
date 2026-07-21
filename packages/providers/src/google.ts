@@ -252,6 +252,35 @@ function toBillingPeriod(period: string): string {
   return period === 'yearly' || period === 'P1Y' ? 'P1Y' : 'P1M';
 }
 
+/**
+ * The app's default store language. A one-time product must carry a listing in
+ * exactly that language — creating one with only 'en-US' fails on any app whose
+ * default is something else ("Missing the listing for the default language ko-KR").
+ *
+ * The value lives behind an edit transaction, so this opens a throwaway edit and
+ * abandons it. Detection is best-effort: any failure falls back to 'en-US' rather
+ * than blocking the create.
+ */
+async function getDefaultLanguage(token: string, pkg: string): Promise<string> {
+  try {
+    const edit = await playRequest<{ id?: string }>(token, 'POST', `${ANDROID_BASE}/${pkg}/edits`, {});
+    const editId = edit?.id;
+    if (!editId) return 'en-US';
+    try {
+      const details = await playRequest<{ defaultLanguage?: string }>(
+        token, 'GET', `${ANDROID_BASE}/${pkg}/edits/${encodeURIComponent(editId)}/details`,
+      );
+      return details?.defaultLanguage ?? 'en-US';
+    } finally {
+      // Abandon the scratch edit so it doesn't linger in Play Console.
+      await playRequest(token, 'DELETE', `${ANDROID_BASE}/${pkg}/edits/${encodeURIComponent(editId)}`)
+        .catch(() => undefined);
+    }
+  } catch {
+    return 'en-US';
+  }
+}
+
 // ── Exported CRUD functions ───────────────────────────────────────────────────
 
 /**
@@ -381,10 +410,11 @@ export async function createOneTimePurchase(opts: {
     // Upsert via PATCH + allowMissing (the onetimeproducts API has no plain POST
     // create). The single purchase option is left in its default DRAFT state —
     // activation happens in Play Console, matching the tool's documented flow.
+    const languageCode = await getDefaultLanguage(token, opts.packageName);
     const body: OneTimeProductResource = {
       packageName: opts.packageName,
       productId: opts.productId,
-      listings: [{ languageCode: 'en-US', title: opts.name, description: opts.name }],
+      listings: [{ languageCode, title: opts.name, description: opts.name }],
       purchaseOptions: [{
         purchaseOptionId: 'base',
         regionalPricingAndAvailabilityConfigs: regionalConfigs,
