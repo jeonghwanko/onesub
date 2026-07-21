@@ -284,7 +284,7 @@ describe('createSubscription — group handling', () => {
 describe('createOneTimePurchase — price schedule', () => {
   it('includes the required baseTerritory relationship in the price schedule', async () => {
     const calls = mockFetch([
-      { match: (u, m) => u.endsWith('/inAppPurchasesV2') && m === 'POST', body: { data: { id: 'iap1', attributes: {} } } },
+      { match: (u, m) => u.endsWith('/v2/inAppPurchases') && m === 'POST', body: { data: { id: 'iap1', attributes: {} } } },
       { match: (u) => u.includes('/pricePoints'), body: { data: [pricePoint('pp1', '4900')] } },
       { match: (u, m) => u.endsWith('/inAppPurchasePriceSchedules') && m === 'POST', body: { data: {} } },
     ]);
@@ -305,7 +305,7 @@ describe('deleteProduct — empty-body success responses', () => {
   it('treats a 204 No Content DELETE as success', async () => {
     mockFetch([
       { match: (u, m) => u.includes('/inAppPurchasesV2?') && m === 'GET', body: { data: [{ id: 'iap1', attributes: { productId: 'coins', state: 'MISSING_METADATA' } }] } },
-      { match: (u, m) => u.includes('/inAppPurchasesV2/iap1') && m === 'DELETE', status: 204 },
+      { match: (u, m) => u.includes('/v2/inAppPurchases/iap1') && m === 'DELETE', status: 204 },
     ]);
 
     const result = await deleteProduct({

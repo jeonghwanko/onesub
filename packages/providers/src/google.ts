@@ -107,19 +107,35 @@ interface GoogleSubscriptionListResponse {
   nextPageToken?: string;
 }
 
-interface InAppProductResource {
-  packageName?: string;
-  sku?: string;
-  status?: string;
-  purchaseType?: string;
-  listings?: Record<string, { title: string; description?: string }>;
-  prices?: Record<string, { currency: string; priceMicros: string }>;
+interface OneTimeProductMoney {
+  currencyCode: string;
+  units: string;
+  nanos: number;
 }
 
-interface InAppProductListResponse {
-  inappproduct?: InAppProductResource[];
-  kind?: string;
-  tokenPagination?: { nextPageToken?: string };
+interface OneTimeProductRegionalConfig {
+  regionCode: string;
+  price?: OneTimeProductMoney;
+  availability?: string;
+}
+
+interface OneTimeProductPurchaseOption {
+  purchaseOptionId?: string;
+  state?: string;
+  regionalPricingAndAvailabilityConfigs?: OneTimeProductRegionalConfig[];
+  buyOption?: Record<string, unknown>;
+}
+
+interface OneTimeProductResource {
+  packageName?: string;
+  productId?: string;
+  listings?: Array<{ languageCode: string; title: string; description?: string }>;
+  purchaseOptions?: OneTimeProductPurchaseOption[];
+}
+
+interface OneTimeProductListResponse {
+  oneTimeProducts?: OneTimeProductResource[];
+  nextPageToken?: string;
 }
 
 // ── Token cache ───────────────────────────────────────────────────────────────
@@ -224,15 +240,6 @@ function toGooglePrice(price: number, currency: string): { currencyCode: string;
   return { currencyCode: currency, units: String(Math.floor(price / 100)), nanos: (price % 100) * 10_000_000 };
 }
 
-/** Google Play inappproducts API: priceMicros */
-function toGooglePriceMicros(price: number, currency: string): string {
-  if (ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase())) {
-    return String(price * 1_000_000);
-  }
-  // price is in cents; priceMicros = cents * 10_000
-  return String(price * 10_000);
-}
-
 // Region codes derive from the shared table in currency.ts (single source of
 // truth with the Apple territories).
 // No fallback: defaulting to 'US' pairs a foreign currency with the US region
@@ -328,10 +335,12 @@ export async function createSubscription(opts: {
 }
 
 /**
- * Create a consumable or non-consumable in-app product on Google Play.
+ * Create a consumable or non-consumable one-time product on Google Play via the
+ * monetization.onetimeproducts API. The legacy inappproducts write endpoint is
+ * deprecated and now rejects writes with "Please migrate to the new publishing API".
  *
- * Note: Google Play treats all one-time products as `managedUser` at the API level.
- * Consumable vs non-consumable is an app-side distinction (consumePurchase vs acknowledgePurchase).
+ * Consumable vs non-consumable is an app-side distinction (consumePurchase vs
+ * acknowledgePurchase), not an API-level product field.
  */
 export async function createOneTimePurchase(opts: {
   productId: string;
@@ -351,29 +360,44 @@ export async function createOneTimePurchase(opts: {
     if (!primaryRegionCode) {
       return { success: false, error: unsupportedCurrencyError(opts.currency) };
     }
-    const prices: Record<string, { currency: string; priceMicros: string }> = {
-      [primaryRegionCode]: { currency: opts.currency, priceMicros: toGooglePriceMicros(opts.price, opts.currency) },
-    };
+
+    const regionalConfigs: OneTimeProductRegionalConfig[] = [
+      { regionCode: primaryRegionCode, price: toGooglePrice(opts.price, opts.currency), availability: 'AVAILABLE' },
+    ];
+    // Track claimed region codes: duplicate regionCodes in one purchase option
+    // make the whole create fail with INVALID_ARGUMENT (mirrors the subscription path).
+    const usedRegionCodes = new Set([primaryRegionCode]);
     const skippedRegions: string[] = [];
     for (const region of opts.extraRegions ?? []) {
       const code = currencyToRegionCode(region.currency);
-      if (!code || code in prices) {
+      if (!code || usedRegionCodes.has(code)) {
         skippedRegions.push(region.currency);
         continue;
       }
-      prices[code] = { currency: region.currency, priceMicros: toGooglePriceMicros(region.price, region.currency) };
+      usedRegionCodes.add(code);
+      regionalConfigs.push({ regionCode: code, price: toGooglePrice(region.price, region.currency), availability: 'AVAILABLE' });
     }
 
-    const body: InAppProductResource = {
+    // Upsert via PATCH + allowMissing (the onetimeproducts API has no plain POST
+    // create). The single purchase option is left in its default DRAFT state —
+    // activation happens in Play Console, matching the tool's documented flow.
+    const body: OneTimeProductResource = {
       packageName: opts.packageName,
-      sku: opts.productId,
-      status: 'active',
-      purchaseType: 'managedUser',
-      listings: { 'en-US': { title: opts.name, description: '' } },
-      prices,
+      productId: opts.productId,
+      listings: [{ languageCode: 'en-US', title: opts.name, description: opts.name }],
+      purchaseOptions: [{
+        purchaseOptionId: 'base',
+        regionalPricingAndAvailabilityConfigs: regionalConfigs,
+        buyOption: {},
+      }],
     };
 
-    await playRequest<InAppProductResource>(token, 'POST', `${ANDROID_BASE}/${pkg}/inappproducts`, body);
+    await playRequest<OneTimeProductResource>(
+      token, 'PATCH',
+      `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}` +
+        `?updateMask=listings,purchaseOptions&regionsVersion.version=${encodeURIComponent(REGIONS_VERSION)}&allowMissing=true`,
+      body,
+    );
     return { success: true, productId: opts.productId, ...(skippedRegions.length ? { skippedRegions } : {}) };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -413,11 +437,21 @@ export async function updateProduct(opts: {
         { listings },
       );
     } else {
-      // PATCH inappproducts listing
-      await playRequest<InAppProductResource>(
+      // updateMask=listings replaces the whole listings array — merge the new
+      // title into the current listings so other locales and the required
+      // description survive the patch.
+      const current = await playRequest<OneTimeProductResource>(
+        token, 'GET',
+        `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}`,
+      );
+      const listings = current.listings ?? [];
+      const enListing = listings.find((l) => l.languageCode === 'en-US');
+      if (enListing) enListing.title = opts.name;
+      else listings.push({ languageCode: 'en-US', title: opts.name, description: opts.name });
+      await playRequest<OneTimeProductResource>(
         token, 'PATCH',
-        `${ANDROID_BASE}/${pkg}/inappproducts/${encodeURIComponent(opts.productId)}`,
-        { listings: { 'en-US': { title: opts.name } } },
+        `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}?updateMask=listings&regionsVersion.version=${encodeURIComponent(REGIONS_VERSION)}`,
+        { listings },
       );
     }
     updated.push('name');
@@ -449,7 +483,7 @@ export async function deleteProduct(opts: {
     } else {
       await playRequest<Record<string, unknown>>(
         token, 'DELETE',
-        `${ANDROID_BASE}/${pkg}/inappproducts/${encodeURIComponent(opts.productId)}`,
+        `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}`,
       );
     }
 
@@ -502,27 +536,27 @@ export async function listProducts(opts: {
   try {
     let pageToken: string | undefined;
     do {
-      const resp: InAppProductListResponse = await playRequest<InAppProductListResponse>(
+      const resp: OneTimeProductListResponse = await playRequest<OneTimeProductListResponse>(
         token, 'GET',
-        `${ANDROID_BASE}/${pkg}/inappproducts?maxResults=100${pageToken ? `&token=${encodeURIComponent(pageToken)}` : ''}`,
+        `${ANDROID_BASE}/${pkg}/onetimeproducts?pageSize=100${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ''}`,
       );
-      for (const item of resp.inappproduct ?? []) {
-        if (!item.sku) continue;
-        const title = item.listings?.['en-US']?.title ?? item.listings?.[Object.keys(item.listings ?? {})[0]]?.title;
-        const priceEntry = item.prices ? Object.values(item.prices)[0] : undefined;
+      for (const item of resp.oneTimeProducts ?? []) {
+        if (!item.productId) continue;
+        const listing = item.listings?.find((l) => l.languageCode === 'en-US') ?? item.listings?.[0];
+        const option = item.purchaseOptions?.[0];
+        const rc = option?.regionalPricingAndAvailabilityConfigs?.[0];
         let price: number | undefined;
         let currency: string | undefined;
-        if (priceEntry) {
-          currency = priceEntry.currency;
-          const micros = parseInt(priceEntry.priceMicros, 10);
+        if (rc?.price) {
+          currency = rc.price.currencyCode;
           price = ZERO_DECIMAL_CURRENCIES.has(currency.toUpperCase())
-            ? Math.round(micros / 1_000_000)
-            : Math.round(micros / 10_000);
+            ? parseInt(rc.price.units, 10) + Math.round(rc.price.nanos / 1_000_000_000)
+            : parseInt(rc.price.units, 10) * 100 + Math.round(rc.price.nanos / 10_000_000);
         }
         // Google Play doesn't distinguish consumable/non-consumable at API level
-        results.push({ productId: item.sku, name: title, status: item.status, type: 'consumable', price, currency });
+        results.push({ productId: item.productId, name: listing?.title, status: option?.state, type: 'consumable', price, currency });
       }
-      pageToken = resp.tokenPagination?.nextPageToken;
+      pageToken = resp.nextPageToken;
     } while (pageToken);
   } catch (err) { failures.push(err); }
 

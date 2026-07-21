@@ -169,7 +169,7 @@ describe('token cache isolation', () => {
     const keyB = makeKey('b@x.iam.gserviceaccount.com');
     const calls = mockFetch([
       { match: (u) => u.includes('/subscriptions'), body: { subscriptions: [] } },
-      { match: (u) => u.includes('/inappproducts'), body: { inappproduct: [] } },
+      { match: (u) => u.includes('/onetimeproducts'), body: { oneTimeProducts: [] } },
     ]);
 
     await listProducts({ packageName: 'com.a', serviceAccountKey: keyA });
@@ -253,7 +253,7 @@ describe('createSubscription', () => {
 describe('createOneTimePurchase', () => {
   it('does not let an unmapped extra region overwrite the primary price', async () => {
     const calls = mockFetch([
-      { match: (u, m) => u.includes('/inappproducts') && m === 'POST', body: {} },
+      { match: (u, m) => u.includes('/onetimeproducts') && m === 'PATCH', body: {} },
     ]);
 
     const result = await createOneTimePurchase({
@@ -264,16 +264,20 @@ describe('createOneTimePurchase', () => {
 
     expect(result.success).toBe(true);
     expect(result.skippedRegions).toEqual(['BRL']);
-    const create = calls.find((c) => c.method === 'POST' && c.url.includes('/inappproducts'));
-    const prices = (create!.body as { prices: Record<string, { currency: string; priceMicros: string }> }).prices;
-    expect(prices['US']).toEqual({ currency: 'USD', priceMicros: '4990000' });
+    const create = calls.find((c) => c.method === 'PATCH' && c.url.includes('/onetimeproducts'));
+    const configs = (create!.body as {
+      purchaseOptions: Array<{ regionalPricingAndAvailabilityConfigs: Array<{ regionCode: string; price: { currencyCode: string; units: string; nanos: number }; availability: string }> }>;
+    }).purchaseOptions[0].regionalPricingAndAvailabilityConfigs;
+    // BRL is unmapped → skipped, so only the US primary config remains.
+    expect(configs).toHaveLength(1);
+    expect(configs[0]).toEqual({ regionCode: 'US', price: { currencyCode: 'USD', units: '4', nanos: 990000000 }, availability: 'AVAILABLE' });
   });
 });
 
 describe('deleteProduct — empty-body success', () => {
   it('treats an empty 204 DELETE response as success', async () => {
     mockFetch([
-      { match: (u, m) => u.includes('/inappproducts/') && m === 'DELETE', status: 204 },
+      { match: (u, m) => u.includes('/onetimeproducts/') && m === 'DELETE', status: 204 },
     ]);
 
     const result = await deleteProduct({
@@ -301,7 +305,7 @@ describe('listProducts', () => {
           }],
         },
       },
-      { match: (u) => u.includes('/inappproducts'), body: { inappproduct: [] } },
+      { match: (u) => u.includes('/onetimeproducts'), body: { oneTimeProducts: [] } },
     ]);
 
     const products = await listProducts({ packageName: 'com.example', serviceAccountKey });
@@ -310,12 +314,12 @@ describe('listProducts', () => {
     expect(products[0].currency).toBe('KRW');
   });
 
-  it('paginates subscriptions via nextPageToken and inappproducts via tokenPagination', async () => {
+  it('paginates subscriptions and one-time products via nextPageToken', async () => {
     mockFetch([
       { match: (u) => u.includes('/subscriptions') && u.includes('pageToken=s2'), body: { subscriptions: [{ productId: 'sub2', basePlans: [] }] } },
       { match: (u) => u.includes('/subscriptions'), body: { subscriptions: [{ productId: 'sub1', basePlans: [] }], nextPageToken: 's2' } },
-      { match: (u) => u.includes('/inappproducts') && u.includes('token=i2'), body: { inappproduct: [{ sku: 'iap2' }] } },
-      { match: (u) => u.includes('/inappproducts'), body: { inappproduct: [{ sku: 'iap1' }], tokenPagination: { nextPageToken: 'i2' } } },
+      { match: (u) => u.includes('/onetimeproducts') && u.includes('pageToken=i2'), body: { oneTimeProducts: [{ productId: 'iap2', purchaseOptions: [] }] } },
+      { match: (u) => u.includes('/onetimeproducts'), body: { oneTimeProducts: [{ productId: 'iap1', purchaseOptions: [] }], nextPageToken: 'i2' } },
     ]);
 
     const products = await listProducts({ packageName: 'com.example', serviceAccountKey });

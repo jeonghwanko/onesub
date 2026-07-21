@@ -13,6 +13,13 @@ import { MAX_RETRIES, isRetryableStatus, retryDelayMs, backoff } from './retry.j
 
 const BASE_URL = 'https://api.appstoreconnect.apple.com/v1';
 
+// The standalone in-app purchase resource (create / patch / delete / pricePoints)
+// lives under the v2 base — POST /v1/inAppPurchasesV2 is rejected with
+// "path does not match a defined resource type". Only the app→IAP relationship
+// (/v1/apps/{id}/inAppPurchasesV2) and price schedules
+// (/v1/inAppPurchasePriceSchedules) remain on v1.
+const IAP_V2_URL = 'https://api.appstoreconnect.apple.com/v2/inAppPurchases';
+
 // ── KRW price tier reference ──────────────────────────────────────────────────
 
 export const APPLE_KRW_COMMON_PRICES = [
@@ -269,9 +276,12 @@ export async function findPricePoint(
   currency?: string,
 ): Promise<FindPricePointResult> {
   const all: PricePointMatch[] = [];
+  const pricePointsBase =
+    resourceType === 'inAppPurchasesV2'
+      ? `${IAP_V2_URL}/${encodeURIComponent(resourceId)}/pricePoints`
+      : `/${resourceType}/${encodeURIComponent(resourceId)}/pricePoints`;
   const firstPath =
-    `/${resourceType}/${encodeURIComponent(resourceId)}/pricePoints` +
-    `?filter[territory]=${encodeURIComponent(territory)}&limit=200`;
+    `${pricePointsBase}?filter[territory]=${encodeURIComponent(territory)}&limit=200`;
   for await (const page of applePages<ApplePricePointsResponse>(creds, firstPath)) {
     for (const item of page.data ?? []) {
       all.push({ id: item.id, price: item.attributes.customerPrice });
@@ -594,7 +604,7 @@ export async function createOneTimePurchase(opts: {
 
     let iapId: string;
     try {
-      const resp = await appleRequest<AppleInAppPurchaseResponse>(creds, 'POST', '/inAppPurchasesV2', {
+      const resp = await appleRequest<AppleInAppPurchaseResponse>(creds, 'POST', IAP_V2_URL, {
         data: {
           type: 'inAppPurchases',
           attributes: { name: opts.name, productId: opts.productId, inAppPurchaseType },
@@ -662,7 +672,7 @@ export async function updateProduct(opts: {
       const found = await findIapByProductId(creds, appId, opts.productId);
       if (!found) return { success: false, updated: [], error: `IAP '${opts.productId}' not found.`, errorType: 'NOT_FOUND' };
       if (opts.name) {
-        await appleRequest(creds, 'PATCH', `/inAppPurchasesV2/${found.internalId}`, {
+        await appleRequest(creds, 'PATCH', `${IAP_V2_URL}/${found.internalId}`, {
           data: { type: 'inAppPurchases', id: found.internalId, attributes: { name: opts.name } },
         });
         updated.push('name');
@@ -705,7 +715,7 @@ export async function deleteProduct(opts: {
     } else {
       const found = await findIapByProductId(creds, appId, opts.productId);
       if (!found) return { success: false, error: `IAP '${opts.productId}' not found.`, errorType: 'NOT_FOUND' };
-      await appleRequest(creds, 'DELETE', `/inAppPurchasesV2/${found.internalId}`);
+      await appleRequest(creds, 'DELETE', `${IAP_V2_URL}/${found.internalId}`);
     }
 
     return { success: true };
