@@ -1,5 +1,33 @@
 # @jeonghwanko/onesub-sdk
 
+## 0.10.0
+
+### Minor Changes
+
+- 2ff25c6: Add `config.consumableProductIds` so orphan replays resolve consumables correctly.
+
+  A store transaction carries no consumable flag, so the SDK learned it from the
+  in-flight `purchaseProduct(id, 'consumable')` call. An orphan replay — the app
+  died between payment and validation, and the store redelivers at next launch —
+  has no such call and fell back to `non_consumable`. That recorded the wrong
+  `type` on the server (host grants keyed on `consumable` never fired) and
+  acknowledged instead of consumed, permanently blocking repurchase on Android.
+  Both failures were silent.
+
+  Hosts that sell consumables should list their product IDs; an explicit
+  `purchaseProduct(id, type)` still wins over the list. Behavior is unchanged for
+  hosts that do not set it.
+
+### Patch Changes
+
+- 3c6436d: Add a transaction-correlated `subscribeWithResult()` API and public `isBusy`
+  state so apps can show subscription success immediately after server validation
+  while keeping other store mutations locked until native transaction cleanup
+  finishes. Add debug phase timings for drain, product fetch, store request,
+  validation, and transaction cleanup.
+- Updated dependencies [2ff25c6]
+  - @onesub/shared@0.13.0
+
 ## 0.9.0
 
 ### Minor Changes
