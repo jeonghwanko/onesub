@@ -116,6 +116,36 @@ export function isSubscriptionEvent(
 }
 
 /**
+ * Decide whether a non-subscription event is consumable. Priority:
+ *   1. The caller's in-flight entry — a user-initiated `purchaseProduct()` said
+ *      so explicitly, and nothing beats that.
+ *   2. `config.consumableProductIds` — the host's declaration, the only source
+ *      an ORPHAN REPLAY has. A store transaction carries no consumable flag.
+ *   3. `non_consumable` — the historical default.
+ *
+ * Step 2 exists because guessing at step 3 is silently destructive for a
+ * consumable: the server records the wrong `type` (host reconciliation by type
+ * never finds the purchase — paid, never granted) and `finishTransaction`
+ * acknowledges instead of consuming (on Android the SKU stays owned forever, so
+ * the user cannot rebuy). Neither surfaces as an error. Hosts that sell
+ * consumables must declare them; hosts that do not are unaffected.
+ */
+export function resolvePurchaseType(
+  productId: string,
+  inFlight: InFlightEntry | undefined,
+  config: Pick<OneSubConfig, 'consumableProductIds'>,
+): PurchaseType {
+  if (inFlight?.purchaseType) {
+    return inFlight.purchaseType === 'consumable'
+      ? PURCHASE_TYPE.CONSUMABLE
+      : PURCHASE_TYPE.NON_CONSUMABLE;
+  }
+  return config.consumableProductIds?.includes(productId)
+    ? PURCHASE_TYPE.CONSUMABLE
+    : PURCHASE_TYPE.NON_CONSUMABLE;
+}
+
+/**
  * Process a single purchase event (either a fresh transaction or a replay
  * delivered by Transaction.updates at connection time). Validates with the
  * server, finishes the transaction on success, and resolves/rejects the
@@ -209,10 +239,7 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         inFlight?.reject(new OneSubError(code, result.error ?? '[onesub] Receipt validation failed.'));
       }
     } else {
-      const purchaseType: PurchaseType =
-        inFlight?.purchaseType === 'consumable'
-          ? PURCHASE_TYPE.CONSUMABLE
-          : PURCHASE_TYPE.NON_CONSUMABLE;
+      const purchaseType = resolvePurchaseType(productId, inFlight, deps.config);
       const result = await deps.api.validatePurchase(deps.config.serverUrl, {
         platform: platformName,
         receipt: receiptToken,
@@ -238,7 +265,14 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         // `result.transactionId` (the user gets charged but never granted).
         const transactionId = extractTransactionId(purchase);
         deps.logger?.trace('purchase synthesized as restored (already owned)', { productId, transactionId });
-        await deps.RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
+        // Finish with the resolved type, not a hardcoded false. If the host
+        // declared this id consumable, acknowledging it would leave the SKU
+        // owned on Android and permanently block repurchase — the same trap
+        // resolvePurchaseType exists to close.
+        await deps.RNIap.finishTransaction({
+          purchase,
+          isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
+        }).catch(() => {
           /* ignore */
         });
         inFlight?.resolve({

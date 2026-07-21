@@ -60,9 +60,40 @@ function PaywallScreen() {
 | `productId` | Default subscription product ID |
 | `appleProductId` / `googleProductId` | Platform-specific overrides (optional) |
 | `appId` | Which app this client is on a multi-app server (`OneSubServerConfig.apps`) — the app's `id`, Apple bundleId, or Google packageName. **Required for non-default apps on Android**: a Google purchase token doesn't name its package, so without it validation falls back to the default app's credentials and is rejected. |
+| `consumableProductIds` | Every consumable product ID you sell. **Required if you sell consumables** — see below. |
 | `mockMode` | Return synthetic success without calling `react-native-iap` or the server. For Expo Go / simulator UI testing. **Never enable in production.** |
 | `debug` | When `true`, emit verbose `[onesub]` traces at every step (IAP connection, listener events, in-flight matches, server validations, `finishTransaction`, drain transitions). Recommended when diagnosing an integration. |
 | `logger` | Custom log sink (`{ info, warn, error }`). Defaults to `console`. Works with `pino` / `winston` / any compatible logger. |
+
+### Selling consumables — declare them
+
+If you sell consumables, list every consumable product ID in `consumableProductIds`:
+
+```tsx
+<OneSubProvider
+  config={{
+    serverUrl,
+    productId: 'pro_monthly',
+    consumableProductIds: ['credits_10', 'credits_50', 'credits_200'],
+  }}
+  userId={userId}
+>
+```
+
+A store transaction says only `subs` vs `inapp` — it never says whether a product is consumable.
+Normally the SDK learns that from your `purchaseProduct(id, 'consumable')` call. But if the app dies
+between payment and validation, the store redelivers that transaction at the next launch as an
+**orphan replay**, with no call to learn from. Without this list the SDK falls back to
+`non_consumable`, and both consequences are permanent and silent:
+
+- the server records `type: 'non_consumable'`, so host code that grants consumables by type never
+  sees the purchase — the user paid and got nothing;
+- `finishTransaction` acknowledges instead of consuming, so on Android the SKU stays owned and that
+  product can never be bought again.
+
+Declaring the IDs makes the replay resolve exactly as the original call would have. An explicit
+`purchaseProduct(id, type)` always wins over the list, so a stale entry cannot override a live call.
+Subscriptions do not belong here — they are detected from the transaction itself.
 
 ### Debug mode
 

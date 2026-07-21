@@ -616,6 +616,27 @@ export interface OneSubConfig {
    */
   appId?: string;
   /**
+   * One-time product IDs that are CONSUMABLE. Declare every consumable you sell.
+   *
+   * A store transaction does not say whether its product is consumable — only
+   * `subs` vs `inapp` — so the SDK normally learns it from the in-flight
+   * `purchaseProduct(id, 'consumable')` call. An ORPHAN REPLAY has no in-flight
+   * entry: the app died between payment and validation, and the store redelivers
+   * the transaction at next launch. Without this list the SDK must guess, and it
+   * guesses `non_consumable`, which is wrong twice over:
+   *
+   *   - the server records `type: 'non_consumable'`, so host code that reconciles
+   *     consumable grants by type never sees the purchase — paid, never granted;
+   *   - `finishTransaction` acknowledges instead of consuming, so on Android the
+   *     SKU stays owned and the user can never buy it again.
+   *
+   * Both are permanent and silent. Listing your consumable IDs here makes the
+   * replay path resolve the same type the original call would have.
+   *
+   * Subscriptions do not belong here; they are detected from the transaction.
+   */
+  consumableProductIds?: string[];
+  /**
    * Mock mode — when true, purchase/subscribe/restore return synthetic
    * success responses without calling react-native-iap or the server.
    * Useful for local UI development in Expo Go or simulators without

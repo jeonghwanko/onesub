@@ -8,6 +8,7 @@ import {
   isUserCancelled,
   extractReceiptToken,
   isSubscriptionEvent,
+  resolvePurchaseType,
   type InFlightEntry,
   type PurchaseFlowDeps,
 } from '../purchaseFlow.js';
@@ -61,6 +62,42 @@ describe('extractReceiptToken', () => {
     expect(extractReceiptToken(null)).toBe('');
     expect(extractReceiptToken({})).toBe('');
     expect(extractReceiptToken({ purchaseToken: '' })).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePurchaseType
+// ---------------------------------------------------------------------------
+describe('resolvePurchaseType', () => {
+  const consumableEntry: InFlightEntry = {
+    kind: 'purchase',
+    purchaseType: 'consumable',
+    resolve: () => {},
+    reject: () => {},
+  };
+
+  it('trusts the in-flight entry over the declared list', () => {
+    // The user-initiated call is the most precise signal; a stale/incomplete
+    // config list must never override what purchaseProduct() was told.
+    expect(resolvePurchaseType('credits', consumableEntry, {})).toBe('consumable');
+    expect(
+      resolvePurchaseType('credits', { ...consumableEntry, purchaseType: 'non_consumable' }, {
+        consumableProductIds: ['credits'],
+      }),
+    ).toBe('non_consumable');
+  });
+
+  it('uses the declared list for orphan replays', () => {
+    expect(
+      resolvePurchaseType('credits', undefined, { consumableProductIds: ['credits'] }),
+    ).toBe('consumable');
+  });
+
+  it('keeps the non_consumable default for undeclared products', () => {
+    expect(resolvePurchaseType('lifetime', undefined, {})).toBe('non_consumable');
+    expect(
+      resolvePurchaseType('lifetime', undefined, { consumableProductIds: ['credits'] }),
+    ).toBe('non_consumable');
   });
 });
 
@@ -211,6 +248,91 @@ describe('handlePurchaseEvent — subscription', () => {
     expect(onSubscriptionActivated).toHaveBeenCalledOnce();
     // No matching in-flight entry means no promise to resolve — this is the
     // silent-replay-at-mount path that fixes the "결제 복구됨" bug.
+  });
+
+  // The app died between payment and validation; the store redelivers the
+  // transaction at next launch with no in-flight entry. Guessing non_consumable
+  // here is silently destructive — the server records the wrong type (host
+  // grants keyed on `consumable` never fire) and the transaction is
+  // acknowledged instead of consumed (Android blocks repurchase forever).
+  it('orphan consumable replay: declared list drives both the server type and consume', async () => {
+    const finishTransaction = vi.fn().mockResolvedValue(undefined);
+    const validatePurchase = vi.fn().mockResolvedValue({
+      valid: true,
+      purchase: { productId: 'credits_10', transactionId: 'tx_9' },
+      action: 'new',
+    });
+
+    const deps = makeDeps({
+      config: {
+        serverUrl: 'https://api.test',
+        productId: 'default',
+        consumableProductIds: ['credits_10'],
+      },
+      inFlight: new Map<string, InFlightEntry>(),
+      RNIap: { finishTransaction },
+      api: { validateReceipt: vi.fn(), validatePurchase },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productId: 'credits_10' }), deps);
+
+    expect(validatePurchase).toHaveBeenCalledWith(
+      'https://api.test',
+      expect.objectContaining({ productId: 'credits_10', type: 'consumable' }),
+    );
+    expect(finishTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ isConsumable: true }),
+    );
+  });
+
+  it('orphan replay of an undeclared product stays non_consumable', async () => {
+    const finishTransaction = vi.fn().mockResolvedValue(undefined);
+    const validatePurchase = vi.fn().mockResolvedValue({
+      valid: true,
+      purchase: { productId: 'lifetime', transactionId: 'tx_9' },
+      action: 'new',
+    });
+
+    const deps = makeDeps({
+      inFlight: new Map<string, InFlightEntry>(),
+      RNIap: { finishTransaction },
+      api: { validateReceipt: vi.fn(), validatePurchase },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productId: 'lifetime' }), deps);
+
+    expect(validatePurchase).toHaveBeenCalledWith(
+      'https://api.test',
+      expect.objectContaining({ type: 'non_consumable' }),
+    );
+    expect(finishTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ isConsumable: false }),
+    );
+  });
+
+  it('ALREADY_OWNED fallback consumes a declared consumable instead of acknowledging', async () => {
+    const finishTransaction = vi.fn().mockResolvedValue(undefined);
+    const validatePurchase = vi.fn().mockResolvedValue({
+      valid: false,
+      error: 'NON_CONSUMABLE_ALREADY_OWNED',
+    });
+
+    const deps = makeDeps({
+      config: {
+        serverUrl: 'https://api.test',
+        productId: 'default',
+        consumableProductIds: ['credits_10'],
+      },
+      inFlight: new Map<string, InFlightEntry>(),
+      RNIap: { finishTransaction },
+      api: { validateReceipt: vi.fn(), validatePurchase },
+    });
+
+    await handlePurchaseEvent(makePurchase({ productId: 'credits_10' }), deps);
+
+    expect(finishTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ isConsumable: true }),
+    );
   });
 
   it('server rejects subscription: does NOT finish transaction, rejects in-flight', async () => {

@@ -166,6 +166,7 @@ that has not expired, or by a non-consumable purchase. Consumables do not grant 
 | `config.productId` | Yes | Default subscription product ID |
 | `config.appleProductId` | No | Overrides the default product on iOS |
 | `config.googleProductId` | No | Overrides the default product on Android |
+| `config.consumableProductIds` | Yes, if you sell consumables | Every consumable product ID. Orphan replays (app died between payment and validation) have no in-flight call to read the type from; without this list they resolve to `non_consumable`, which records the wrong type on the server and acknowledges instead of consuming — on Android that blocks repurchase permanently. An explicit `purchaseProduct(id, type)` always wins over this list. |
 | `config.mockMode` | Development only | Returns synthetic SDK success without native IAP or server calls |
 | `config.debug` | No | Verbose purchase-flow logs |
 | `config.logger` | No | SDK `{ info, warn, error }` sink |
