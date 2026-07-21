@@ -180,10 +180,28 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
       }
       if (result.valid) {
         deps.logger?.trace('subscription validated', { productId, action: result.action, active: Boolean(result.subscription) });
-        await deps.RNIap.finishTransaction({ purchase, isConsumable: false }).catch(() => {
-          /* ignore */
-        });
-        inFlight?.resolve(result);
+        // A matched caller may show its success UI as soon as this exact
+        // in-flight transaction has passed server validation. StoreKit cleanup
+        // still runs to completion and is surfaced separately so the Provider
+        // can keep all other IAP mutations locked until it is safe to proceed.
+        // Orphan replays have no in-flight caller and therefore remain silent.
+        const finishStartedAt = Date.now();
+        const cleanup = Promise.resolve()
+          .then(() => deps.RNIap.finishTransaction({ purchase, isConsumable: false }))
+          .then(() => {
+            deps.logger?.trace('subscription transaction finished', {
+              productId,
+              durationMs: Date.now() - finishStartedAt,
+            });
+          })
+          .catch((err: unknown) => {
+            // The server already accepted the receipt. Leaving the transaction
+            // unfinished is recoverable: StoreKit will replay it and the server
+            // validation route is idempotent.
+            deps.logger?.warn('subscription finishTransaction failed; transaction will replay', err);
+          });
+        inFlight?.resolve({ ...result, cleanup });
+        await cleanup;
       } else {
         // Don't finish — server rejected; let StoreKit replay next launch.
         const code = serverErrorCode(result.errorCode, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);

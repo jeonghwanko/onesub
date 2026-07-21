@@ -1,15 +1,24 @@
 import type { SubscriptionInfo, PurchaseInfo, EntitlementStatus } from '@onesub/shared';
 import { useOneSubContext } from './OneSubProvider.js';
+import type { SubscriptionPurchaseResult } from './OneSubProvider.js';
 
 export interface UseOneSubReturn {
   /** Whether the user currently has an active subscription */
   isActive: boolean;
   /** True while checking status or processing a purchase / restore */
   isLoading: boolean;
+  /** True until the active store mutation, including transaction cleanup, is complete. */
+  isBusy: boolean;
   /** Full subscription details from the server, or null */
   subscription: SubscriptionInfo | null;
   /** Start a subscription purchase flow via the native store UI */
   subscribe: () => Promise<void>;
+  /**
+   * Start a subscription and resolve when this exact in-flight transaction is
+   * server-validated. Native cleanup may still be running; keep other IAP
+   * actions disabled while `isBusy` is true. Null means cancel/already busy.
+   */
+  subscribeWithResult: () => Promise<SubscriptionPurchaseResult | null>;
   /** Restore previous purchases (calls the native store and re-validates) */
   restore: () => Promise<void>;
   /**

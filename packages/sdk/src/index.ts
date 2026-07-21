@@ -1,6 +1,10 @@
 // Provider & context
 export { OneSubProvider } from './OneSubProvider.js';
-export type { OneSubProviderProps, OneSubContextValue } from './OneSubProvider.js';
+export type {
+  OneSubProviderProps,
+  OneSubContextValue,
+  SubscriptionPurchaseResult,
+} from './OneSubProvider.js';
 
 // Primary hook
 export { useOneSub } from './useOneSub.js';

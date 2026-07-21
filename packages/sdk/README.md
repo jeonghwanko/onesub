@@ -18,17 +18,37 @@ import { OneSubProvider, useOneSub } from '@jeonghwanko/onesub-sdk';
 
 // In any component
 function PaywallScreen() {
-  const { isActive, subscribe, restore, purchaseProduct, restoreProduct } = useOneSub();
+  const {
+    isActive,
+    isBusy,
+    subscribeWithResult,
+    purchaseProduct,
+    restoreProduct,
+  } = useOneSub();
 
-  // Subscriptions
-  if (!isActive) return <Button onPress={subscribe} title="Subscribe" />;
+  async function handleFastSubscribe() {
+    // Resolves for this exact purchase as soon as the server validates it.
+    // Keep every other IAP action disabled while isBusy remains true because
+    // native transaction cleanup is still running.
+    const result = await subscribeWithResult();
+    if (result) showSubscriptionSuccess(result.subscription);
+  }
 
-  // One-time products
-  const result = await purchaseProduct('credits_100', 'consumable');
-  // result: null on cancel, (PurchaseInfo & { action?: 'new' | 'restored' }) on success
-
-  // Restore a non-consumable
-  const restored = await restoreProduct('premium_unlock', 'non_consumable');
+  return (
+    <>
+      {!isActive && <Button disabled={isBusy} onPress={handleFastSubscribe} title="Subscribe" />}
+      <Button
+        disabled={isBusy}
+        onPress={() => purchaseProduct('credits_100', 'consumable')}
+        title="Buy credits"
+      />
+      <Button
+        disabled={isBusy}
+        onPress={() => restoreProduct('premium_unlock', 'non_consumable')}
+        title="Restore unlock"
+      />
+    </>
+  );
 }
 ```
 

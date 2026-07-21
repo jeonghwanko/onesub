@@ -48,8 +48,17 @@ try {
 export interface OneSubContextValue {
   isActive: boolean;
   isLoading: boolean;
+  /** True until the active store mutation, including transaction cleanup, is complete. */
+  isBusy: boolean;
   subscription: SubscriptionInfo | null;
   subscribe: () => Promise<void>;
+  /**
+   * Starts a subscription and returns only when this exact in-flight purchase
+   * has passed server validation. Store cleanup may still be running; use
+   * `isBusy` to keep every other purchase / restore action disabled.
+   * Returns null when the user cancels or another IAP mutation is already busy.
+   */
+  subscribeWithResult: () => Promise<SubscriptionPurchaseResult | null>;
   restore: () => Promise<void>;
   purchaseProduct: (
     productId: string,
@@ -77,6 +86,16 @@ export interface OneSubContextValue {
   hasEntitlement: (id: string) => boolean;
   /** Manually re-fetch the entitlements map. */
   refreshEntitlements: () => Promise<void>;
+}
+
+/** Server-validated result for the subscription request started by the caller. */
+export interface SubscriptionPurchaseResult {
+  subscription: SubscriptionInfo;
+}
+
+interface SubscriptionFlowOutcome extends SubscriptionPurchaseResult {
+  /** StoreKit/Play transaction cleanup that continues after validation. */
+  cleanup: Promise<void>;
 }
 
 const OneSubContext = createContext<OneSubContextValue | null>(null);
@@ -201,10 +220,16 @@ export interface OneSubProviderProps {
 export function OneSubProvider({ config, userId, accountToken, children }: OneSubProviderProps) {
   const [isActive, setIsActive] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isBusy, setIsBusy] = useState(false);
   const [subscription, setSubscription] = useState<SubscriptionInfo | null>(null);
   const [entitlements, setEntitlements] = useState<Record<string, EntitlementStatus>>({});
 
   const isBusyRef = useRef(false);
+  const releaseIapOperation = useCallback(() => {
+    isBusyRef.current = false;
+    setIsBusy(false);
+    setIsLoading(false);
+  }, []);
   // Read via ref so the stable purchase callbacks always see the latest token
   // (it may resolve asynchronously on the host, e.g. after hashing a hardware id)
   // without needing to be in their dependency arrays.
@@ -437,14 +462,19 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   }
 
   // -------------------------------------------------------------------------
-  // subscribe()
+  // Subscription purchase core. The matched validation result and native
+  // transaction cleanup deliberately have separate completion points.
   // -------------------------------------------------------------------------
-  const subscribe = useCallback(async () => {
-    if (isBusyRef.current) return;
+  const startSubscriptionFlow = useCallback(async (): Promise<SubscriptionFlowOutcome | null> => {
+    if (isBusyRef.current) return null;
     if (mockMode) {
+      const mockSubscription = {
+        userId,
+        productId: getProductId(config, 'ios'),
+      } as SubscriptionInfo;
       setIsActive(true);
-      setSubscription({ userId, productId: getProductId(config, 'ios') } as SubscriptionInfo);
-      return;
+      setSubscription(mockSubscription);
+      return { subscription: mockSubscription, cleanup: Promise.resolve() };
     }
     if (!RNIap) {
       throw new OneSubError(
@@ -454,7 +484,10 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     }
 
     isBusyRef.current = true;
+    setIsBusy(true);
     setIsLoading(true);
+    let cleanupHandedOff = false;
+    const startedAt = Date.now();
 
     try {
       const platform = getCurrentPlatform();
@@ -463,17 +496,32 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
 
       // Wait until the mount drain window closes. During drain StoreKit may
       // still be flushing queued replays, and in-flight matching is disabled.
+      const drainStartedAt = Date.now();
       await awaitDrainComplete();
+      logger.trace('subscribe drain complete', {
+        durationMs: Date.now() - drainStartedAt,
+        totalMs: Date.now() - startedAt,
+      });
 
       // v15: fetchProducts replaces getSubscriptions
+      const fetchStartedAt = Date.now();
       const subs = await RNIap.fetchProducts({ skus: [productId], type: 'subs' });
+      logger.trace('subscription products fetched', {
+        durationMs: Date.now() - fetchStartedAt,
+        totalMs: Date.now() - startedAt,
+      });
       if (!subs || !subs.length) {
         throw new OneSubError(ONESUB_ERROR_CODE.PRODUCT_NOT_FOUND, `[onesub] Subscription product not found: ${productId}`);
       }
 
       // Register in-flight promise BEFORE calling requestPurchase — the
       // mount-level listener matches incoming events to this entry.
-      const resultPromise = registerInFlight<{ valid: boolean; subscription?: SubscriptionInfo; error?: string }>(
+      const resultPromise = registerInFlight<{
+        valid: boolean;
+        subscription?: SubscriptionInfo;
+        error?: string;
+        cleanup?: Promise<void>;
+      }>(
         productId,
         'subscription',
         undefined,
@@ -483,27 +531,41 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       // never "unhandled". The original promise is still awaited afterwards.
       void resultPromise.catch(() => {});
       try {
+        const requestStartedAt = Date.now();
         await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'subs', accountTokenRef.current));
+        logger.trace('subscription store request returned', {
+          durationMs: Date.now() - requestStartedAt,
+          totalMs: Date.now() - startedAt,
+        });
       } catch (err) {
         clearInFlight(inFlightRef.current, productId);
-        if (isUserCancelled(err)) return;
+        if (isUserCancelled(err)) return null;
         throw err;
       }
+      const validationStartedAt = Date.now();
       const result = await resultPromise;
-      if (!result.valid) {
+      logger.trace('subscription in-flight validated', {
+        durationMs: Date.now() - validationStartedAt,
+        totalMs: Date.now() - startedAt,
+      });
+      if (!result.valid || !result.subscription) {
         throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, result.error ?? '[onesub] Subscription validation failed.');
       }
+      const cleanup = result.cleanup ?? Promise.resolve();
+      cleanupHandedOff = true;
+      return { subscription: result.subscription, cleanup };
     } catch (err) {
       // A cancel surfaced via the error listener rejects the in-flight promise
       // with USER_CANCELLED — treat it like a cancel from requestPurchase and
       // return normally (same contract as purchaseProduct).
-      if (isUserCancelled(err)) return;
+      if (isUserCancelled(err)) return null;
       throw err;
     } finally {
-      setIsLoading(false);
-      isBusyRef.current = false;
+      // On validation success the public fast path owns cleanup and releases
+      // the busy lock only after finishTransaction settles.
+      if (!cleanupHandedOff) releaseIapOperation();
     }
-  }, [config, userId, mockMode]);
+  }, [config, userId, mockMode, releaseIapOperation]);
 
   // -------------------------------------------------------------------------
   // restore() — query the store's existing purchases and re-validate with server.
@@ -522,6 +584,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     }
 
     isBusyRef.current = true;
+    setIsBusy(true);
     setIsLoading(true);
 
     try {
@@ -562,10 +625,9 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         setSubscription(status.subscription);
       }
     } finally {
-      setIsLoading(false);
-      isBusyRef.current = false;
+      releaseIapOperation();
     }
-  }, [config, userId, mockMode]);
+  }, [config, userId, mockMode, releaseIapOperation]);
 
   // -------------------------------------------------------------------------
   // purchaseProduct() — consumable or non-consumable one-time purchase
@@ -587,6 +649,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       }
 
       isBusyRef.current = true;
+      setIsBusy(true);
       setIsLoading(true);
 
       try {
@@ -628,11 +691,10 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         if (isUserCancelled(err)) return null;
         throw err;
       } finally {
-        setIsLoading(false);
-        isBusyRef.current = false;
+        releaseIapOperation();
       }
     },
-    [config, userId, mockMode],
+    [config, userId, mockMode, releaseIapOperation],
   );
 
   // -------------------------------------------------------------------------
@@ -655,6 +717,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       }
 
       isBusyRef.current = true;
+      setIsBusy(true);
       setIsLoading(true);
 
       try {
@@ -708,11 +771,10 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
 
         throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, validationResult.error ?? '[onesub] Restore validation failed.');
       } finally {
-        setIsLoading(false);
-        isBusyRef.current = false;
+        releaseIapOperation();
       }
     },
-    [config, userId, mockMode],
+    [config, userId, mockMode, releaseIapOperation],
   );
 
   // Stable refresh function exposed via context. Re-fetches the entitlements
@@ -738,10 +800,34 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   // an entitlements refresh — the host doesn't have to remember to refresh
   // after each purchase/restore. Failures don't trigger a refresh (status
   // unchanged).
+  const settleSubscriptionCleanup = useCallback(async (outcome: SubscriptionFlowOutcome) => {
+    try {
+      await outcome.cleanup;
+    } finally {
+      releaseIapOperation();
+    }
+  }, [releaseIapOperation]);
+
+  // Backward-compatible API: preserve the historical contract that subscribe()
+  // waits for native transaction cleanup before resolving.
   const subscribeWithRefresh = useCallback(async () => {
-    await subscribe();
+    const outcome = await startSubscriptionFlow();
+    if (!outcome) return;
+    await settleSubscriptionCleanup(outcome);
     void refreshEntitlements();
-  }, [subscribe, refreshEntitlements]);
+  }, [startSubscriptionFlow, settleSubscriptionCleanup, refreshEntitlements]);
+
+  // Fast, transaction-correlated API: validation completes the caller while
+  // cleanup continues under the SDK-wide busy lock.
+  const subscribeWithResultAndRefresh = useCallback(async (): Promise<SubscriptionPurchaseResult | null> => {
+    const outcome = await startSubscriptionFlow();
+    if (!outcome) return null;
+    void settleSubscriptionCleanup(outcome).catch(() => {
+      // purchaseFlow already converts finish failures into a recoverable replay.
+    });
+    void refreshEntitlements();
+    return { subscription: outcome.subscription };
+  }, [startSubscriptionFlow, settleSubscriptionCleanup, refreshEntitlements]);
 
   const restoreWithRefresh = useCallback(async () => {
     await restore();
@@ -769,8 +855,10 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   const value: OneSubContextValue = {
     isActive,
     isLoading,
+    isBusy,
     subscription,
     subscribe: subscribeWithRefresh,
+    subscribeWithResult: subscribeWithResultAndRefresh,
     restore: restoreWithRefresh,
     purchaseProduct: purchaseProductWithRefresh,
     restoreProduct: restoreProductWithRefresh,

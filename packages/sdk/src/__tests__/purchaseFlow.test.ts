@@ -139,6 +139,51 @@ describe('handlePurchaseEvent — subscription', () => {
     expect(inFlight.has('pro_monthly')).toBe(false);
   });
 
+  it('resolves the matched validation before slow StoreKit cleanup finishes', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let observeResolution: (value: { valid: boolean; cleanup?: Promise<void> }) => void = () => {};
+    const resolution = new Promise<{ valid: boolean; cleanup?: Promise<void> }>((resolve) => {
+      observeResolution = resolve;
+    });
+    inFlight.set('pro_monthly', {
+      kind: 'subscription',
+      resolve: (value) => {
+        observeResolution(value as { valid: boolean; cleanup?: Promise<void> });
+      },
+      reject: () => {},
+    });
+
+    let finishCleanup: () => void = () => {};
+    const finishTransaction = vi.fn(() => new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    }));
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction },
+      api: {
+        validateReceipt: vi.fn().mockResolvedValue({
+          valid: true,
+          subscription: { userId: 'user_1', productId: 'pro_monthly' },
+        }),
+        validatePurchase: vi.fn(),
+      },
+    });
+
+    const eventPromise = handlePurchaseEvent(
+      makePurchase({ productId: 'pro_monthly', productType: 'subs' }),
+      deps,
+    );
+    const resolved = await resolution;
+
+    expect(resolved).toMatchObject({ valid: true });
+    expect(resolved.cleanup).toBeInstanceOf(Promise);
+    expect(inFlight.has('pro_monthly')).toBe(true);
+
+    finishCleanup();
+    await eventPromise;
+    expect(inFlight.has('pro_monthly')).toBe(false);
+  });
+
   it('orphan subscription replay (no in-flight): still validates + finishes, updates isActive, no resolve call', async () => {
     const inFlight = new Map<string, InFlightEntry>();
     const onSubscriptionActivated = vi.fn();
