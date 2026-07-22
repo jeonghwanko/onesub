@@ -1,5 +1,11 @@
 # @onesub/server
 
+## 0.18.3
+
+### Patch Changes
+
+- c584d83: Treat Apple's all-zero `appAccountToken` as absent while preserving transaction ownership checks.
+
 ## 0.18.2
 
 ### Patch Changes
