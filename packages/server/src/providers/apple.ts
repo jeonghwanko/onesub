@@ -38,6 +38,17 @@ interface AppleTransactionPayload {
   [key: string]: unknown;
 }
 
+const EMPTY_APP_ACCOUNT_TOKEN = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Unity IAP can send Guid.Empty when no Apple account token was configured.
+ * Apple includes that sentinel in the signed transaction, so normalize only
+ * that exact UUID to an absent token before any account-binding decision.
+ */
+function normalizeAppleAppAccountToken(token: string | undefined): string | undefined {
+  return token === EMPTY_APP_ACCOUNT_TOKEN ? undefined : token;
+}
+
 /**
  * Decoded Apple signed renewal info (JWS payload).
  */
@@ -203,7 +214,15 @@ export async function validateAppleReceipt(
   receipt: string,
   config: AppleConfig
 ): Promise<SubscriptionInfo | null> {
-  if (config.mockMode) return mockValidateAppleSubscription(receipt);
+  if (config.mockMode) {
+    const mock = mockValidateAppleSubscription(receipt);
+    if (mock) {
+      const boundAccountId = normalizeAppleAppAccountToken(mock.boundAccountId);
+      if (boundAccountId) mock.boundAccountId = boundAccountId;
+      else delete mock.boundAccountId;
+    }
+    return mock;
+  }
   let tx: AppleTransactionPayload;
 
   try {
@@ -243,6 +262,7 @@ export async function validateAppleReceipt(
 
   const status = deriveStatus(tx, null);
   const purchasedAt = tx.originalPurchaseDate ?? tx.purchaseDate ?? Date.now();
+  const appAccountToken = normalizeAppleAppAccountToken(tx.appAccountToken);
 
   return {
     userId: '',  // caller fills this in from the request body
@@ -253,7 +273,7 @@ export async function validateAppleReceipt(
     originalTransactionId: tx.originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
-    ...(tx.appAccountToken ? { boundAccountId: tx.appAccountToken } : {}),
+    ...(appAccountToken ? { boundAccountId: appAccountToken } : {}),
   };
 }
 
@@ -290,7 +310,15 @@ export async function validateAppleConsumableReceipt(
   config: AppleConfig,
   expectedProductId?: string,
 ): Promise<AppleProductResult | null> {
-  if (config.mockMode) return mockValidateAppleProduct(signedTransaction, expectedProductId);
+  if (config.mockMode) {
+    const mock = mockValidateAppleProduct(signedTransaction, expectedProductId);
+    if (mock) {
+      const appAccountToken = normalizeAppleAppAccountToken(mock.appAccountToken);
+      if (appAccountToken) mock.appAccountToken = appAccountToken;
+      else delete mock.appAccountToken;
+    }
+    return mock;
+  }
   let tx: AppleTransactionPayload;
 
   try {
@@ -371,7 +399,7 @@ export async function validateAppleConsumableReceipt(
     purchasedAt: tx.purchaseDate
       ? new Date(tx.purchaseDate).toISOString()
       : new Date().toISOString(),
-    appAccountToken: tx.appAccountToken ?? undefined,
+    appAccountToken: normalizeAppleAppAccountToken(tx.appAccountToken),
   };
 }
 
@@ -451,7 +479,7 @@ export async function decodeAppleNotification(
     status,
     willRenew,
     expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
-    appAccountToken: tx.appAccountToken ?? null,
+    appAccountToken: normalizeAppleAppAccountToken(tx.appAccountToken) ?? null,
     inAppOwnershipType: tx.inAppOwnershipType ?? null,
   };
 }
@@ -829,7 +857,7 @@ export async function fetchAppleTransactionHistory(
           type: tx.type ?? 'Unknown',
           purchasedAt: tx.purchaseDate ? new Date(tx.purchaseDate).toISOString() : new Date().toISOString(),
           expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
-          appAccountToken: tx.appAccountToken ?? null,
+          appAccountToken: normalizeAppleAppAccountToken(tx.appAccountToken) ?? null,
           inAppOwnershipType: tx.inAppOwnershipType ?? null,
           revocationDate: tx.revocationDate ? new Date(tx.revocationDate).toISOString() : null,
         });

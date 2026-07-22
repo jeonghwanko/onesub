@@ -13,6 +13,8 @@ import {
   mockValidateGoogleProduct,
 } from '../providers/mock.js';
 
+const EMPTY_APP_ACCOUNT_TOKEN = '00000000-0000-0000-0000-000000000000';
+
 /** Full onesub server in mockMode on both platforms — shared by the HTTP describes. */
 function mockApp() {
   const config: OneSubServerConfig = {
@@ -239,6 +241,28 @@ describe('full server in mockMode', () => {
     expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
   });
 
+  it('account-binding: Apple Guid.Empty is unbound, while transaction ownership still rejects a consumable replay', async () => {
+    const app = mockApp();
+    const body = {
+      platform: 'apple',
+      receipt: `MOCK_VALID_empty_guid#token=${EMPTY_APP_ACCOUNT_TOKEN}`,
+      userId: 'firebase-user-a',
+      productId: 'credits_100',
+      type: 'consumable',
+    };
+
+    const first = await request(app).post('/onesub/purchase/validate').send(body);
+    expect(first.status).toBe(200);
+    expect(first.body.action).toBe('new');
+
+    const replay = await request(app).post('/onesub/purchase/validate').send({
+      ...body,
+      userId: 'firebase-user-b',
+    });
+    expect(replay.status).toBe(409);
+    expect(replay.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
+
   it('account-binding: Google obfuscatedExternalAccountId matching userId is accepted', async () => {
     const app = mockApp();
     const res = await request(app).post('/onesub/purchase/validate').send({
@@ -267,12 +291,40 @@ describe('full server in mockMode', () => {
     expect(res.status).toBe(409);
     expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
   });
+
+  it('account-binding: Google keeps the all-zero string as a real bound account id', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/purchase/validate').send({
+      platform: 'google',
+      receipt: `MOCK_VALID_google_zero#token=${EMPTY_APP_ACCOUNT_TOKEN}`,
+      userId: 'firebase-user',
+      productId: 'premium',
+      type: 'non_consumable',
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER);
+  });
 });
 
 // ---------------------------------------------------------------------------
 // Subscription route account-binding (mirrors the one-time purchase guard)
 // ---------------------------------------------------------------------------
 describe('POST /onesub/validate — subscription account-binding', () => {
+  it('treats Apple Guid.Empty as an unbound subscription token', async () => {
+    const app = mockApp();
+    const res = await request(app).post('/onesub/validate').send({
+      platform: 'apple',
+      receipt: `MOCK_VALID_sub_empty_guid#token=${EMPTY_APP_ACCOUNT_TOKEN}`,
+      userId: 'firebase-user',
+      productId: 'premium_monthly',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.valid).toBe(true);
+    expect(res.body.subscription.userId).toBe('firebase-user');
+  });
+
   it('receipt bound to a matching userId is accepted and stored', async () => {
     const app = mockApp();
     const res = await request(app).post('/onesub/validate').send({
