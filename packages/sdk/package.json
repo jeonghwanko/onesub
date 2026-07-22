@@ -43,7 +43,7 @@
   },
   "peerDependencies": {
     "expo-in-app-purchases": ">=14.0.0",
-    "react": "^19.2.6",
+    "react": ">=18.0.0",
     "react-native": ">=0.73.0",
     "react-native-iap": ">=15.0.0"
   },

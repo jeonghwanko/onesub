@@ -153,7 +153,7 @@ try {
 ## Requirements
 
 - `react-native-iap` **v15+** (event-based purchase flow)
-- React Native 0.73+ and React 19.2.6+
+- React Native 0.73+ and React 18+
 - `@onesub/server` running somewhere reachable
 
 The authoritative floors are the `peerDependencies` in this package's `package.json`.
