@@ -210,6 +210,27 @@ export class RedisPurchaseStore implements PurchaseStore {
     return raws.filter((r): r is string => r != null).map((r) => JSON.parse(r) as PurchaseInfo);
   }
 
+  /**
+   * Purchases for one user + product, most-recent-first.
+   *
+   * Served from the `user_product` set that `savePurchase` already maintains for
+   * `hasPurchased`, so this reads only the rows for this product rather than the
+   * user's whole purchase history.
+   *
+   * That set is unordered — unlike the per-user sorted set — so the
+   * most-recent-first contract is restored by an explicit sort here. The row
+   * count is per-product, so this is small.
+   */
+  async getPurchasesForProduct(userId: string, productId: string): Promise<PurchaseInfo[]> {
+    const ids = await this.redis.smembers(PUR_USER_PRODUCT_PREFIX + userId + ':' + productId);
+    if (ids.length === 0) return [];
+    const raws = await this.redis.mget(...ids.map((id) => PUR_TX_PREFIX + id));
+    return raws
+      .filter((r): r is string => r != null)
+      .map((r) => JSON.parse(r) as PurchaseInfo)
+      .sort((a, b) => Date.parse(b.purchasedAt) - Date.parse(a.purchasedAt));
+  }
+
   async getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null> {
     const raw = await this.redis.get(PUR_TX_PREFIX + txId);
     return raw ? (JSON.parse(raw) as PurchaseInfo) : null;
