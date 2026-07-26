@@ -33,12 +33,23 @@ export function setLogger(logger: OneSubLogger | undefined): void {
  * left alone.
  */
 function escapeLineBreaks(value: string): string {
+  // Backslash goes FIRST, and that ordering is the whole point of this function
+  // being written out rather than done in one pass. Escaping `\n` to `\` + `n`
+  // without escaping `\` first makes two different inputs produce identical
+  // output: a real line terminator, and the two characters a caller typed. An
+  // operator reading the log then cannot tell which one they are looking at,
+  // which costs exactly the forensic value the escaping exists to protect.
+  //
+  // With this ordering a real newline renders as `\n` and a submitted backslash-n
+  // renders as `\\n`, so the two stay distinguishable.
+  //
   // One literal replacement per character rather than a single regex with a
-  // callback. This was changed hoping CodeQL's js/log-injection sanitiser
-  // recognition would follow it; it did not, and the alert points at the spread in
-  // `log.*` rather than here. The form is kept because it reads more plainly, not
+  // callback. That form was adopted hoping CodeQL's js/log-injection sanitiser
+  // recognition would follow it; it did not, and the alert points at the spread
+  // in `log.*` rather than here. It is kept because it reads more plainly, not
   // because it satisfies an analyser.
   return value
+    .replace(/\\/g, '\\\\')
     .replace(/\r/g, '\\r')
     .replace(/\n/g, '\\n')
     .replace(/\u2028/g, '\\u2028')
