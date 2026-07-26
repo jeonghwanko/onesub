@@ -207,3 +207,92 @@ describe('exact shape', () => {
     );
   });
 });
+
+describe('bounding an over-long value', () => {
+  // The values that reach this bound are upstream response bodies, which Apple and
+  // Google produce — not attacker input. `fetchSubscriptionPurchaseV2` interpolates
+  // the whole Play error body into its Error message, so `err.msg` was as unbounded
+  // as `responseBody`; bounding in renderValue covers both.
+  const LIMIT = 512;
+
+  it('leaves a value at the limit untouched', () => {
+    const body = 'x'.repeat(LIMIT);
+    expect(formatLogArgs(['m', { responseBody: body }])).toBe(`m responseBody=${body}`);
+  });
+
+  it('cuts past the limit and says how much was dropped', () => {
+    // The count is the point: `…` alone cannot distinguish 20 characters too long
+    // from a megabyte, which is the difference between "read the rest upstream" and
+    // "something is very wrong upstream".
+    //
+    // It comes back quoted, and that is load-bearing rather than incidental: the
+    // marker contains a space, so an unquoted value would make a logfmt parser read
+    // `more` as a second field. The clamp cannot bypass the field-injection guard
+    // because it runs before the quoting decision, not after it.
+    const rendered = formatLogArgs(['m', { responseBody: 'x'.repeat(LIMIT + 300) }]);
+    expect(rendered).toBe(`m responseBody="${'x'.repeat(LIMIT)}…+300 more"`);
+  });
+
+  it('bounds an Error message, not just a field', () => {
+    const rendered = formatLogArgs(['m', { err: new Error('E'.repeat(LIMIT + 7)) }]);
+    expect(rendered.split('\n')[0]).toBe(`m err=Error err.msg="${'E'.repeat(LIMIT)}…+7 more"`);
+  });
+
+  it('bounds a serialised object, which is the attacker-shaped case', () => {
+    // A webhook payload is arbitrarily large and arbitrarily deep. Bounding only the
+    // string branch would have left exactly the shape a caller controls unbounded.
+    const rendered = formatLogArgs(['m', { responseBody: { blob: 'y'.repeat(LIMIT * 2) } }]);
+    expect(rendered.length).toBeLessThan(LIMIT + 80);
+    expect(rendered).toContain('more');
+  });
+
+  it('counts the caller’s characters, not the escaped expansion', () => {
+    // Escaping doubles a newline. Bounding after escaping would cut a value made of
+    // newlines at half the length of an ordinary one, for no stated reason.
+    const rendered = formatLogArgs(['m', { responseBody: '\n'.repeat(LIMIT + 5) }]);
+    expect(rendered).toContain('…+5 more');
+    expect(rendered.split('\n')).toHaveLength(1);
+  });
+});
+
+describe('redacting a purchase token echoed in a Play API URL', () => {
+  // Deliberately narrow. For a Google subscription the purchase token IS the record's
+  // originalTransactionId, so it is in the database, in every RTDN payload, and in the
+  // three webhook lines where it is the subject. It cannot be treated as a secret in
+  // general. What this stops is it leaking onto the lines that chose not to log it —
+  // acknowledge, consume and validation-failure log productId and httpStatus, no token.
+  const URL_ECHO =
+    'POST https://androidpublisher.googleapis.com/androidpublisher/v3/applications/' +
+    'com.example.app/purchases/products/coins/tokens/kjacgmnbdkjhpgfeknmnhcaa.AO-J1OwSECRET:consume';
+
+  it('removes it from a response body', () => {
+    const rendered = formatLogArgs(['m', { responseBody: URL_ECHO }]);
+    expect(rendered).not.toContain('AO-J1OwSECRET');
+    expect(rendered).toContain('/tokens/[redacted]:consume');
+  });
+
+  it('removes it from an Error message, where the body is interpolated', () => {
+    const rendered = formatLogArgs(['m', { err: new Error(`Play API error 400: ${URL_ECHO}`) }]);
+    expect(rendered).not.toContain('AO-J1OwSECRET');
+    expect(rendered).toContain('/tokens/[redacted]');
+  });
+
+  it('removes it from a serialised object', () => {
+    const rendered = formatLogArgs(['m', { responseBody: { error: { request: URL_ECHO } } }]);
+    expect(rendered).not.toContain('AO-J1OwSECRET');
+  });
+
+  it('leaves a bare purchaseToken field alone, which is deliberate', () => {
+    // Masking it here would suggest the token is protected while the same value
+    // renders unmasked as originalTransactionId two lines earlier.
+    expect(formatLogArgs(['m', { purchaseToken: 'kjacgmnbdkjhpgfeknmnhcaa.AO-J1OwSECRET' }])).toBe(
+      'm purchaseToken=kjacgmnbdkjhpgfeknmnhcaa.AO-J1OwSECRET',
+    );
+  });
+
+  it('does not mangle a path that merely contains the word tokens', () => {
+    expect(formatLogArgs(['m', { responseBody: 'see https://example.com/tokens' }])).toBe(
+      'm responseBody="see https://example.com/tokens"',
+    );
+  });
+});
