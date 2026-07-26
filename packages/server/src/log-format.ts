@@ -86,6 +86,26 @@ function esc(value: string): string {
 }
 
 /**
+ * Escape a value that will sit inside double quotes.
+ *
+ * One chain, backslash first, quote second. It was previously `esc(v)` followed by a
+ * separate `.replace(/"/g, ...)` at three call sites — correct, because `esc` doubles
+ * backslashes before the quote pass runs, but wrong in two other ways: the same rule
+ * lived in three places, and splitting the escape across two functions leaves a taint
+ * analyser unable to see that the metacharacter is handled (CodeQL reported
+ * `js/incomplete-sanitization` on each of the three).
+ */
+function escQuoted(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+/**
  * Render one field value in logfmt.
  *
  * The quoting is a security control, not formatting. An unquoted `userId` of
@@ -105,20 +125,20 @@ function renderValue(value: unknown): string | undefined {
     case 'bigint':
       return `${value}n`;
     case 'string':
-      return BARE_VALUE.test(value) ? value : `"${esc(value).replace(/"/g, '\\"')}"`;
+      return BARE_VALUE.test(value) ? value : `"${escQuoted(value)}"`;
     case 'object':
       // Depth 1 only, and inside a try/catch. Webhook payloads are attacker-shaped
       // and arbitrarily deep; a recursive walk here would be both bundle weight and
       // a CPU-DoS surface, and JSON.stringify already throws on cycles.
       try {
-        return `"${esc(JSON.stringify(value) ?? 'null').replace(/"/g, '\\"')}"`;
+        return `"${escQuoted(JSON.stringify(value) ?? 'null')}"`;
       } catch {
         return '"[unserialisable]"';
       }
     default:
       // symbol, function — String() is safe for both.
       try {
-        return `"${esc(String(value)).replace(/"/g, '\\"')}"`;
+        return `"${escQuoted(String(value))}"`;
       } catch {
         return '"[unrenderable]"';
       }
