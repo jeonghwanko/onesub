@@ -80,7 +80,10 @@ export function runAddPaywall(args: {
 }
 
 function featureData(features: string[]): string {
-  return features.map((f) => `  '${f.replace(/'/g, "\\'")}',`).join('\n');
+  // JSON.stringify rather than escaping quotes by hand: the previous version
+  // escaped `'` but not `\`, so a feature ending in a backslash escaped its own
+  // closing quote and broke — or extended — the generated source.
+  return features.map((f) => `  ${JSON.stringify(f)},`).join('\n');
 }
 
 function buildMinimalPaywall(opts: { title: string; features: string[]; price: string }): string {
