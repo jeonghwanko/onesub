@@ -14,6 +14,8 @@ import type {
 } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { createOneSubMiddleware, InMemorySubscriptionStore, InMemoryPurchaseStore } from '../index.js';
+import { aggregateActiveSubscriptions } from '../metrics-aggregate.js';
+import type { SubscriptionStore } from '../store.js';
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -628,6 +630,59 @@ describe('Metrics response caching', () => {
     await server.get('/onesub/metrics/active', AUTH);
 
     expect(reads()).toBe(3);
+  });
+
+  it('prefers a store’s own aggregate over reading every row', async () => {
+    // Responses are identical either way, so a call count is the only way to see
+    // which path ran. A store that can group server-side must not be asked for
+    // its whole table.
+    const store: InMemorySubscriptionStore & Pick<SubscriptionStore, 'aggregateActive'> =
+      new InMemorySubscriptionStore();
+    await store.save(sub({ userId: 'a', productId: 'pro_monthly', originalTransactionId: 't1' }));
+
+    // Stand in for a SQL implementation: answer from the records without the
+    // route ever calling listAll().
+    let aggregateCalls = 0;
+    store.aggregateActive = async (now: Date) => {
+      aggregateCalls++;
+      return aggregateActiveSubscriptions(await store.getAllByUserId('a'), now.getTime());
+    };
+
+    const purchaseStore = new InMemoryPurchaseStore();
+    const app = express();
+    app.use(
+      createOneSubMiddleware({
+        apple: { bundleId: 'com.example.app', skipJwsVerification: true },
+        database: { url: '' },
+        adminSecret: SECRET,
+        metricsCacheTtlSeconds: 0,
+        store,
+        purchaseStore,
+      }),
+    );
+    const server = spinUp(app);
+    const fullReads = countCalls(store, 'listAll');
+
+    const resp = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.activeSubscriptions).toBe(1);
+    expect(aggregateCalls).toBe(1);
+    expect(fullReads()).toBe(0);
+  });
+
+  it('falls back to reading rows when the store has no aggregate', async () => {
+    // The in-memory store deliberately implements none of them — there is no
+    // server-side grouping to push into — so the route must still work.
+    const { store, server } = buildServer({ adminSecret: SECRET, metricsCacheTtlSeconds: 0 });
+    expect((store as SubscriptionStore).aggregateActive).toBeUndefined();
+    await store.save(sub({ userId: 'a', originalTransactionId: 't1' }));
+    const fullReads = countCalls(store, 'listAll');
+
+    const resp = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+
+    expect(resp.body.activeSubscriptions).toBe(1);
+    expect(fullReads()).toBe(1);
   });
 
   it('with the TTL disabled, a newly saved record shows up immediately', async () => {

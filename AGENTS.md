@@ -297,6 +297,12 @@ docker run -d --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=one
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/onesub_test npm test -- packages/server/src/__tests__/postgres-store.test.ts
 ```
 
+**No Docker in this checkout?** Common in sandboxes: the daemon runs but your user is
+not in the `docker` group and `sudo` wants a password. PostgreSQL needs no root — it
+refuses to run as root — so a relocatable build unpacked outside the repo works
+instead. `docs/TESTING.md` → *Postgres store tests* has the commands. Do not add the
+Postgres binaries to this repo's dependencies to get them.
+
 That file is the only thing that executes the Postgres SQL; `schema.test.ts`
 compares the embedded DDL to `sql/schema.sql` as text and proves nothing about
 whether either works. Any change under `packages/server/src/stores/postgres.ts`

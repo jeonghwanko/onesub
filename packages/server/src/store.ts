@@ -21,6 +21,61 @@ export interface ListFilteredResult {
   offset: number;
 }
 
+// ---------------------------------------------------------------------------
+// Metrics aggregates
+//
+// The `/onesub/metrics/*` routes need counts, not records. A store that can
+// compute them itself — `GROUP BY` in SQL — spares the process reading every
+// row and reducing it on the event loop. These methods are OPTIONAL: a store
+// without them falls back to `listAll()` plus the in-memory reduction in
+// `metrics-aggregate.ts`, which is the same answer at O(rows) cost.
+//
+// `metrics-aggregate.ts` is the executable definition of these shapes. Any
+// SQL implementation has to reproduce it exactly, including the UTC calendar-day
+// bucket boundaries and the inclusive window — which is what the equivalence
+// tests in `postgres-store.test.ts` assert, by running both and comparing.
+// ---------------------------------------------------------------------------
+
+/** One day of a daily series. `date` is a UTC `YYYY-MM-DD`. */
+export interface MetricsDayBucket {
+  date: string;
+  count: number;
+}
+
+/** Window to aggregate over. Both bounds are inclusive. */
+export interface MetricsRangeQuery {
+  from: Date;
+  to: Date;
+  /** `'day'` additionally fills a zero-filled bucket per UTC day in the window. */
+  groupBy: 'none' | 'day';
+}
+
+/** Counts for a windowed query. */
+export interface MetricsRangeAggregate {
+  total: number;
+  byProduct: Record<string, number>;
+  byPlatform: Record<string, number>;
+  /** Present only for `groupBy: 'day'`; zero-filled across the whole window. */
+  buckets?: MetricsDayBucket[];
+}
+
+/** Point-in-time counts for subscriptions that currently grant entitlement. */
+export interface ActiveSubscriptionAggregate {
+  /** status active|grace_period AND not yet expired. */
+  active: number;
+  /** The grace_period subset of `active` — the at-risk cohort. */
+  gracePeriod: number;
+  byProduct: Record<string, number>;
+  byPlatform: Record<string, number>;
+}
+
+/** Counts for non-consumable purchases (lifetime products). */
+export interface NonConsumablePurchaseAggregate {
+  total: number;
+  byProduct: Record<string, number>;
+  byPlatform: Record<string, number>;
+}
+
 /**
  * Pluggable subscription store interface.
  * Default is in-memory. Replace with a PostgreSQL/Redis implementation
@@ -62,6 +117,24 @@ export interface SubscriptionStore {
    * the in-memory store and `updated_at DESC` for Postgres/Redis.
    */
   getAllByUserId(userId: string): Promise<SubscriptionInfo[]>;
+  /**
+   * OPTIONAL. Counts of subscriptions currently granting entitlement, as of
+   * `now`. Equivalent to `aggregateActiveSubscriptions(await listAll(), now)`.
+   */
+  aggregateActive?(now: Date): Promise<ActiveSubscriptionAggregate>;
+  /**
+   * OPTIONAL. Subscriptions whose `purchasedAt` falls in the window, whatever
+   * their current status — a cohort-start count. Equivalent to
+   * `aggregateRange(await listAll(), { anchor: purchasedAt, ... })`.
+   */
+  aggregateStarted?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
+  /**
+   * OPTIONAL. Subscriptions that are currently expired or canceled AND whose
+   * `expiresAt` falls in the window. A still-active record does not count even
+   * if its expiry lands inside the window. Equivalent to
+   * `aggregateRange(await listAll(), { anchor: expiresAt, include: isEnded })`.
+   */
+  aggregateExpired?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
 }
 
 /**
@@ -198,6 +271,18 @@ export interface PurchaseStore {
    * Returns true if a row was updated, false if the transactionId was not found.
    */
   reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>;
+  /**
+   * OPTIONAL. Counts of non-consumable purchases. Consumables are excluded —
+   * they grant a spent resource, not an ongoing right. Equivalent to
+   * `aggregateNonConsumablePurchases(await listAll())`.
+   */
+  aggregateNonConsumable?(): Promise<NonConsumablePurchaseAggregate>;
+  /**
+   * OPTIONAL. Non-consumable purchases whose `purchasedAt` falls in the window.
+   * Equivalent to
+   * `aggregateRange(await listAll(), { anchor: purchasedAt, include: isNonConsumable })`.
+   */
+  aggregateStarted?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
 }
 
 /**
