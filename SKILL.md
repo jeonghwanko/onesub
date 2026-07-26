@@ -58,7 +58,7 @@ app.listen(4100);
 | `POST /onesub/validate` | Verify subscription receipt (Apple JWS or Google token) |
 | `GET  /onesub/status?userId=` | Check subscription state |
 | `POST /onesub/webhook/apple` | App Store Server Notifications V2 (JWS-verified) |
-| `POST /onesub/webhook/google` | Google Play RTDN (Pub/Sub JWT-verified) |
+| `POST /onesub/webhook/google` | Google Play RTDN (Pub/Sub JWT-verified; 401 in production without `pushAudience`) |
 | `POST /onesub/purchase/validate` | One-time purchase (consumable / non-consumable) |
 | `GET  /onesub/purchase/status?userId=` | List user's one-time purchases |
 | `DELETE /onesub/purchase/admin/:userId/:productId` | Reset a non-consumable for re-testing (admin) |
@@ -175,10 +175,17 @@ interface OneSubServerConfig {
   google?: {
     packageName: string;
     serviceAccountKey?: string;  // JSON string of service account
-    pushAudience?: string;       // Pub/Sub push endpoint URL for JWT verification
+    pushAudience?: string;       // REQUIRED IN PRODUCTION: Pub/Sub push endpoint URL, verified
+                                 // as the OIDC `aud`. Without it POST /onesub/webhook/google
+                                 // cannot attribute a request to Google and answers 401 when
+                                 // NODE_ENV=production. Unauthenticated outside production.
     pushServiceAccountEmail?: string;  // STRONGLY RECOMMENDED in production: with pushAudience,
                                        // requires the push JWT to carry this exact email, so any
                                        // Google-signed token no longer suffices
+    allowUnauthenticatedWebhook?: boolean;  // Run the RTDN webhook unauthenticated in production
+                                            // ON PURPOSE — only when something in front of the
+                                            // server already authenticates (Cloud Run IAM, mTLS,
+                                            // VPC-internal ingress). Not a way to skip the setup
     mockMode?: boolean;          // DEV ONLY
     productReceiptMaxAgeHours?: number;  // default 72
   };
