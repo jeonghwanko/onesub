@@ -75,14 +75,24 @@ degraded mode and must be excluded from production configuration.
 |---|---|---|
 | `packageName` | Yes when Google is enabled | Play application ID and multi-app identity |
 | `serviceAccountKey` | For Play API validation/actions | JSON string containing the service-account key |
-| `pushAudience` | Strongly recommended for RTDN | Expected OIDC `aud`, normally the public webhook URL |
+| `pushAudience` | Yes in production | Expected OIDC `aud`, normally the public webhook URL |
 | `pushServiceAccountEmail` | Strongly recommended with `pushAudience` | Restricts push tokens to the configured service account email |
+| `allowUnauthenticatedWebhook` | No | Run the RTDN webhook unauthenticated in production on purpose — only with upstream authentication |
 | `productReceiptMaxAgeHours` | No | One-time receipt maximum age; default 72 hours |
 | `onPriceChangeConfirmed` | No | Fire-and-forget host callback for confirmed subscription price changes |
 | `mockMode` | Development only | Uses deterministic mock validation without Play API calls |
 
-If `pushAudience` is omitted, the current webhook remains backward compatible but does not
-authenticate the Pub/Sub bearer token. Configure both push fields in production.
+With `pushAudience` omitted, `POST /onesub/webhook/google` cannot attribute a request to Google and
+answers **401** when `NODE_ENV=production`. Outside production it still accepts unauthenticated
+requests, so local and CI setups need no Pub/Sub credentials.
+
+Set `allowUnauthenticatedWebhook: true` only when something in front of the server already
+authenticates the request — Cloud Run with IAM, a VPC-internal ingress, mTLS at a proxy. It is not a
+way to postpone configuring `pushAudience`: with neither set, an RTDN is accepted from anyone who can
+reach the endpoint, and a caller who knows a `purchaseToken` or `orderId` can cancel a subscription or
+delete a one-time purchase. Those values are not secrets — for a Google subscription the purchase
+token *is* the record's `originalTransactionId`. See [SECURITY.md](./SECURITY.md) → *Webhook
+Endpoints*.
 
 ## Multi-App Configuration
 
