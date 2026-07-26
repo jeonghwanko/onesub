@@ -44,6 +44,7 @@ product overview and quick start; package directories contain package-specific A
 ## Contribute or Use an Agent
 
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow, validation, and releases.
-- [`../AGENTS.md`](../AGENTS.md): canonical repository instructions for Codex and Claude.
+- [`../AGENTS.md`](../AGENTS.md): canonical repository instructions for Codex and Claude — build traps,
+  a file-level source map, per-task routing, contract checklists, and what CI gates on.
 - [`../SKILL.md`](../SKILL.md): portable context for an agent integrating OneSub into another project.
 - [`AI-WORKFLOW.md`](AI-WORKFLOW.md): prompts for repository work and application integration.

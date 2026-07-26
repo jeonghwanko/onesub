@@ -124,6 +124,36 @@ Sample output when a user subscribes:
 
 If something goes wrong, trace shows exactly where: the `matched` flag distinguishes in-flight matches from orphan replays, `matchingAllowed` reveals drain-window state, and `action: 'restored'` vs `'new'` tells you whether the server treated the receipt as a first-time purchase.
 
+### `null` versus a thrown error
+
+`null` always means "nothing was purchased, and that is a normal outcome." A thrown `OneSubError`
+means the operation failed or was refused. Branch on both.
+
+| Call | Returns `null` when | Throws when |
+|---|---|---|
+| `subscribeWithResult()` | user cancelled, or another IAP operation is already running | validation fails, the store errors, or `react-native-iap` is missing |
+| `subscribe()` | — (returns `void`; no-ops on cancel or while busy) | same as above |
+| `restore()` | — (returns `void`; no-ops while busy, and falls back to the server's status when the store has nothing to restore or validation is rejected) | the matched purchase carries no receipt (`NO_RECEIPT_DATA`), the status call fails, or `react-native-iap` is missing |
+| `purchaseProduct(id, type)` | user cancelled | another IAP operation is running (`CONCURRENT_PURCHASE`), the non-consumable is already owned on the device (`NON_CONSUMABLE_ALREADY_OWNED`), or validation fails |
+| `restoreProduct(id, type)` | the store's purchase history has no matching purchase | another IAP operation is running (`CONCURRENT_PURCHASE`), the matched purchase carries no receipt (`NO_RECEIPT_DATA`), or validation fails |
+
+The subscription entry points are deliberately quieter than the one-time-purchase ones: a paywall
+that double-fires `subscribe()` should do nothing, while `purchaseProduct()` / `restoreProduct()`
+report the refusal so host code can tell a busy SDK apart from a user who backed out. Gate every IAP
+button on `isBusy` and both cases stay rare.
+
+When a `restoreProduct()` validation fails, the server's `errorCode` is preserved on the thrown
+`OneSubError` (falling back to `RECEIPT_VALIDATION_FAILED`), so the same `switch` handles client- and
+server-side causes.
+
+### Google Play subscription offers
+
+Play requires an offer token for every subscription purchase. The SDK reads the eligible offers off
+the product `react-native-iap` returns — both the OpenIAP `subscriptionOffers` field and the legacy
+`subscriptionOfferDetailsAndroid` field, de-duplicated — and passes them through to
+`requestPurchase`. Nothing to configure; just make sure the subscription has at least one active
+base plan offer in Play Console, or Play rejects the purchase before the sheet appears.
+
 ### Structured errors
 
 Every `Error` thrown by the SDK is a `OneSubError` with a machine-readable `code`:

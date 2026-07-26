@@ -321,6 +321,8 @@ if (purchase?.action === 'restored') {
 const restored = await restoreProduct('premium_unlock', 'non_consumable');
 ```
 
+**One purchase at a time** — the hook exposes `isBusy`; disable every IAP button while it is true. `purchaseProduct` / `restoreProduct` throw `OneSubError` with `CONCURRENT_PURCHASE` if called anyway, so a refusal never looks like a user cancel. The full `null`-versus-throw contract is in the [SDK README](packages/sdk/README.md).
+
 **Mock mode** — set `config.mockMode: true` to return synthetic success from `subscribe` / `restore` / `purchaseProduct` / `restoreProduct` without calling `react-native-iap` or the onesub server. Useful for running UI flows in Expo Go / the simulator. Never enable in production.
 
 **Peer dependency:** SDK requires `react-native-iap` **v15+** (event-based purchase flow).
