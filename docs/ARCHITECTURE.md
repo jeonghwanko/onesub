@@ -98,7 +98,7 @@ createOneSubMiddleware(config)
           └── GET    /onesub/metrics/*                            → active/started/expired counts
 ```
 
-All runtime logging goes through `config.logger` (OneSubLogger interface; defaults to `console`). Providers and routes import `log` from the internal `logger.ts` singleton instead of calling `console.*` directly.
+All runtime logging goes through `config.logger` (OneSubLogger interface; defaults to `console`). Providers and routes import `log` from the internal `logger.ts` singleton instead of calling `console.*` directly. `logger.ts` renders each call through `log-format.ts` and hands the sink exactly one string: the message, contextual values as `key=value` pairs, and any stack as `    | ` continuation lines. That is what keeps a caller-supplied newline from starting a line on every sink and not just on `console`.
 
 All outbound HTTP calls (Apple Status/History APIs, Apple Consumption Response, Google
 subscriptionsv2, Google OAuth, Google ack/consume) go through `http.ts/fetchWithTimeout` —

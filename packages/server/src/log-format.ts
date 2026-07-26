@@ -1,0 +1,254 @@
+/**
+ * Renders a log call into exactly one string.
+ *
+ * Why this module exists, and why it is pure. `logger.ts` holds process-global
+ * state, so anything tested through it needs `setLogger` juggling to keep one test
+ * file from capturing another's output. Every security property below is a property
+ * of a function from arguments to a string, so it belongs somewhere with no state
+ * at all — see `log-format.test.ts`.
+ *
+ * ## The invariant
+ *
+ * **No byte supplied by a caller can begin a line.**
+ *
+ * That is the whole security claim, and it is weaker than "the output contains no
+ * newlines" on purpose. Demanding no newlines at all is what backed this server
+ * into a corner earlier: a stack trace is multi-line by nature and is the main
+ * reason to log an `Error`, so flattening it destroys the thing you wanted. Framing
+ * it as "attacker text may appear inside a record, never at the start of one" keeps
+ * the trace readable *and* makes forgery impossible.
+ *
+ * It holds mechanically: the message and every field value pass through `esc`,
+ * which leaves no line terminator behind, so the only newlines in the result are the
+ * ones this module writes itself as part of `LOG_CONTINUATION`. A forged
+ * `[onesub] admin granted premium to mallory` line cannot be produced.
+ *
+ * `LOG_CONTINUATION` begins with whitespace, which is what Fluent Bit, Loki and
+ * Docker multiline rules already use to join a line to the record above it. And
+ * grepping `[onesub/` still returns one hit per event, not one per stack frame.
+ *
+ * ## Output grammar
+ *
+ * ```text
+ * <message>[ <key>=<value>]*[<CONT><line>]*
+ * ```
+ *
+ * ## Field vocabulary
+ *
+ * Use these names and no synonyms — `userId`, not `user` or `uid`. The point of
+ * moving values out of the message is that an operator can filter on them, and that
+ * is lost the moment the same thing is called three things across 16 files:
+ *
+ *   route · provider · userId · appId · platform · productId · transactionId ·
+ *   originalTransactionId · purchaseToken · orderId · bundleId · packageName ·
+ *   notificationType · status · httpStatus · environment · err
+ *
+ * `err` is reserved: it always routes through the error renderer.
+ *
+ * Messages are static literals. Write `log.warn('bundle id mismatch', { bundleId,
+ * expected })`, never `` log.warn(`mismatch: ${a} !== ${b}`) `` — an interpolated
+ * value is a value that cannot be filtered on, and one that has to be escaped
+ * rather than simply carried.
+ */
+
+/**
+ * Prefix for every line after the first. Leading whitespace is deliberate: it is
+ * what existing log-shipper multiline rules key on.
+ */
+export const LOG_CONTINUATION = '\n    | ';
+
+/** Fields whose value is rendered bare, without quotes. */
+const BARE_VALUE = /^[\w.:/@+-]+$/;
+
+/** Any character that could end a line, including the two Unicode separators. */
+const LINE_TERMINATORS = /\r\n|\r|\n|\u2028|\u2029/;
+
+/** How far to follow `Error.cause`, and how many `AggregateError.errors` to render. */
+const MAX_CAUSE_DEPTH = 2;
+const MAX_AGGREGATE_ERRORS = 3;
+
+/**
+ * Escape everything that could break out of a line or out of a quoted value.
+ *
+ * Backslash goes FIRST and that ordering is the point. Escaping `\n` to `\` + `n`
+ * without escaping `\` first makes two different inputs render identically — a real
+ * terminator, and the two characters a caller typed — so an operator cannot tell
+ * which they are reading. That defect shipped in 0.23.1 and was fixed in 0.23.3;
+ * it is the same class as escaping a quote without escaping the escape character.
+ */
+function esc(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+/**
+ * Render one field value in logfmt.
+ *
+ * The quoting is a security control, not formatting. An unquoted `userId` of
+ * `alice productId=hacked` would be parsed as two fields by Loki, Splunk and
+ * CloudWatch Insights — field injection rather than line injection, but the same
+ * shape of lie. Anything that is not a plain token gets quoted, and `"` inside a
+ * quoted value is escaped so it cannot close it early.
+ */
+function renderValue(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return 'null';
+
+  switch (typeof value) {
+    case 'number':
+    case 'boolean':
+      return String(value);
+    case 'bigint':
+      return `${value}n`;
+    case 'string':
+      return BARE_VALUE.test(value) ? value : `"${esc(value).replace(/"/g, '\\"')}"`;
+    case 'object':
+      // Depth 1 only, and inside a try/catch. Webhook payloads are attacker-shaped
+      // and arbitrarily deep; a recursive walk here would be both bundle weight and
+      // a CPU-DoS surface, and JSON.stringify already throws on cycles.
+      try {
+        return `"${esc(JSON.stringify(value) ?? 'null').replace(/"/g, '\\"')}"`;
+      } catch {
+        return '"[unserialisable]"';
+      }
+    default:
+      // symbol, function — String() is safe for both.
+      try {
+        return `"${esc(String(value)).replace(/"/g, '\\"')}"`;
+      } catch {
+        return '"[unrenderable]"';
+      }
+  }
+}
+
+/**
+ * `key=value` pairs for one object, skipping `undefined` and the reserved `err`.
+ *
+ * Keys are walked with `Object.keys` and read one at a time rather than through
+ * `Object.entries`, which evaluates every getter eagerly — one throwing getter would
+ * take down the whole log call, and `log` is a public export so the object is not
+ * always one this package built. Reading per key means a hostile property costs its
+ * own value and nothing else.
+ */
+function renderFields(fields: Record<string, unknown>): { pairs: string[]; err: unknown } {
+  const pairs: string[] = [];
+  let err: unknown;
+
+  for (const key of Object.keys(fields)) {
+    let value: unknown;
+    try {
+      value = fields[key];
+    } catch {
+      pairs.push(`${esc(key)}="[threw]"`);
+      continue;
+    }
+
+    if (key === 'err') {
+      err = value;
+      continue;
+    }
+    const rendered = renderValue(value);
+    if (rendered !== undefined) pairs.push(`${esc(key)}=${rendered}`);
+  }
+
+  return { pairs, err };
+}
+
+/**
+ * Stack frames as continuation lines, header removed.
+ *
+ * The header is dropped by finding the first `at ` frame rather than by skipping a
+ * fixed number of lines: when the error message itself contains newlines — which is
+ * exactly the forgery attempt — the header spans several lines, and counting would
+ * leak the rest of it into the frames.
+ */
+function renderStack(stack: string | undefined): string {
+  if (!stack) return '';
+  const lines = stack.split(LINE_TERMINATORS);
+  const firstFrame = lines.findIndex((line) => /^\s+at\s/.test(line));
+  const frames = firstFrame === -1 ? [] : lines.slice(firstFrame);
+  return frames.map((line) => LOG_CONTINUATION + esc(line.trim())).join('');
+}
+
+/**
+ * Render a thrown value: `err`/`err.msg` fields plus the stack as continuation
+ * lines, following `cause` and `AggregateError.errors` to a fixed depth.
+ *
+ * Bounded on purpose. A `cause` chain is attacker-reachable through provider error
+ * wrapping, and an unbounded walk is a way to turn one log call into a very large
+ * write.
+ */
+function renderError(value: unknown, depth = 0): { pairs: string[]; lines: string } {
+  if (!(value instanceof Error)) {
+    // `throw 'boom'`, `throw { code: 1 }` — no stack to render.
+    const rendered = renderValue(typeof value === 'string' ? value : String(value));
+    return { pairs: [`err.msg=${rendered ?? '"[unrenderable]"'}`], lines: '' };
+  }
+
+  const pairs = [`err=${renderValue(value.name) ?? 'Error'}`];
+  const message = renderValue(value.message);
+  if (message !== undefined) pairs.push(`err.msg=${message}`);
+
+  let lines = renderStack(value.stack);
+
+  if (depth < MAX_CAUSE_DEPTH && value.cause !== undefined && value.cause !== null) {
+    const cause = renderError(value.cause, depth + 1);
+    lines += LOG_CONTINUATION + `cause: ${cause.pairs.join(' ')}` + cause.lines;
+  }
+
+  if (value instanceof AggregateError && Array.isArray(value.errors)) {
+    for (const inner of value.errors.slice(0, MAX_AGGREGATE_ERRORS)) {
+      const rendered = renderError(inner, MAX_CAUSE_DEPTH);
+      lines += LOG_CONTINUATION + `also: ${rendered.pairs.join(' ')}`;
+    }
+  }
+
+  return { pairs, lines };
+}
+
+/**
+ * Render a whole log call into one string.
+ *
+ * Argument handling is generic rather than a fixed `(message, fields)` shape, and
+ * that is what makes the call-site migration incremental: a site still passing
+ * printf-style varargs renders sensibly, so files can move one PR at a time with no
+ * flag day. Strings join the message, plain objects contribute their entries as
+ * fields, `Error`s go through the error renderer wherever they appear.
+ */
+export function formatLogArgs(args: readonly unknown[]): string {
+  const words: string[] = [];
+  const pairs: string[] = [];
+  let errorLines = '';
+
+  for (const arg of args) {
+    if (typeof arg === 'string') {
+      words.push(esc(arg));
+      continue;
+    }
+    if (arg instanceof Error) {
+      const rendered = renderError(arg);
+      pairs.push(...rendered.pairs);
+      errorLines += rendered.lines;
+      continue;
+    }
+    if (arg !== null && typeof arg === 'object' && !Array.isArray(arg)) {
+      const { pairs: fieldPairs, err } = renderFields(arg as Record<string, unknown>);
+      pairs.push(...fieldPairs);
+      if (err !== undefined) {
+        const rendered = renderError(err);
+        pairs.push(...rendered.pairs);
+        errorLines += rendered.lines;
+      }
+      continue;
+    }
+    // Numbers, booleans, null, arrays, symbols from a legacy varargs call site.
+    const rendered = renderValue(arg);
+    if (rendered !== undefined) words.push(rendered);
+  }
+
+  return [words.join(' '), ...pairs].filter((part) => part !== '').join(' ') + errorLines;
+}

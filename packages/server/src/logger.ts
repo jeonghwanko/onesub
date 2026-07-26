@@ -1,4 +1,5 @@
 import type { OneSubLogger } from '@onesub/shared';
+import { formatLogArgs } from './log-format.js';
 
 /**
  * Process-wide logger used by @onesub/server's providers and routes.
@@ -8,6 +9,25 @@ import type { OneSubLogger } from '@onesub/shared';
  * import `log` from this module instead of calling `console.*` directly so
  * operators can redirect logs (pino / winston / bunyan) with a single config
  * setting.
+ *
+ * **The sink always receives exactly one string argument.** Rendering happens here,
+ * in `log-format.ts`, rather than being left to whatever the host configured — and
+ * that is the load-bearing decision, not an implementation detail:
+ *
+ *   - It is what makes the anti-forgery guarantee hold on every sink. Passing values
+ *     as a trailing object works on `console`, because `util.inspect` escapes
+ *     strings inside objects — but `pino`, which this package's own docs recommend,
+ *     treats a trailing object as a printf interpolation argument. Leaving the
+ *     escaping to the sink means it only happens for some of them.
+ *   - It fixes a bug nobody would have noticed until it mattered: `Error` properties
+ *     are non-enumerable, so a JSON-serialising sink turns `{ err }` into `{}` and
+ *     loses the error entirely.
+ *
+ * The cost is that structured fields arrive as `key=value` text inside the message
+ * rather than as typed JSON fields. That is a deferral, not the end state — a typed
+ * `structuredLogger` sink is a cheap follow-on now that the call sites carry
+ * `(message, fields)`. It is also already better than what a pino host got before,
+ * which was printf varargs flattened into the message with no field names at all.
  */
 
 let current: OneSubLogger = console;
@@ -16,70 +36,8 @@ export function setLogger(logger: OneSubLogger | undefined): void {
   if (logger) current = logger;
 }
 
-/**
- * Neutralise line breaks in a logged string.
- *
- * Much of what this server logs is attacker-influenced: `userId` comes off the
- * request body, and bundle ids, package names and receipt previews come out of
- * submitted receipts. A newline in any of those lets a caller close the current
- * log line and write a whole entry of their own — so a `userId` of
- * `alice\n[onesub] admin granted premium to mallory` forges an audit record.
- * These logs are what support and fraud decisions are read from, so the forgery
- * matters more than the noise.
- *
- * Escaped rather than stripped: the substitution has to be visible, or scrubbing
- * would quietly merge two lines into one plausible-looking line. Only the
- * characters that can end a log line are touched; tabs and everything else are
- * left alone.
- */
-function escapeLineBreaks(value: string): string {
-  // Backslash goes FIRST, and that ordering is the whole point of this function
-  // being written out rather than done in one pass. Escaping `\n` to `\` + `n`
-  // without escaping `\` first makes two different inputs produce identical
-  // output: a real line terminator, and the two characters a caller typed. An
-  // operator reading the log then cannot tell which one they are looking at,
-  // which costs exactly the forensic value the escaping exists to protect.
-  //
-  // With this ordering a real newline renders as `\n` and a submitted backslash-n
-  // renders as `\\n`, so the two stay distinguishable.
-  //
-  // One literal replacement per character rather than a single regex with a
-  // callback. That form was adopted hoping CodeQL's js/log-injection sanitiser
-  // recognition would follow it; it did not, and the alert points at the spread
-  // in `log.*` rather than here. It is kept because it reads more plainly, not
-  // because it satisfies an analyser.
-  return value
-    .replace(/\\/g, '\\\\')
-    .replace(/\r/g, '\\r')
-    .replace(/\n/g, '\\n')
-    .replace(/\u2028/g, '\\u2028')
-    .replace(/\u2029/g, '\\u2029');
-}
-
-/**
- * Applied to top-level string arguments only. Objects and `Error`s pass through
- * untouched, which is a real and deliberate gap rather than an oversight: an
- * `Error` reaching `log.error('...:', err)` can carry attacker-influenced text in
- * its message, so a newline there can still break a line.
- *
- * It is left that way because the alternative is worse. A stack trace is multi-line
- * by nature and is the main reason to log an `Error` at all; escaping its newlines
- * would turn every trace into one unreadable line, and escaping only `message`
- * achieves nothing because `stack` repeats it. Recursively rewriting strings inside
- * objects would likewise corrupt structured fields an operator asked to see.
- *
- * So the guarantee is scoped: message strings this server composes cannot be used
- * to forge a line. Reading a trace still requires distinguishing it from
- * surrounding entries by context, as it always has. CodeQL reports this gap on the
- * spread in `log.*` and is correct to; the alert is dismissed as won't-fix with
- * this reasoning, not as a false positive.
- */
-function scrub(args: unknown[]): unknown[] {
-  return args.map((arg) => (typeof arg === 'string' ? escapeLineBreaks(arg) : arg));
-}
-
 export const log: OneSubLogger = {
-  info: (...args) => current.info(...scrub(args)),
-  warn: (...args) => current.warn(...scrub(args)),
-  error: (...args) => current.error(...scrub(args)),
+  info: (...args) => current.info(formatLogArgs(args)),
+  warn: (...args) => current.warn(formatLogArgs(args)),
+  error: (...args) => current.error(formatLogArgs(args)),
 };

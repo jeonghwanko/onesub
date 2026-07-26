@@ -47,7 +47,7 @@ explicitly. Without them, middleware uses in-memory stores even when `database.u
 | `metricsCacheTtlSeconds` | No | `30` | How long a `/onesub/metrics/*` aggregate may be reused; `0` disables |
 | `entitlements` | No | Entitlement routes not mounted | Maps stable entitlement IDs to product IDs |
 | `refundPolicy` | No | `immediate` | Subscription refund access policy |
-| `logger` | No | `console` | `{ info, warn, error }` server log sink |
+| `logger` | No | `console` | `{ info, warn, error }` server log sink; receives one pre-formatted string per log |
 | `webhookSecret` | No | No current Apple/Google enforcement | Legacy/reserved field; do not use it as webhook authentication |
 
 Apple uses signed JWS payloads. Google push authentication is configured with `pushAudience` and

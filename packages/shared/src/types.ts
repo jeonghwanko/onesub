@@ -180,9 +180,20 @@ export interface GoogleNotificationPayload {
 }
 
 /**
- * Structured logger interface — compatible with the common shape of
- * `pino`, `winston`, `bunyan`, and `console`. Pass your own implementation
- * via `OneSubServerConfig.logger` to redirect onesub's runtime logs.
+ * Log sink — compatible with the common shape of `pino`, `winston`, `bunyan`, and
+ * `console`. Pass your own implementation via `OneSubServerConfig.logger` to
+ * redirect onesub's runtime logs.
+ *
+ * `@onesub/server` calls this with **exactly one string argument** per log, so a
+ * `pino` or `winston` host receives it as `msg` with nothing to interpolate.
+ * Contextual values arrive inside that string as `key=value` pairs, which logfmt
+ * parsers (Loki, Splunk, Datadog, CloudWatch Insights) extract as fields. The
+ * server renders them itself rather than passing an object, because a trailing
+ * object is only escaped by some sinks and is dropped entirely by a JSON
+ * serialiser when it holds an `Error`.
+ *
+ * The React Native SDK uses the same type but still calls it printf-style, with
+ * `'[onesub]'` as the first argument.
  *
  * Default: `console` (when `logger` is omitted).
  */
@@ -363,9 +374,12 @@ export interface OneSubServerConfig {
    */
   metricsCacheTtlSeconds?: number;
   /**
-   * Structured logger to receive onesub's runtime logs. If omitted, logs go
-   * to `console.info/warn/error`. Any object that implements `OneSubLogger`
+   * Log sink for onesub's runtime logs. If omitted, logs go to
+   * `console.info/warn/error`. Any object that implements `OneSubLogger`
    * (`pino`, `winston`, `bunyan`, `console`) works.
+   *
+   * Receives one pre-formatted string per log, with contextual values as
+   * `key=value` pairs inside it — see `OneSubLogger`.
    */
   logger?: OneSubLogger;
   /**
