@@ -177,6 +177,57 @@ export const ONESUB_OPENAPI: OpenAPIDoc = {
       },
     },
     // ── admin (mounted when config.adminSecret is set) ───────────────────────
+    [ROUTES.ADMIN_TEST_OVERRIDES]: {
+      get: {
+        summary: 'List sandbox-only entitlement overrides (admin).',
+        parameters: [ADMIN_SECRET_PARAM],
+        responses: {
+          200: { description: 'OK' },
+          401: err('Invalid admin secret (INVALID_ADMIN_SECRET).'),
+        },
+      },
+    },
+    '/onesub/admin/test-overrides/{userId}': {
+      put: {
+        summary:
+          'Force an entitlement verdict for one userId. Honoured ONLY for Sandbox receipts — '
+          + 'a Production receipt ignores it. Exists because Apple cannot cancel a sandbox '
+          + 'subscription bought with a real Apple Account, which otherwise locks a tester in.',
+        parameters: [
+          ADMIN_SECRET_PARAM,
+          { in: 'path', name: 'userId', required: true, schema: { type: 'string' } },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['entitled'],
+                properties: { entitled: { type: 'boolean' } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'OK' },
+          400: err('Invalid input (INVALID_INPUT).'),
+          401: err('Invalid admin secret (INVALID_ADMIN_SECRET).'),
+        },
+      },
+      delete: {
+        summary: 'Clear the sandbox entitlement override for one userId (admin).',
+        parameters: [
+          ADMIN_SECRET_PARAM,
+          { in: 'path', name: 'userId', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: 'OK' },
+          400: err('Invalid input (INVALID_INPUT).'),
+          401: err('Invalid admin secret (INVALID_ADMIN_SECRET).'),
+        },
+      },
+    },
     [ROUTES.ADMIN_SUBSCRIPTIONS]: {
       get: {
         summary: 'Filtered, paginated subscription list (admin).',
