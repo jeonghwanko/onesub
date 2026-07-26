@@ -1,10 +1,17 @@
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
+import { PURCHASE_TYPE, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type {
   SubscriptionStore,
   PurchaseStore,
   ListFilteredOptions,
   ListFilteredResult,
+  ActiveSubscriptionAggregate,
+  MetricsRangeAggregate,
+  MetricsRangeQuery,
+  NonConsumablePurchaseAggregate,
 } from '../store.js';
+// Shared with the in-memory reduction so both paths agree on UTC day boundaries.
+import { emptyDailyBuckets } from '../metrics-aggregate.js';
 import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 import { log } from '../logger.js';
 
@@ -218,6 +225,56 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     };
   }
 
+  /**
+   * Counts of subscriptions currently granting entitlement.
+   *
+   * One `GROUP BY` instead of reading every row into the process. Grouping by
+   * status as well as product/platform is what lets the grace-period subset come
+   * out of the same query.
+   */
+  async aggregateActive(now: Date): Promise<ActiveSubscriptionAggregate> {
+    const pool = await this.getPool();
+    const result = await pool.query<{ product_id: string; platform: string; status: string; n: string }>(
+      `SELECT product_id, platform, status, COUNT(*)::text AS n
+         FROM onesub_subscriptions
+        WHERE status IN ($1, $2) AND expires_at > $3
+        GROUP BY product_id, platform, status`,
+      [SUBSCRIPTION_STATUS.ACTIVE, SUBSCRIPTION_STATUS.GRACE_PERIOD, now],
+    );
+
+    const byProduct: Record<string, number> = {};
+    const byPlatform: Record<string, number> = {};
+    let active = 0;
+    let gracePeriod = 0;
+    for (const row of result.rows) {
+      const n = parseInt(row.n, 10);
+      active += n;
+      if (row.status === SUBSCRIPTION_STATUS.GRACE_PERIOD) gracePeriod += n;
+      byProduct[row.product_id] = (byProduct[row.product_id] ?? 0) + n;
+      byPlatform[row.platform] = (byPlatform[row.platform] ?? 0) + n;
+    }
+    return { active, gracePeriod, byProduct, byPlatform };
+  }
+
+  /** Cohort-start counts: subscriptions whose `purchased_at` is in the window. */
+  async aggregateStarted(query: MetricsRangeQuery): Promise<MetricsRangeAggregate> {
+    const pool = await this.getPool();
+    return aggregateViaSql(pool, 'onesub_subscriptions', 'purchased_at', query);
+  }
+
+  /**
+   * Subscriptions that have ended AND whose `expires_at` is in the window. A
+   * still-active record does not count even if its expiry lands inside it — see
+   * `isEndedSubscription`, which this mirrors.
+   */
+  async aggregateExpired(query: MetricsRangeQuery): Promise<MetricsRangeAggregate> {
+    const pool = await this.getPool();
+    return aggregateViaSql(pool, 'onesub_subscriptions', 'expires_at', query, {
+      column: 'status',
+      values: [SUBSCRIPTION_STATUS.EXPIRED, SUBSCRIPTION_STATUS.CANCELED],
+    });
+  }
+
   /** Gracefully close the underlying connection pool. */
   async close(): Promise<void> {
     if (this.poolPromise) {
@@ -400,6 +457,38 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rows.map(rowToPurchaseInfo);
   }
 
+  /** Counts of non-consumable purchases. Consumables are excluded. */
+  async aggregateNonConsumable(): Promise<NonConsumablePurchaseAggregate> {
+    const pool = await this.getPool();
+    const result = await pool.query<{ product_id: string; platform: string; n: string }>(
+      `SELECT product_id, platform, COUNT(*)::text AS n
+         FROM onesub_purchases
+        WHERE type = $1
+        GROUP BY product_id, platform`,
+      [PURCHASE_TYPE.NON_CONSUMABLE],
+    );
+
+    const byProduct: Record<string, number> = {};
+    const byPlatform: Record<string, number> = {};
+    let total = 0;
+    for (const row of result.rows) {
+      const n = parseInt(row.n, 10);
+      total += n;
+      byProduct[row.product_id] = (byProduct[row.product_id] ?? 0) + n;
+      byPlatform[row.platform] = (byPlatform[row.platform] ?? 0) + n;
+    }
+    return { total, byProduct, byPlatform };
+  }
+
+  /** Non-consumable purchases whose `purchased_at` is in the window. */
+  async aggregateStarted(query: MetricsRangeQuery): Promise<MetricsRangeAggregate> {
+    const pool = await this.getPool();
+    return aggregateViaSql(pool, 'onesub_purchases', 'purchased_at', query, {
+      column: 'type',
+      values: [PURCHASE_TYPE.NON_CONSUMABLE],
+    });
+  }
+
   /** Gracefully close the underlying connection pool. */
   async close(): Promise<void> {
     if (this.poolPromise) {
@@ -408,6 +497,78 @@ export class PostgresPurchaseStore implements PurchaseStore {
       this.poolPromise = null;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Metrics aggregation
+// ---------------------------------------------------------------------------
+
+/**
+ * Windowed count aggregation, pushed into SQL.
+ *
+ * Replaces "read every row, reduce on the event loop" with one `GROUP BY` whose
+ * result set is bounded by products × platforms (× days when bucketing), not by
+ * row count.
+ *
+ * `table`, `anchorColumn`, and `filter.column` are literals chosen by the caller
+ * — SQL cannot parameterise identifiers. Every *value* is parameterised.
+ *
+ * The output has to match `aggregateRange` in `metrics-aggregate.ts` exactly,
+ * including zero-filled buckets across the whole window, because
+ * `postgres-store.test.ts` runs both over the same data and compares.
+ */
+async function aggregateViaSql(
+  pool: import('pg').Pool,
+  table: string,
+  anchorColumn: string,
+  query: MetricsRangeQuery,
+  filter?: { column: string; values: readonly string[] },
+): Promise<MetricsRangeAggregate> {
+  const params: unknown[] = [query.from, query.to];
+  let filterClause = '';
+  if (filter) {
+    const placeholders = filter.values.map((_, i) => `$${params.length + i + 1}`).join(', ');
+    filterClause = `AND ${filter.column} IN (${placeholders})`;
+    params.push(...filter.values);
+  }
+
+  const bucketing = query.groupBy === 'day';
+  // `date_trunc` truncates in the SESSION timezone, so the cast to UTC is
+  // load-bearing: without it the same data buckets differently depending on the
+  // server's timezone, and stops matching `utcDateKey`.
+  const dayExpr = `to_char(date_trunc('day', ${anchorColumn} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
+
+  const result = await pool.query<{ product_id: string; platform: string; day?: string; n: string }>(
+    `SELECT product_id, platform,${bucketing ? ` ${dayExpr} AS day,` : ''}
+            COUNT(*)::text AS n
+       FROM ${table}
+      WHERE ${anchorColumn} >= $1 AND ${anchorColumn} <= $2 ${filterClause}
+      GROUP BY product_id, platform${bucketing ? ', day' : ''}`,
+    params,
+  );
+
+  const byProduct: Record<string, number> = {};
+  const byPlatform: Record<string, number> = {};
+  const perDay = new Map<string, number>();
+  let total = 0;
+
+  for (const row of result.rows) {
+    const n = parseInt(row.n, 10);
+    total += n;
+    byProduct[row.product_id] = (byProduct[row.product_id] ?? 0) + n;
+    byPlatform[row.platform] = (byPlatform[row.platform] ?? 0) + n;
+    if (bucketing && row.day) perDay.set(row.day, (perDay.get(row.day) ?? 0) + n);
+  }
+
+  if (!bucketing) return { total, byProduct, byPlatform };
+
+  // Zero-fill from the same helper the in-memory path uses, so the two agree on
+  // where a window starts and ends rather than each deciding for itself.
+  const buckets = emptyDailyBuckets(query.from.getTime(), query.to.getTime()).map((b) => ({
+    date: b.date,
+    count: perDay.get(b.date) ?? 0,
+  }));
+  return { total, byProduct, byPlatform, buckets };
 }
 
 // ---------------------------------------------------------------------------

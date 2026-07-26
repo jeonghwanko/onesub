@@ -59,6 +59,46 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/onesub_test \
   npm test -- packages/server/src/__tests__/postgres-store.test.ts
 ```
 
+#### Without Docker (sandboxes, restricted CI runners, no root)
+
+Docker is unavailable in some environments — the daemon may be running while your
+user is not in the `docker` group, and `sudo` may need a password you do not have.
+PostgreSQL itself needs no root; it refuses to run as root. So fetch a relocatable
+build and run it as yourself. Keep it **outside the repo** so the root lockfile is
+untouched:
+
+```bash
+mkdir -p /tmp/onesub-pg && cd /tmp/onesub-pg && npm init -y >/dev/null
+npm install @embedded-postgres/linux-x64@17.10.0-beta.17   # match CI's major
+
+BIN=/tmp/onesub-pg/node_modules/@embedded-postgres/linux-x64/native/bin
+export LD_LIBRARY_PATH=/tmp/onesub-pg/node_modules/@embedded-postgres/linux-x64/native/lib
+
+$BIN/initdb -D /tmp/onesub-pg/data -U postgres --auth=trust
+# Port 55432 avoids colliding with a system Postgres; -k keeps the socket writable.
+$BIN/pg_ctl -D /tmp/onesub-pg/data -l /tmp/onesub-pg/log \
+  -o "-p 55432 -k /tmp/onesub-pg -c listen_addresses=127.0.0.1" start
+```
+
+The package ships the server but not `psql`, which these tests do not need — they
+connect through `pg` over TCP. Create the database with a one-liner and run:
+
+```bash
+cd /path/to/onesub
+node -e "const{Client}=require('pg');(async()=>{const c=new Client({host:'127.0.0.1',port:55432,user:'postgres',database:'postgres'});await c.connect();await c.query('CREATE DATABASE onesub_test');await c.end()})()"
+
+DATABASE_URL=postgres://postgres@127.0.0.1:55432/onesub_test npm test
+```
+
+Stop it with `$BIN/pg_ctl -D /tmp/onesub-pg/data stop`.
+
+**A non-UTC session timezone is a feature here.** `date_trunc` truncates in the
+session timezone, so the daily-bucket aggregation is only correct because of an
+explicit `AT TIME ZONE 'UTC'`. A UTC container cannot distinguish a correct
+implementation from one missing that cast. One test forces a hostile session
+timezone on its own connection so the check holds anywhere, but running the suite
+under a non-UTC local timezone exercises the rest of it that way too.
+
 Beyond CRUD, it covers the things only a database can answer: that `initSchema()` is safe to re-run
 against an already-migrated database, that the shipped `sql/schema.sql` produces a schema the stores
 can actually drive, that the partial unique index really blocks a second non-consumable row for one

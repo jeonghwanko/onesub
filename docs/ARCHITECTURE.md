@@ -131,6 +131,10 @@ interface SubscriptionStore {
   getAllByUserId(userId: string): Promise<SubscriptionInfo[]>;
   listAll(): Promise<SubscriptionInfo[]>;
   listFiltered(options: ListFilteredOptions): Promise<ListFilteredResult>;
+  // 0.23.0+, all optional — metrics aggregates
+  aggregateActive?(now: Date): Promise<ActiveSubscriptionAggregate>;
+  aggregateStarted?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
+  aggregateExpired?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
 }
 ```
 
@@ -147,8 +151,30 @@ interface PurchaseStore {
   reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>;       // 0.6.1+
   deletePurchases(userId: string, productId: string): Promise<number>;                // 0.4.0+
   deletePurchaseByTransactionId(transactionId: string): Promise<boolean>;             // 0.8.0+
+  // 0.23.0+, all optional — metrics aggregates
+  aggregateNonConsumable?(): Promise<NonConsumablePurchaseAggregate>;
+  aggregateStarted?(query: MetricsRangeQuery): Promise<MetricsRangeAggregate>;
 }
 ```
+
+### Metrics aggregation
+
+The `aggregate*` methods are optional on both stores. `/onesub/metrics/*` uses a
+store's own aggregate when it has one and otherwise reads every row and reduces in
+process — the same answer at O(rows), on the event loop.
+
+`PostgresSubscriptionStore` / `PostgresPurchaseStore` implement them as `GROUP BY`,
+so the work is bounded by products × platforms (× days when bucketing) rather than by
+row count. The in-memory and Redis stores deliberately do not: neither has
+server-side grouping to push into, so an implementation there would be the same
+in-process reduction behind a longer interface.
+
+`packages/server/src/metrics-aggregate.ts` is the executable definition of what the
+numbers mean, for both paths. `postgres-store.test.ts` runs the SQL and the reducer
+over the same rows and asserts they agree — including UTC calendar-day bucket
+boundaries, which is why the SQL casts with `AT TIME ZONE 'UTC'` before
+`date_trunc`, and one test forces a non-UTC session so a UTC-only CI container
+cannot hide a missing cast.
 
 Both read methods return **most-recent-first** by `purchasedAt`. All three built-in
 stores agree on that; a custom store should too, since `/onesub/purchase/status`

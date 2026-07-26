@@ -25,6 +25,9 @@
 // 2026-07-26: 34.17/34.55 KB after the metrics aggregation split and response
 // cache (`metrics-aggregate.ts`, `metrics-cache.ts`). Limit unchanged.
 //
+// 2026-07-26: 36.35/36.69 KB after the metrics SQL aggregation pushdown
+// (`aggregateViaSql` plus the optional store methods). Limit unchanged.
+//
 // 2026-07-26: raised 36 → 38 KB. Measured 35.12/35.47 KB after the
 // product-scoped purchase lookup, the `parseOrSend` consolidation (which cut
 // ~80 lines from the route handlers but adds a shared helper), and the Google

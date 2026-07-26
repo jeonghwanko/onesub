@@ -6,6 +6,11 @@ import type {
   SubscriptionInfo,
 } from '@onesub/shared';
 import { PURCHASE_TYPE, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import type {
+  ActiveSubscriptionAggregate,
+  MetricsRangeAggregate,
+  NonConsumablePurchaseAggregate,
+} from './store.js';
 
 /**
  * In-memory reduction of store records into the metrics responses.
@@ -30,14 +35,13 @@ interface Countable {
   platform: string;
 }
 
-/** The count-shaped part of a metrics response; the route adds `from`/`to`. */
-export interface RangeAggregate {
-  total: number;
-  byProduct: Record<string, number>;
-  byPlatform: Record<string, number>;
-  /** Present only when `groupBy: 'day'` was requested. */
-  buckets?: MetricsBucket[];
-}
+/**
+ * The count-shaped part of a metrics response; the route adds `from`/`to`.
+ *
+ * Aliased to the store contract rather than declared separately, so the SQL
+ * implementations and this reducer cannot drift into different shapes.
+ */
+export type RangeAggregate = MetricsRangeAggregate;
 
 export interface RangeAggregateOptions<T> {
   /** Inclusive window bounds, ms-since-epoch. */
@@ -162,35 +166,81 @@ export function aggregateActive(
   purchases: readonly PurchaseInfo[],
   nowMs: number,
 ): MetricsActiveResponse {
+  return composeActiveResponse(
+    aggregateActiveSubscriptions(subs, nowMs),
+    aggregateNonConsumablePurchases(purchases),
+  );
+}
+
+/**
+ * Subscription half of the active snapshot.
+ *
+ * Split from the purchase half so the metrics route can take each from its own
+ * store's SQL aggregate, or fall back to this, independently — a deployment can
+ * have a Postgres subscription store and a custom purchase store.
+ */
+export function aggregateActiveSubscriptions(
+  subs: readonly SubscriptionInfo[],
+  nowMs: number,
+): ActiveSubscriptionAggregate {
   const byProduct: Record<string, number> = {};
-  const byProductPurchases: Record<string, number> = {};
   const byPlatform: Record<string, number> = {};
-  let activeSubscriptions = 0;
-  let gracePeriodSubscriptions = 0;
-  let nonConsumablePurchases = 0;
+  let active = 0;
+  let gracePeriod = 0;
 
   for (const sub of subs) {
     if (!isActiveSubscription(sub, nowMs)) continue;
-    activeSubscriptions++;
-    if (sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD) gracePeriodSubscriptions++;
+    active++;
+    if (sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD) gracePeriod++;
     bump(byProduct, sub.productId);
     bump(byPlatform, sub.platform);
   }
 
+  return { active, gracePeriod, byProduct, byPlatform };
+}
+
+/** Purchase half of the active snapshot. */
+export function aggregateNonConsumablePurchases(
+  purchases: readonly PurchaseInfo[],
+): NonConsumablePurchaseAggregate {
+  const byProduct: Record<string, number> = {};
+  const byPlatform: Record<string, number> = {};
+  let total = 0;
+
   for (const purchase of purchases) {
     if (!isNonConsumable(purchase)) continue;
-    nonConsumablePurchases++;
-    bump(byProductPurchases, purchase.productId);
+    total++;
+    bump(byProduct, purchase.productId);
     bump(byPlatform, purchase.platform);
   }
 
+  return { total, byProduct, byPlatform };
+}
+
+/**
+ * Assemble the wire response from the two halves.
+ *
+ * `byProduct` stays subscriptions-only and `byProductPurchases`
+ * non-consumables-only, so a dashboard can show "subscription mix" and "lifetime
+ * mix" as separate panels. `byPlatform` deliberately spans both — it answers
+ * "where are my paying users", which is not a per-kind question.
+ */
+export function composeActiveResponse(
+  subs: ActiveSubscriptionAggregate,
+  purchases: NonConsumablePurchaseAggregate,
+): MetricsActiveResponse {
+  const byPlatform: Record<string, number> = { ...subs.byPlatform };
+  for (const [platform, count] of Object.entries(purchases.byPlatform)) {
+    byPlatform[platform] = (byPlatform[platform] ?? 0) + count;
+  }
+
   return {
-    total: activeSubscriptions + nonConsumablePurchases,
-    activeSubscriptions,
-    gracePeriodSubscriptions,
-    nonConsumablePurchases,
-    byProduct,
-    byProductPurchases,
+    total: subs.active + purchases.total,
+    activeSubscriptions: subs.active,
+    gracePeriodSubscriptions: subs.gracePeriod,
+    nonConsumablePurchases: purchases.total,
+    byProduct: subs.byProduct,
+    byProductPurchases: purchases.byProduct,
     byPlatform,
   };
 }

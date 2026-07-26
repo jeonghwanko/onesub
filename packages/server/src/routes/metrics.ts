@@ -10,13 +10,15 @@ import type {
   SubscriptionInfo,
 } from '@onesub/shared';
 import { ROUTES, ONESUB_ERROR_CODE } from '@onesub/shared';
-import type { PurchaseStore, SubscriptionStore } from '../store.js';
+import type { MetricsRangeQuery, PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
 import { secretsEqual } from './secret-compare.js';
 import {
-  aggregateActive,
+  aggregateActiveSubscriptions,
+  aggregateNonConsumablePurchases,
   aggregateRange,
+  composeActiveResponse,
   isEndedSubscription,
   isNonConsumable,
   type RangeAggregate,
@@ -36,12 +38,24 @@ export const DEFAULT_METRICS_CACHE_TTL_SECONDS = 30;
  * server doesn't currently track; deferred to a follow-up release that adds
  * `config.products: { 'pro_monthly': { price: 9.99, currency: 'USD' } }`.
  *
- * Aggregation strategy: reads every record via `store.listAll()` and reduces in
- * memory (see `metrics-aggregate.ts` for the reduction, which is where the
- * semantics are tested). That is one full read per computed response, so
- * responses are cached for `config.metricsCacheTtlSeconds` to bound how often
- * it happens — see `metrics-cache.ts`. Removing the per-response scan entirely
- * needs SQL-side aggregation, which is per-store work and still pending.
+ * Aggregation strategy, in order of preference:
+ *
+ *   1. The store's own aggregate (`aggregateActive`, `aggregateStarted`,
+ *      `aggregateExpired`, `aggregateNonConsumable`) when it has one. Postgres
+ *      answers with a `GROUP BY`, so the work is bounded by
+ *      products × platforms × days rather than by row count.
+ *   2. Otherwise `listAll()` plus the in-memory reduction in
+ *      `metrics-aggregate.ts` — the same answer at O(rows), on the event loop.
+ *      That is the path for the in-memory and Redis stores, which have no
+ *      server-side grouping to push into, and for custom stores that predate the
+ *      optional methods.
+ *
+ * `metrics-aggregate.ts` is the definition of what these numbers mean either
+ * way; `postgres-store.test.ts` runs both paths over the same rows and asserts
+ * they agree.
+ *
+ * Responses are additionally cached for `config.metricsCacheTtlSeconds`, which
+ * bounds how often either path runs at all — see `metrics-cache.ts`.
  */
 export function createMetricsRouter(
   config: OneSubServerConfig,
@@ -76,8 +90,18 @@ export function createMetricsRouter(
       const response = await metricsCache.resolve<MetricsActiveResponse>(
         ['active', metricsCache.quantizeToWindow(Date.now())],
         async () => {
-          const [subs, purchases] = await Promise.all([store.listAll(), purchaseStore.listAll()]);
-          return aggregateActive(subs, purchases, Date.now());
+          const now = new Date();
+          // Each half falls back independently — a deployment can pair a Postgres
+          // subscription store with a custom purchase store that has no aggregate.
+          const [subsAgg, purchasesAgg] = await Promise.all([
+            store.aggregateActive
+              ? store.aggregateActive(now)
+              : store.listAll().then((subs) => aggregateActiveSubscriptions(subs, now.getTime())),
+            purchaseStore.aggregateNonConsumable
+              ? purchaseStore.aggregateNonConsumable()
+              : purchaseStore.listAll().then(aggregateNonConsumablePurchases),
+          ]);
+          return composeActiveResponse(subsAgg, purchasesAgg);
         },
       );
       res.status(200).json(response);
@@ -132,6 +156,13 @@ export function createMetricsRouter(
    */
   function windowed<T extends { productId: string; platform: string }>(
     name: string,
+    /**
+     * The store's own SQL aggregate, when it has one. Absent — a custom store, or
+     * in-memory / Redis, where a `GROUP BY` does not exist — and the route reads
+     * every row and reduces via `load`/`anchor`/`include` instead. Same answer,
+     * O(rows) instead of O(products × platforms × days).
+     */
+    sqlAggregate: ((query: MetricsRangeQuery) => Promise<RangeAggregate>) | undefined,
     load: () => Promise<readonly T[]>,
     anchor: (record: T) => string,
     include?: (record: T) => boolean,
@@ -150,14 +181,22 @@ export function createMetricsRouter(
             metricsCache.quantizeToWindow(range.toMs),
             range.groupBy,
           ],
-          async () =>
-            aggregateRange(await load(), {
+          async () => {
+            if (sqlAggregate) {
+              return sqlAggregate({
+                from: new Date(range.fromMs),
+                to: new Date(range.toMs),
+                groupBy: range.groupBy,
+              });
+            }
+            return aggregateRange(await load(), {
               fromMs: range.fromMs,
               toMs: range.toMs,
               groupBy: range.groupBy,
               anchor,
               ...(include ? { include } : {}),
-            }),
+            });
+          },
         );
 
         const response: MetricsCountResponse = {
@@ -178,7 +217,12 @@ export function createMetricsRouter(
   // current status — this is a cohort-start count, not a live-state count.
   router.get(
     ROUTES.METRICS_STARTED,
-    windowed<SubscriptionInfo>('started', () => store.listAll(), (sub) => sub.purchasedAt),
+    windowed<SubscriptionInfo>(
+      'started',
+      store.aggregateStarted?.bind(store),
+      () => store.listAll(),
+      (sub) => sub.purchasedAt,
+    ),
   );
 
   // ── GET /onesub/metrics/expired?from=&to= ────────────────────────────────
@@ -189,6 +233,7 @@ export function createMetricsRouter(
     ROUTES.METRICS_EXPIRED,
     windowed<SubscriptionInfo>(
       'expired',
+      store.aggregateExpired?.bind(store),
       () => store.listAll(),
       (sub) => sub.expiresAt,
       isEndedSubscription,
@@ -207,6 +252,7 @@ export function createMetricsRouter(
     ROUTES.METRICS_PURCHASES_STARTED,
     windowed<PurchaseInfo>(
       'purchases-started',
+      purchaseStore.aggregateStarted?.bind(purchaseStore),
       () => purchaseStore.listAll(),
       (purchase) => purchase.purchasedAt,
       isNonConsumable,
