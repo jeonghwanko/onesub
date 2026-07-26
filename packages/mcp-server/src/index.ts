@@ -156,7 +156,7 @@ server.tool(
 
 server.tool(
   'onesub_simulate_webhook',
-  "Send a simulated Apple or Google webhook notification to an onesub server to test lifecycle transitions without real store credentials. Builds a fake (unsigned) payload and POSTs it to /onesub/webhook/apple or /onesub/webhook/google. Requires the server to have skipJwsVerification: true (set automatically by `npx @onesub/cli dev`). Apple types: SUBSCRIBED, DID_RENEW, DID_RECOVER, OFFER_REDEEMED, DID_FAIL_TO_RENEW, GRACE_PERIOD_EXPIRED, EXPIRED, REFUND, REVOKE. Google types: purchased, renewed, recovered, restarted, canceled, revoked, expired, on_hold, grace_period, paused, price_change_confirmed.",
+  "Send a simulated Apple or Google webhook notification to an onesub server to test lifecycle transitions without real store credentials. Builds a fake (unsigned) payload and POSTs it to /onesub/webhook/apple or /onesub/webhook/google. Requires the server to have skipJwsVerification: true (set automatically by `npx @onesub/cli dev`). Against a server running with NODE_ENV=production the Google endpoint also needs google.pushAudience or google.allowUnauthenticatedWebhook, or it answers 401. Apple types: SUBSCRIBED, DID_RENEW, DID_RECOVER, OFFER_REDEEMED, DID_FAIL_TO_RENEW, GRACE_PERIOD_EXPIRED, EXPIRED, REFUND, REVOKE. Google types: purchased, renewed, recovered, restarted, canceled, revoked, expired, on_hold, grace_period, paused, price_change_confirmed.",
   {
     serverUrl: simulateWebhookInputSchema.serverUrl,
     platform: simulateWebhookInputSchema.platform,
