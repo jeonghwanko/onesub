@@ -1,5 +1,15 @@
 # @onesub/cli
 
+## 0.1.30
+
+### Patch Changes
+
+- Updated dependencies [a0ee918]
+- Updated dependencies [f01336b]
+- Updated dependencies [11a66ab]
+  - @onesub/shared@0.15.0
+  - @onesub/server@0.20.0
+
 ## 0.1.29
 
 ### Patch Changes

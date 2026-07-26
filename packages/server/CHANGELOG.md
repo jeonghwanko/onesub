@@ -1,5 +1,100 @@
 # @onesub/server
 
+## 0.20.0
+
+### Minor Changes
+
+- a0ee918: Bound how often the metrics endpoints scan the store, and make their aggregation
+  testable.
+
+  Every `/onesub/metrics/*` endpoint reduces every record in the subscription or
+  purchase store. The dashboard overview calls four of them per render and opts out
+  of client-side fetch caching, so an uncached deployment re-scanned both tables on
+  every browser refresh, by every operator — with the reduction running
+  synchronously on the event loop, where it competes with receipt validation.
+
+  Aggregate responses are now cached for `metricsCacheTtlSeconds` (new config
+  field, default `30`, `0` disables). Cache keys are snapped onto the TTL grid
+  because the dashboard sends `to = new Date()` at millisecond precision, which
+  would otherwise make every request a unique key; the response still echoes the
+  caller's own `from`/`to`, so a client always sees the window it asked about.
+  Concurrent misses on one key collapse into a single computation.
+
+  The cache is private to each middleware instance rather than shared through the
+  `cache` adapter. A metrics key describes "every record in this store" and cannot
+  discriminate one store from another, so sharing would let two middlewares in one
+  process — or two deployments pointed at one Redis database — read each other's
+  totals for any window that happened to match. The trade-off is that a K-process
+  deployment recomputes up to K times per window instead of once, which is still a
+  fixed bound where there previously was none.
+
+  Nothing that decides entitlement is cached: `/onesub/status`,
+  `/onesub/entitlement(s)`, and both validate routes are untouched.
+
+  The reduction itself moved into `metrics-aggregate.ts` as pure functions. It had
+  been duplicated across four handlers — each re-implementing the same window
+  filter, product/platform tallies, and zero-filled UTC daily bucketing — and was
+  unreachable by a test without an HTTP server. Responses are unchanged; the
+  semantics now have direct coverage, including the inclusive window bounds and
+  UTC bucket assignment, which is what a future SQL-side aggregation will have to
+  reproduce.
+
+  Per-request aggregation is still one full store read, so pushing the aggregation
+  down into SQL remains worthwhile for large Postgres deployments. That needs
+  per-store support and is not included here.
+
+### Patch Changes
+
+- f01336b: Cache successful Apple x5c chain verification instead of redoing it per request.
+
+  `decodeJws` backs every receipt validation and every Apple webhook, and it
+  re-ran the whole verification each time: an `X509Certificate` parse per cert in
+  the chain, an ECDSA signature check per link, the bundled-root comparison, and a
+  fresh `importX509` of the leaf key. All of it is synchronous CPU work on the
+  event loop, and Apple's leaf certificates are stable for weeks, so the same
+  chain was re-verified continuously to reach the same answer.
+
+  Successful verifications are now memoised per process, keyed on the full `x5c`
+  chain plus the JWS `alg`. Rejection behaviour is unchanged:
+
+  - A failed verification is never cached, positive or negative — an untrusted
+    chain is rejected on every attempt.
+  - An entry's lifetime is capped by the earliest `notAfter` in the chain that
+    produced it, so an expired certificate is never served from cache, and by a
+    1-hour ceiling on top of that.
+  - `alg` is part of the entry identity, so a chain claiming a different algorithm
+    can never be served a key imported for another one.
+
+  The cache is deliberately process-local rather than going through the pluggable
+  `CacheAdapter`: an imported key is not JSON-serialisable (a Redis-backed adapter
+  would round-trip it to `{}`), and what is avoided here is local CPU rather than
+  a rate-limited network call — a Redis round-trip could cost more than the
+  verification it replaces. Certificate revocation is not checked, unchanged from
+  before.
+
+- 11a66ab: Remove the per-entitlement store re-reads from batch entitlement evaluation.
+
+  `evaluateEntitlement` reads a user's subscriptions and purchases itself, so
+  callers evaluating several entitlements for one user paid two store round-trips
+  per entitlement. `GET /onesub/entitlements` did that for every configured
+  entitlement, and `GET /onesub/admin/customers/:userId` did it _serially_ on top
+  of records it had already fetched — so a host with N entitlements issued 2N
+  redundant queries per request on both paths.
+
+  Both now read the user's records once and evaluate every entitlement against
+  them. New export `evaluateEntitlementFrom(subs, purchases, entitlement, now?)`
+  is the store-free evaluator for hosts that want the same batching in their own
+  code. `evaluateEntitlement` keeps its signature and its behavior, including
+  skipping the purchase read when a subscription already grants the entitlement.
+
+  Also fixes a listener leak in the shared outbound `fetch` helper: the
+  caller-signal `abort` listener used `{ once: true }`, which only self-removes
+  when the event fires, so a caller reusing one long-lived `AbortSignal` across
+  requests accumulated a listener per call. It is now removed on every path.
+
+- Updated dependencies [a0ee918]
+  - @onesub/shared@0.15.0
+
 ## 0.19.0
 
 ### Minor Changes
