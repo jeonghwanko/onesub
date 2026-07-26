@@ -4,8 +4,16 @@ on:
   push:
     branches: [master]
     paths:
+      # Keep this list in sync with everything packages/dashboard/Dockerfile
+      # copies. The image runs `npm ci` against the ROOT lockfile, so a
+      # dependency bump that touches nothing under packages/ still changes what
+      # ships — omitting package-lock.json here silently leaves the published
+      # image on the old dependency set.
       - 'packages/dashboard/**'
-      - 'packages/shared/src/**'
+      - 'packages/shared/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
       - '.github/workflows/docker-dashboard.yml'
   workflow_dispatch:
 
