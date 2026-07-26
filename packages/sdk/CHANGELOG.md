@@ -1,5 +1,13 @@
 # @jeonghwanko/onesub-sdk
 
+## 0.10.3
+
+### Patch Changes
+
+- 70be9e6: Normalize react-native-iap v15 purchase errors, preserve server validation error codes on restore failures,
+  pre-register StoreKit listeners before connection initialization, and report concurrent one-time purchase/restore
+  operations as `CONCURRENT_PURCHASE` instead of an ambiguous null result.
+
 ## 0.10.2
 
 ### Patch Changes
