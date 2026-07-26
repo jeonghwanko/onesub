@@ -196,13 +196,16 @@ quota — and the two routes differ in whether you get it by default:
   notification can move subscription state. Configure them rather than reaching for
   a rate limit.
 
-  Note that the route is mounted whether or not Google is configured, and that a
-  server where no app declares `google.packageName` runs in open mode — it serves
-  notifications for any package. An Apple-only deployment therefore has an
-  unauthenticated `/onesub/webhook/google` whose voided-purchase path can still
-  delete a purchase row by `orderId`. As of `@onesub/server@0.21.2` the server warns
-  at startup for both conditions when `NODE_ENV=production`; block the path at your
-  proxy if the deployment does not serve Google Play.
+  Note also that a server where no app declares `google.packageName` runs in open
+  mode — it serves notifications for any package. As of `@onesub/server@0.21.2` the
+  server warns at startup for both conditions when `NODE_ENV=production`.
+
+  As of `0.22.0` the route is mounted only when the config serves Google Play — a
+  top-level `google` block, or a `google` block on any `apps[]` entry. An Apple-only
+  deployment gets a 404 there instead of an unauthenticated endpoint whose
+  voided-purchase path could delete a purchase row by `orderId`. If you serve Google
+  Play, nothing changes; if you do not, you no longer need to block the path at your
+  proxy.
 
 ### Limiting in Express
 

@@ -1,6 +1,35 @@
 # Migration Guide
 
-Upgrade notes for breaking releases of `@onesub/server`. Minor/patch releases within the same major are drop-in.
+Upgrade notes for releases of `@onesub/server` that need one. While the package is pre-1.0, a minor release may narrow behaviour — anything that is not drop-in has an entry here, so check this file for the versions you are skipping.
+
+---
+
+## `@onesub/server` 0.21.x → 0.22.0
+
+### `POST /onesub/webhook/google` is mounted only when the config serves Google Play
+
+The route used to be mounted unconditionally. It is now registered only when the
+config has a top-level `google` block, or a `google` block on any `apps[]` entry.
+
+**Why.** Unlike the Apple webhook, this route does not authenticate
+unconditionally — the Pub/Sub OIDC token is verified only when an app declares a
+`pushAudience` — and its `voidedPurchaseNotification` branch needs no Google
+credentials to run: it cancels a subscription by `purchaseToken`, or deletes a
+one-time purchase row by `orderId`, straight from the payload. An Apple-only
+deployment therefore exposed an unauthenticated endpoint that could revoke
+entitlement, with no Google purchases for it to be about.
+
+**Impact.** If you serve Google Play, nothing changes. If you do not, requests to
+that path now get `404` instead of being processed, and you no longer need to block
+it at your proxy. Drop any monitoring that expects a 2xx/4xx there.
+
+The Apple webhook remains unconditional: it verifies the `signedPayload` JWS
+against the bundled Apple roots on every request regardless of config, so it is not
+open in the same way.
+
+Configuring Google without a `packageName` still mounts the route and still runs it
+in legacy open mode (any package accepted). Since `0.21.2` the server warns at
+startup about that and about a missing `pushAudience` when `NODE_ENV=production`.
 
 ---
 

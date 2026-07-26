@@ -117,12 +117,14 @@ describe('unauthenticated Google webhook', () => {
 });
 
 describe('open mode (no packageName declared)', () => {
-  it('warns for an Apple-only deployment, which still mounts the route', () => {
-    const { logger, joined } = recordingLogger();
+  it('says nothing for an Apple-only deployment, which does not mount the route', () => {
+    // The route is no longer mounted without a Google config, so there is no
+    // open-mode exposure to report. `webhook-google-mount.test.ts` asserts the
+    // mounting side of this; here the point is that the two agree.
+    const { logger, warns } = recordingLogger();
     build({ apple: { bundleId: 'com.example.app' } }, logger);
 
-    expect(joined()).toContain('open mode');
-    expect(joined()).toContain('ANY package');
+    expect(warns).toEqual([]);
   });
 
   it('warns when google is configured without a packageName', () => {
