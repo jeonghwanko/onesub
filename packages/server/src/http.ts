@@ -23,9 +23,13 @@ export async function fetchWithTimeout(
   const controller = new AbortController();
   // Allow caller-provided signal to compose with our timeout.
   const callerSignal = init?.signal;
+  let onCallerAbort: (() => void) | undefined;
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort(callerSignal.reason);
-    else callerSignal.addEventListener('abort', () => controller.abort(callerSignal.reason), { once: true });
+    else {
+      onCallerAbort = () => controller.abort(callerSignal.reason);
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
   }
 
   const timer = setTimeout(() => {
@@ -36,5 +40,10 @@ export async function fetchWithTimeout(
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    // `{ once: true }` only self-removes when the event FIRES. On the normal
+    // path it never does, so a caller that reuses one long-lived signal across
+    // many requests would accumulate a listener per call on it — a slow leak
+    // that surfaces as MaxListenersExceededWarning.
+    if (onCallerAbort) callerSignal?.removeEventListener('abort', onCallerAbort);
   }
 }
