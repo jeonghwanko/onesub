@@ -281,12 +281,30 @@ export interface OneSubServerConfig {
      * Expected `aud` claim for incoming Pub/Sub push JWT tokens.
      * When set, the Google webhook endpoint verifies the `Authorization: Bearer <token>`
      * header as a Google-signed JWT whose `aud` matches this value.
-     * If omitted, no authentication is performed on the webhook (backward compatible).
+     *
+     * **Required in production** unless `allowUnauthenticatedWebhook` is set. With
+     * neither, `POST /onesub/webhook/google` answers 401 when `NODE_ENV=production`.
+     * Outside production the webhook still accepts unauthenticated requests so local
+     * and CI setups need no credentials.
      *
      * Set this to the push endpoint URL registered in your Pub/Sub subscription,
      * e.g. `https://your-server.example.com/onesub/webhook/google`.
      */
     pushAudience?: string;
+    /**
+     * Run the Google webhook unauthenticated in production, on purpose.
+     *
+     * Only correct when something in front of the server already authenticates the
+     * request — Cloud Run with IAM, a VPC-internal ingress, mTLS at a proxy. It is
+     * not a way to postpone configuring `pushAudience`: with neither set, an RTDN is
+     * accepted from anyone who can reach the endpoint, and a caller who knows a
+     * `purchaseToken` or `orderId` can cancel a subscription or delete a one-time
+     * purchase. Those values are not secrets — for Google subscriptions the
+     * purchase token *is* the record's `originalTransactionId`.
+     *
+     * Ignored outside production, where the webhook is unauthenticated regardless.
+     */
+    allowUnauthenticatedWebhook?: boolean;
     /**
      * Service-account email your Pub/Sub push subscription authenticates as.
      * When set (together with `pushAudience`), incoming push JWTs must carry a
