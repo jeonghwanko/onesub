@@ -174,7 +174,7 @@ This matters because the most expensive routes are the unauthenticated ones. Cos
 | `GET /onesub/entitlement`, `/onesub/entitlements` | none | At most two store reads, independent of how many entitlements are configured |
 | `GET /onesub/purchase/status` | none | One store read; **unbounded response** without `?productId=`, since it returns the user's full purchase history |
 | `POST /onesub/webhook/apple` | JWS signature | See the warning below — do not limit these like public traffic |
-| `POST /onesub/webhook/google` | JWT, **only if `pushAudience` is set** | Same, and see the note below |
+| `POST /onesub/webhook/google` | JWT; **401 in production without `pushAudience`** | Same, and see the note below |
 | `/onesub/admin/*`, `/onesub/metrics/*` | `adminSecret` | Metrics reduce every record in the store; responses are cached for `metricsCacheTtlSeconds` |
 
 > **Do not rate-limit the webhook routes on request volume.** A `429` is not a
@@ -188,17 +188,25 @@ The control that belongs on a webhook route is caller authentication, not a requ
 quota — and the two routes differ in whether you get it by default:
 
 - **Apple** always verifies the `signedPayload` JWS against the bundled Apple roots.
-- **Google** verifies the Pub/Sub OIDC token **only when `google.pushAudience` is
-  configured**. With no app configuring it, the authentication step is skipped and
-  the route accepts any well-formed notification body. That is the reason
-  `pushAudience` and `pushServiceAccountEmail` are on the production checklist:
-  without them the endpoint is both public and unauthenticated, and a forged
-  notification can move subscription state. Configure them rather than reaching for
-  a rate limit.
+- **Google** verifies the Pub/Sub OIDC token when `google.pushAudience` is configured.
+  With no app configuring it there is nothing to verify against, so as of
+  `@onesub/server@0.27.0` the route **answers 401 under `NODE_ENV=production`** rather
+  than accepting the body. Set `pushAudience` and `pushServiceAccountEmail`; the
+  endpoint does not work in production without them.
+
+  If something in front of the server already authenticates the request — Cloud Run
+  with IAM, a VPC-internal ingress, mTLS at a proxy — set
+  `google.allowUnauthenticatedWebhook: true` to say so. It is not a way to postpone
+  the Pub/Sub setup: with neither set, an RTDN is accepted from anyone who can reach
+  the endpoint, and knowing a `purchaseToken` or `orderId` is then enough to cancel a
+  subscription or delete a one-time purchase. Configure authentication rather than
+  reaching for a rate limit — see *Request Limits* above for why these routes must not
+  be volume-limited.
 
   Note also that a server where no app declares `google.packageName` runs in open
-  mode — it serves notifications for any package. As of `@onesub/server@0.21.2` the
-  server warns at startup for both conditions when `NODE_ENV=production`.
+  mode — it serves notifications for any package. That one still warns rather than
+  refusing. `@onesub/server@0.21.2` added the startup warning for both conditions when
+  `NODE_ENV=production`.
 
   As of `0.22.0` the route is mounted only when the config serves Google Play — a
   top-level `google` block, or a `google` block on any `apps[]` entry. An Apple-only
