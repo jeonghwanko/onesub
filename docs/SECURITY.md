@@ -36,7 +36,14 @@
 ### Webhook Endpoints
 - **Apple**: Only JWS-signed `signedPayload` accepted. The embedded `x5c` certificate chain is
   validated to the pinned Apple Root CA G3, then the leaf key verifies the payload signature
-- **Google**: When `pushAudience` is configured, `Authorization: Bearer` JWT is verified against Google JWKS with audience claim check
+- **Google**: When `pushAudience` is configured, `Authorization: Bearer` JWT is verified against
+  Google JWKS with audience claim check. **When no configured app sets it, the verification step is
+  skipped and the route accepts any well-formed notification body** — and the route is mounted whether
+  or not Google is configured at all. The subscription paths re-fetch state from Google before
+  writing, so a forged notification cannot fabricate an entitlement; the voided-purchase path acts on
+  the payload alone, so a caller who knows a `purchaseToken` or `orderId` can cancel a subscription or
+  delete a one-time purchase row. Configure `pushAudience` and `pushServiceAccountEmail`. As of
+  `@onesub/server@0.21.2` the server warns at startup when this applies and `NODE_ENV=production`
 
 ### Validate / Status Endpoints
 - Currently open by design (consumer adds their own auth middleware)

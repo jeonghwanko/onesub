@@ -6,6 +6,7 @@ import type { SubscriptionStore, PurchaseStore } from './store.js';
 import { createValidateRouter } from './routes/validate.js';
 import { createStatusRouter } from './routes/status.js';
 import { createWebhookRouter } from './routes/webhook.js';
+import { warnIfGoogleWebhookOpen } from './routes/webhook-google.js';
 import { createPurchaseRouter } from './routes/purchase.js';
 import { createAdminRouter } from './routes/admin.js';
 import { createEntitlementRouter } from './routes/entitlements.js';
@@ -94,6 +95,13 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
       '[onesub] apple.mockMode / google.mockMode cannot be enabled when NODE_ENV=production — these modes accept any receipt as valid.',
     );
   }
+
+  // Google's webhook only verifies the Pub/Sub token when an app declares a
+  // pushAudience, and serves any packageName when none declares one. Both are
+  // deliberate (a host may front the route with its own verification), so this
+  // warns rather than refusing — but silently accepting unauthenticated
+  // state-changing requests in production is worth saying out loud.
+  warnIfGoogleWebhookOpen(config);
 
   const store: SubscriptionStore = config.store ?? new InMemorySubscriptionStore();
   const purchaseStore: PurchaseStore = config.purchaseStore ?? new InMemoryPurchaseStore();

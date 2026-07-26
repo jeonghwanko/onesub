@@ -96,6 +96,52 @@ const GOOGLE_FAILURE_MESSAGES: Record<GoogleWebhookWork['kind'], { logPrefix: st
 };
 
 /**
+ * Startup check for the two conditions that leave `POST /onesub/webhook/google`
+ * open. Called once from `createOneSubMiddleware`; warns rather than throws
+ * because rejecting would break deployments that front the route with their own
+ * Pub/Sub verification.
+ *
+ * Gated on `NODE_ENV=production` for the same reason the mockMode guard is:
+ * neither condition is meaningful locally, where no real RTDN arrives, and
+ * warning unconditionally would fire on nearly every test and drown itself out.
+ *
+ * Why it matters. The subscription paths re-fetch state from Google before
+ * writing, so a forged notification cannot fabricate an entitlement. The voided
+ * path does not: it acts on the payload alone, setting a subscription to
+ * `canceled` by `purchaseToken` or deleting a one-time purchase row by
+ * `orderId`. So the exposure is entitlement *revocation* for a caller who knows
+ * or guesses one of those ids — not free entitlement.
+ */
+export function warnIfGoogleWebhookOpen(config: OneSubServerConfig): void {
+  if (process.env['NODE_ENV'] !== 'production') return;
+
+  const apps = getAppRegistry(config).apps;
+  const googleApps = apps.map((a) => a.google).filter((g): g is NonNullable<typeof g> => !!g);
+
+  // Authentication is skipped entirely when no app declares a pushAudience —
+  // see handleGoogleWebhook, which only verifies when it has one to verify.
+  if (googleApps.length > 0 && !googleApps.some((g) => g.pushAudience)) {
+    log.warn(
+      '[onesub] SECURITY: POST /onesub/webhook/google accepts unauthenticated requests — ' +
+        'no configured app sets google.pushAudience, so the Pub/Sub OIDC token is never verified. ' +
+        'A caller who knows a purchaseToken or orderId can cancel a subscription or delete a ' +
+        'one-time purchase. Set google.pushAudience (and google.pushServiceAccountEmail).',
+    );
+  }
+
+  // Open mode: any packageName is served, so a notification does not even have
+  // to name an app this server knows.
+  if (!apps.some((a) => a.google?.packageName)) {
+    log.warn(
+      '[onesub] POST /onesub/webhook/google is in open mode — no configured app declares ' +
+        'google.packageName, so notifications for ANY package are accepted. The route is mounted ' +
+        'whether or not Google is configured; set google.packageName, or block the path at your ' +
+        'proxy if this deployment does not serve Google Play.',
+    );
+  }
+}
+
+/**
  * Resolves an RTDN's package to an app.
  *
  * When no configured app declares a packageName the instance is in legacy "open
