@@ -3,24 +3,30 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type {
   MetricsActiveResponse,
-  MetricsBucket,
   MetricsCountResponse,
+  MetricsGroupBy,
   OneSubServerConfig,
   PurchaseInfo,
   SubscriptionInfo,
 } from '@onesub/shared';
-import {
-  ROUTES,
-  SUBSCRIPTION_STATUS,
-  PURCHASE_TYPE,
-  ONESUB_ERROR_CODE,
-} from '@onesub/shared';
+import { ROUTES, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
 import { secretsEqual } from './secret-compare.js';
+import {
+  aggregateActive,
+  aggregateRange,
+  isEndedSubscription,
+  isNonConsumable,
+  type RangeAggregate,
+} from '../metrics-aggregate.js';
+import { createMetricsCache } from '../metrics-cache.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
+
+/** Freshness bound when the host does not configure one. */
+export const DEFAULT_METRICS_CACHE_TTL_SECONDS = 30;
 
 /**
  * Read-only aggregate metrics endpoints — gated behind `config.adminSecret`.
@@ -30,9 +36,12 @@ const ADMIN_SECRET_HEADER = 'x-admin-secret';
  * server doesn't currently track; deferred to a follow-up release that adds
  * `config.products: { 'pro_monthly': { price: 9.99, currency: 'USD' } }`.
  *
- * Aggregation strategy: pulls every record via `store.listAll()` and reduces
- * in memory. Fine up to ~100k records; large deployments should optimise the
- * Postgres path with SQL aggregates (separate PR).
+ * Aggregation strategy: reads every record via `store.listAll()` and reduces in
+ * memory (see `metrics-aggregate.ts` for the reduction, which is where the
+ * semantics are tested). That is one full read per computed response, so
+ * responses are cached for `config.metricsCacheTtlSeconds` to bound how often
+ * it happens — see `metrics-cache.ts`. Removing the per-response scan entirely
+ * needs SQL-side aggregation, which is per-store work and still pending.
  */
 export function createMetricsRouter(
   config: OneSubServerConfig,
@@ -43,6 +52,9 @@ export function createMetricsRouter(
 
   const router = Router();
   const adminSecret = config.adminSecret;
+  const metricsCache = createMetricsCache(
+    config.metricsCacheTtlSeconds ?? DEFAULT_METRICS_CACHE_TTL_SECONDS,
+  );
 
   // Auth middleware — only protects /onesub/metrics/* (siblings unaffected
   // even when this router is mounted on the parent root).
@@ -55,65 +67,19 @@ export function createMetricsRouter(
     next();
   });
 
-  // ── helpers ──────────────────────────────────────────────────────────────
-
-  const isActiveSub = (sub: SubscriptionInfo, now: number): boolean => {
-    const statusAllows =
-      sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
-      sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD;
-    return statusAllows && new Date(sub.expiresAt).getTime() > now;
-  };
-
-  const bump = (map: Record<string, number>, key: string) => {
-    map[key] = (map[key] ?? 0) + 1;
-  };
-
   // ── GET /onesub/metrics/active ───────────────────────────────────────────
 
   router.get(ROUTES.METRICS_ACTIVE, async (_req: Request, res: Response) => {
     try {
-      const [subs, purchases] = await Promise.all([
-        store.listAll(),
-        purchaseStore.listAll(),
-      ]);
-      const now = Date.now();
-
-      const byProduct: Record<string, number> = {};
-      const byProductPurchases: Record<string, number> = {};
-      const byPlatform: Record<string, number> = {};
-      let activeSubscriptions = 0;
-      let gracePeriodSubscriptions = 0;
-      let nonConsumablePurchases = 0;
-
-      for (const sub of subs) {
-        if (!isActiveSub(sub, now)) continue;
-        activeSubscriptions++;
-        if (sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD) {
-          gracePeriodSubscriptions++;
-        }
-        bump(byProduct, sub.productId);
-        bump(byPlatform, sub.platform);
-      }
-
-      for (const p of purchases) {
-        if (p.type !== PURCHASE_TYPE.NON_CONSUMABLE) continue;
-        nonConsumablePurchases++;
-        // byProductPurchases is purchase-only; byProduct (subs-only) stays clean
-        // so dashboards can render distinct "subscription mix" vs "lifetime mix"
-        // panels without untangling them client-side.
-        bump(byProductPurchases, p.productId);
-        bump(byPlatform, p.platform);
-      }
-
-      const response: MetricsActiveResponse = {
-        total: activeSubscriptions + nonConsumablePurchases,
-        activeSubscriptions,
-        gracePeriodSubscriptions,
-        nonConsumablePurchases,
-        byProduct,
-        byProductPurchases,
-        byPlatform,
-      };
+      // Keyed on the TTL grid rather than the exact instant, so concurrent and
+      // rapid-repeat refreshes share one computation.
+      const response = await metricsCache.resolve<MetricsActiveResponse>(
+        ['active', metricsCache.quantizeToWindow(Date.now())],
+        async () => {
+          const [subs, purchases] = await Promise.all([store.listAll(), purchaseStore.listAll()]);
+          return aggregateActive(subs, purchases, Date.now());
+        },
+      );
       res.status(200).json(response);
     } catch (err) {
       log.error('[onesub/metrics/active] error:', err);
@@ -121,7 +87,7 @@ export function createMetricsRouter(
     }
   });
 
-  // ── GET /onesub/metrics/started?from=&to=&groupBy= ───────────────────────
+  // ── windowed endpoints ───────────────────────────────────────────────────
 
   const rangeSchema = z.object({
     from: z.string().min(1),
@@ -129,7 +95,7 @@ export function createMetricsRouter(
     groupBy: z.enum(['none', 'day']).optional(),
   });
 
-  type Range = { fromMs: number; toMs: number; groupBy: 'none' | 'day' };
+  type Range = { fromMs: number; toMs: number; groupBy: MetricsGroupBy };
 
   // groupBy=day zero-fills one bucket object per calendar day, so an
   // unbounded range (e.g. from=0001-01-01) would allocate millions of
@@ -156,184 +122,96 @@ export function createMetricsRouter(
     return { fromMs, toMs, groupBy };
   }
 
-  // UTC `YYYY-MM-DD` for a given epoch-ms. Used to assign each record to a
-  // calendar-day bucket; UTC keeps the result deterministic regardless of
-  // server timezone (Postgres `updated_at` is UTC; SubscriptionInfo dates are
-  // ISO with explicit zone offsets).
-  function utcDateKey(ms: number): string {
-    const d = new Date(ms);
-    const yyyy = d.getUTCFullYear();
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
-  // Zero-fill a daily series across [fromMs, toMs] (inclusive of both
-  // boundary days). The route handler then increments the counts.
-  function emptyDailyBuckets(fromMs: number, toMs: number): MetricsBucket[] {
-    const out: MetricsBucket[] = [];
-    // Snap `from` to UTC midnight so iteration steps land on calendar boundaries.
-    const start = new Date(fromMs);
-    start.setUTCHours(0, 0, 0, 0);
-    let cur = start.getTime();
-    while (cur <= toMs) {
-      out.push({ date: utcDateKey(cur), count: 0 });
-      cur += 86_400_000;
-    }
-    return out;
-  }
-
-  router.get(ROUTES.METRICS_STARTED, async (req: Request, res: Response) => {
-    const range = parseRange(req);
-    if ('error' in range) {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, range.error);
-      return;
-    }
-    try {
-      const subs = await store.listAll();
-      const byProduct: Record<string, number> = {};
-      const byPlatform: Record<string, number> = {};
-      let total = 0;
-
-      // Build a date→index map only when bucketing is requested — keeps the
-      // non-bucketed path identical to the previous implementation.
-      const buckets =
-        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
-      const bucketIndex =
-        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
-
-      for (const sub of subs) {
-        const purchasedMs = new Date(sub.purchasedAt).getTime();
-        if (purchasedMs < range.fromMs || purchasedMs > range.toMs) continue;
-        total++;
-        bump(byProduct, sub.productId);
-        bump(byPlatform, sub.platform);
-        if (buckets && bucketIndex) {
-          const idx = bucketIndex.get(utcDateKey(purchasedMs));
-          if (idx !== undefined) buckets[idx]!.count++;
-        }
+  /**
+   * Shared handler for the three windowed endpoints. They differ only in which
+   * store they read, which records qualify, and which timestamp anchors a
+   * record in the window — so that is all each one supplies.
+   *
+   * The response echoes the caller's own `from`/`to`, not the quantized cache
+   * key, so a client always sees the window it asked about.
+   */
+  function windowed<T extends { productId: string; platform: string }>(
+    name: string,
+    load: () => Promise<readonly T[]>,
+    anchor: (record: T) => string,
+    include?: (record: T) => boolean,
+  ) {
+    return async (req: Request, res: Response): Promise<void> => {
+      const range = parseRange(req);
+      if ('error' in range) {
+        sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, range.error);
+        return;
       }
+      try {
+        const aggregate = await metricsCache.resolve<RangeAggregate>(
+          [
+            name,
+            metricsCache.quantizeToWindow(range.fromMs),
+            metricsCache.quantizeToWindow(range.toMs),
+            range.groupBy,
+          ],
+          async () =>
+            aggregateRange(await load(), {
+              fromMs: range.fromMs,
+              toMs: range.toMs,
+              groupBy: range.groupBy,
+              anchor,
+              ...(include ? { include } : {}),
+            }),
+        );
 
-      const response: MetricsCountResponse = {
-        from: req.query['from'] as string,
-        to: req.query['to'] as string,
-        total,
-        byProduct,
-        byPlatform,
-        ...(buckets ? { buckets } : {}),
-      };
-      res.status(200).json(response);
-    } catch (err) {
-      log.error('[onesub/metrics/started] error:', err);
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
-    }
-  });
+        const response: MetricsCountResponse = {
+          from: req.query['from'] as string,
+          to: req.query['to'] as string,
+          ...aggregate,
+        };
+        res.status(200).json(response);
+      } catch (err) {
+        log.error(`[onesub/metrics/${name}] error:`, err);
+        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
+      }
+    };
+  }
+
+  // ── GET /onesub/metrics/started?from=&to=&groupBy= ───────────────────────
+  // Subscriptions whose purchasedAt falls in the window, regardless of their
+  // current status — this is a cohort-start count, not a live-state count.
+  router.get(
+    ROUTES.METRICS_STARTED,
+    windowed<SubscriptionInfo>('started', () => store.listAll(), (sub) => sub.purchasedAt),
+  );
 
   // ── GET /onesub/metrics/expired?from=&to= ────────────────────────────────
-
-  router.get(ROUTES.METRICS_EXPIRED, async (req: Request, res: Response) => {
-    const range = parseRange(req);
-    if ('error' in range) {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, range.error);
-      return;
-    }
-    try {
-      const subs = await store.listAll();
-      const byProduct: Record<string, number> = {};
-      const byPlatform: Record<string, number> = {};
-      let total = 0;
-
-      const buckets =
-        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
-      const bucketIndex =
-        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
-
-      for (const sub of subs) {
-        // Counted only if currently expired or canceled — a record that's
-        // still active doesn't qualify even if its expiresAt happened to fall
-        // inside the window (e.g. mid-period billing renewal).
-        if (
-          sub.status !== SUBSCRIPTION_STATUS.EXPIRED &&
-          sub.status !== SUBSCRIPTION_STATUS.CANCELED
-        ) continue;
-        const expiredMs = new Date(sub.expiresAt).getTime();
-        if (expiredMs < range.fromMs || expiredMs > range.toMs) continue;
-        total++;
-        bump(byProduct, sub.productId);
-        bump(byPlatform, sub.platform);
-        if (buckets && bucketIndex) {
-          const idx = bucketIndex.get(utcDateKey(expiredMs));
-          if (idx !== undefined) buckets[idx]!.count++;
-        }
-      }
-
-      const response: MetricsCountResponse = {
-        from: req.query['from'] as string,
-        to: req.query['to'] as string,
-        total,
-        byProduct,
-        byPlatform,
-        ...(buckets ? { buckets } : {}),
-      };
-      res.status(200).json(response);
-    } catch (err) {
-      log.error('[onesub/metrics/expired] error:', err);
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
-    }
-  });
+  // Counted only if currently expired or canceled — a record that's still
+  // active doesn't qualify even if its expiresAt happened to fall inside the
+  // window (e.g. mid-period billing renewal).
+  router.get(
+    ROUTES.METRICS_EXPIRED,
+    windowed<SubscriptionInfo>(
+      'expired',
+      () => store.listAll(),
+      (sub) => sub.expiresAt,
+      isEndedSubscription,
+    ),
+  );
 
   // ── GET /onesub/metrics/purchases/started?from=&to=&groupBy= ─────────────
   // Counts non-consumable purchases (lifetime products) by purchasedAt within
-  // the window. Backs the dashboard's Purchases timeseries chart so hosts that
-  // sell only lifetime products (e.g. coffee's Welcome Pass) get a meaningful
-  // growth signal even when they have no subscription data.
+  // the window. Backs the dashboard's Purchases timeseries so hosts that
+  // sell only lifetime products get a meaningful growth signal even when they
+  // have no subscription data.
   //
   // Consumables are excluded — they grant a one-time resource (coins, lives),
   // not an ongoing entitlement, and would dominate the count noisily.
-  router.get(ROUTES.METRICS_PURCHASES_STARTED, async (req: Request, res: Response) => {
-    const range = parseRange(req);
-    if ('error' in range) {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, range.error);
-      return;
-    }
-    try {
-      const purchases = await purchaseStore.listAll();
-      const byProduct: Record<string, number> = {};
-      const byPlatform: Record<string, number> = {};
-      let total = 0;
-
-      const buckets =
-        range.groupBy === 'day' ? emptyDailyBuckets(range.fromMs, range.toMs) : null;
-      const bucketIndex =
-        buckets ? new Map(buckets.map((b, i) => [b.date, i])) : null;
-
-      for (const p of purchases) {
-        if (p.type !== PURCHASE_TYPE.NON_CONSUMABLE) continue;
-        const purchasedMs = new Date(p.purchasedAt).getTime();
-        if (purchasedMs < range.fromMs || purchasedMs > range.toMs) continue;
-        total++;
-        bump(byProduct, p.productId);
-        bump(byPlatform, p.platform);
-        if (buckets && bucketIndex) {
-          const idx = bucketIndex.get(utcDateKey(purchasedMs));
-          if (idx !== undefined) buckets[idx]!.count++;
-        }
-      }
-
-      const response: MetricsCountResponse = {
-        from: req.query['from'] as string,
-        to: req.query['to'] as string,
-        total,
-        byProduct,
-        byPlatform,
-        ...(buckets ? { buckets } : {}),
-      };
-      res.status(200).json(response);
-    } catch (err) {
-      log.error('[onesub/metrics/purchases/started] error:', err);
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
-    }
-  });
+  router.get(
+    ROUTES.METRICS_PURCHASES_STARTED,
+    windowed<PurchaseInfo>(
+      'purchases-started',
+      () => purchaseStore.listAll(),
+      (purchase) => purchase.purchasedAt,
+      isNonConsumable,
+    ),
+  );
 
   return router;
 }

@@ -47,6 +47,7 @@ app.use(createOneSubMiddleware({
   adminSecret: process.env.ADMIN_SECRET,   // enables admin + metrics routes
   logger: require('pino')(),               // any { info, warn, error } logger
   refundPolicy: 'immediate',               // 'immediate' (default) | 'until_expiry'
+  metricsCacheTtlSeconds: 30,              // 30 (default) | 0 to disable
 }));
 
 app.listen(4100);

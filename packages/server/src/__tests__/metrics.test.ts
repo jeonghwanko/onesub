@@ -66,13 +66,36 @@ function spinUp(handler: express.Express): TestServer {
   };
 }
 
-function buildServer(opts: { adminSecret?: string; subs?: SubscriptionInfo[]; purchases?: PurchaseInfo[] }) {
+/**
+ * Wrap one method on a live store instance and count how often it is called.
+ * The router holds a reference to the same object and resolves the method at
+ * call time, so patching after `buildServer` is observed by the handlers.
+ */
+function countCalls<T extends object, K extends keyof T>(target: T, method: K): () => number {
+  let calls = 0;
+  const original = target[method] as unknown as (...args: unknown[]) => unknown;
+  (target as Record<K, unknown>)[method] = (...args: unknown[]) => {
+    calls++;
+    return original.apply(target, args);
+  };
+  return () => calls;
+}
+
+function buildServer(opts: {
+  adminSecret?: string;
+  subs?: SubscriptionInfo[];
+  purchases?: PurchaseInfo[];
+  metricsCacheTtlSeconds?: number;
+}) {
   const store = new InMemorySubscriptionStore();
   const purchaseStore = new InMemoryPurchaseStore();
   const config: OneSubServerConfig = {
     apple: { bundleId: 'com.example.app', skipJwsVerification: true },
     database: { url: '' },
     adminSecret: opts.adminSecret,
+    ...(opts.metricsCacheTtlSeconds !== undefined
+      ? { metricsCacheTtlSeconds: opts.metricsCacheTtlSeconds }
+      : {}),
   };
   const app = express();
   app.use(createOneSubMiddleware({ ...config, store, purchaseStore }));
@@ -520,5 +543,102 @@ describe('Store listAll', () => {
 
     const all = await purchaseStore.listAll();
     expect(all).toHaveLength(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Response caching
+//
+// Each endpoint reduces the entire store, so the cache is what bounds how often
+// that happens under a refreshing dashboard. These assert it from the outside:
+// how many times the store was actually read to answer N requests.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Metrics response caching', () => {
+  it('answers repeat requests without re-reading the store', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ userId: 'a', originalTransactionId: 't1' }));
+    const reads = countCalls(store, 'listAll');
+
+    for (let i = 0; i < 5; i++) {
+      const resp = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+      expect(resp.body.activeSubscriptions).toBe(1);
+    }
+
+    expect(reads()).toBe(1);
+  });
+
+  it('caches each endpoint separately', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ userId: 'a', purchasedAt: '2026-04-10T00:00:00Z', originalTransactionId: 't1' }));
+    const reads = countCalls(store, 'listAll');
+
+    const range = 'from=2026-04-01T00:00:00Z&to=2026-04-30T00:00:00Z';
+    await server.get(`/onesub/metrics/started?${range}`, AUTH);
+    await server.get(`/onesub/metrics/expired?${range}`, AUTH);
+    await server.get('/onesub/metrics/active', AUTH);
+    // Repeats of all three are served from cache.
+    await server.get(`/onesub/metrics/started?${range}`, AUTH);
+    await server.get(`/onesub/metrics/expired?${range}`, AUTH);
+    await server.get('/onesub/metrics/active', AUTH);
+
+    expect(reads()).toBe(3);
+  });
+
+  it('does not let a different window reuse another window’s counts', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET });
+    await store.save(sub({ userId: 'a', purchasedAt: '2026-04-10T00:00:00Z', originalTransactionId: 't1' }));
+    await store.save(sub({ userId: 'b', purchasedAt: '2026-06-10T00:00:00Z', originalTransactionId: 't2' }));
+
+    const april = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2026-04-01T00:00:00Z&to=2026-04-30T00:00:00Z',
+      AUTH,
+    );
+    const june = await server.get<MetricsCountResponse>(
+      '/onesub/metrics/started?from=2026-06-01T00:00:00Z&to=2026-06-30T00:00:00Z',
+      AUTH,
+    );
+
+    expect(april.body.total).toBe(1);
+    expect(june.body.total).toBe(1);
+    expect(april.body.byProduct).toEqual({ pro_monthly: 1 });
+  });
+
+  it('echoes the caller’s own from/to, not the quantized cache key', async () => {
+    const { server } = buildServer({ adminSecret: SECRET });
+    const from = '2026-04-01T00:00:00.123Z';
+    const to = '2026-04-30T00:00:00.456Z';
+
+    const resp = await server.get<MetricsCountResponse>(
+      `/onesub/metrics/started?from=${from}&to=${to}`,
+      AUTH,
+    );
+
+    expect(resp.body.from).toBe(from);
+    expect(resp.body.to).toBe(to);
+  });
+
+  it('reads the store on every request when the TTL is 0', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET, metricsCacheTtlSeconds: 0 });
+    await store.save(sub({ userId: 'a', originalTransactionId: 't1' }));
+    const reads = countCalls(store, 'listAll');
+
+    await server.get('/onesub/metrics/active', AUTH);
+    await server.get('/onesub/metrics/active', AUTH);
+    await server.get('/onesub/metrics/active', AUTH);
+
+    expect(reads()).toBe(3);
+  });
+
+  it('with the TTL disabled, a newly saved record shows up immediately', async () => {
+    const { store, server } = buildServer({ adminSecret: SECRET, metricsCacheTtlSeconds: 0 });
+
+    const before = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+    expect(before.body.activeSubscriptions).toBe(0);
+
+    await store.save(sub({ userId: 'a', originalTransactionId: 't1' }));
+
+    const after = await server.get<MetricsActiveResponse>('/onesub/metrics/active', AUTH);
+    expect(after.body.activeSubscriptions).toBe(1);
   });
 });

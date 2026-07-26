@@ -44,6 +44,7 @@ explicitly. Without them, middleware uses in-memory stores even when `database.u
 | `apps` | No | Single-app mode | Credentials for multiple isolated applications |
 | `defaultAppId` | No | Top-level app or only configured app | Fallback app when a request cannot identify one |
 | `adminSecret` | No | Admin/metrics routes not mounted | Protects admin, customer, metrics, sync, and dead-letter routes |
+| `metricsCacheTtlSeconds` | No | `30` | How long a `/onesub/metrics/*` aggregate may be reused; `0` disables |
 | `entitlements` | No | Entitlement routes not mounted | Maps stable entitlement IDs to product IDs |
 | `refundPolicy` | No | `immediate` | Subscription refund access policy |
 | `logger` | No | `console` | `{ info, warn, error }` server log sink |

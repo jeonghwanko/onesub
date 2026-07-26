@@ -346,6 +346,23 @@ export interface OneSubServerConfig {
    */
   adminSecret?: string;
   /**
+   * How long an aggregate `/onesub/metrics/*` response may be reused, in
+   * seconds. Defaults to 30. Set `0` to disable caching and reduce the store on
+   * every request.
+   *
+   * Each metrics endpoint reduces every record in the store, and the dashboard
+   * overview calls four of them per render with no client-side caching — so an
+   * uncached deployment re-scans both tables on every browser refresh, by every
+   * operator. These are aggregate counts, where a few seconds of staleness is
+   * unremarkable; nothing that decides entitlement is ever cached.
+   *
+   * The cache is private to each middleware instance rather than shared through
+   * the `cache` adapter, because a metrics key describes "every record in this
+   * store" and cannot distinguish one store from another. So a K-process
+   * deployment recomputes at most K times per window, not once.
+   */
+  metricsCacheTtlSeconds?: number;
+  /**
    * Structured logger to receive onesub's runtime logs. If omitted, logs go
    * to `console.info/warn/error`. Any object that implements `OneSubLogger`
    * (`pino`, `winston`, `bunyan`, `console`) works.

@@ -21,6 +21,9 @@
 // accumulated under the 34 KB ceiling without a recorded bump. It left 0.06 KB
 // of headroom, so an unrelated commit would have failed this gate. Re-measure
 // and record here when the numbers move, not only when the limit is raised.
+//
+// 2026-07-26: 34.17/34.55 KB after the metrics aggregation split and response
+// cache (`metrics-aggregate.ts`, `metrics-cache.ts`). Limit unchanged.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
