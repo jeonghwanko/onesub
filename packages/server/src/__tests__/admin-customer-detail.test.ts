@@ -84,6 +84,21 @@ function buildServer(opts: { adminSecret?: string; entitlements?: EntitlementsCo
 const SECRET = 's3cr3t';
 const AUTH = { 'x-admin-secret': SECRET };
 
+/**
+ * Wrap one method on a live store instance and count how often it is called.
+ * The middleware holds a reference to the same object, and resolves the method
+ * at call time, so patching after `buildServer` is observed by the routes.
+ */
+function countCalls<T extends object, K extends keyof T>(target: T, method: K): () => number {
+  let calls = 0;
+  const original = target[method] as unknown as (...args: unknown[]) => unknown;
+  (target as Record<K, unknown>)[method] = (...args: unknown[]) => {
+    calls++;
+    return original.apply(target, args);
+  };
+  return () => calls;
+}
+
 describe('GET /onesub/admin/customers/:userId auth', () => {
   it('returns 404 when adminSecret is unset (router not mounted)', async () => {
     const { server } = buildServer({});
@@ -171,5 +186,38 @@ describe('GET /onesub/admin/customers/:userId entitlements', () => {
 
     expect(resp.body.entitlements?.premium?.active).toBe(false);
     expect(resp.body.entitlements?.premium?.source).toBeNull();
+  });
+
+  // This route already fetches the user's subscriptions and purchases to put
+  // them in the response, so entitlement evaluation must reuse them. Evaluating
+  // via `evaluateEntitlement` re-read both stores per entitlement — serially,
+  // on top of the two reads above — while returning an identical body, so only
+  // a read count catches a regression.
+  it('evaluates entitlements from the records it already fetched (no extra reads)', async () => {
+    const { store, purchaseStore, server } = buildServer({
+      adminSecret: SECRET,
+      entitlements: {
+        premium: { productIds: ['pro_monthly'] },
+        lifetime: { productIds: ['lifetime_pass'] },
+        addon: { productIds: ['some_addon'] },
+      },
+    });
+    await store.save(sub({ userId: 'alice', productId: 'pro_monthly', originalTransactionId: 't1' }));
+    await purchaseStore.savePurchase(
+      purchase({ userId: 'alice', productId: 'lifetime_pass', transactionId: 'p1' }),
+    );
+
+    const subReads = countCalls(store, 'getAllByUserId');
+    const purchaseReads = countCalls(purchaseStore, 'getPurchasesByUserId');
+
+    const resp = await server.get<CustomerProfileResponse>('/onesub/admin/customers/alice', AUTH);
+
+    expect(resp.status).toBe(200);
+    expect(resp.body.entitlements?.premium?.active).toBe(true);
+    expect(resp.body.entitlements?.lifetime?.active).toBe(true);
+    expect(resp.body.entitlements?.addon?.active).toBe(false);
+
+    expect(subReads()).toBe(1);
+    expect(purchaseReads()).toBe(1);
   });
 });

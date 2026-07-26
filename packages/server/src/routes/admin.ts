@@ -12,7 +12,7 @@ import type {
 } from '@onesub/shared';
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
-import { evaluateEntitlement } from './entitlements.js';
+import { evaluateEntitlementFrom } from './entitlements.js';
 import { sendError, sendZodError } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
@@ -260,11 +260,16 @@ export function createAdminRouter(
 
       // Evaluate entitlements only when configured. Hosts that don't use the
       // entitlement abstraction get the field omitted (dashboard hides panel).
+      //
+      // Reuses the records fetched above — `evaluateEntitlement` would re-read
+      // both stores for every entitlement, so a host with N entitlements paid
+      // 2N extra round-trips, serially, on every customer page load.
       let entitlements: Record<string, EntitlementStatus> | undefined;
       if (config.entitlements && Object.keys(config.entitlements).length > 0) {
+        const now = Date.now();
         entitlements = {};
         for (const [id, def] of Object.entries(config.entitlements)) {
-          entitlements[id] = await evaluateEntitlement(params.userId, def, store, purchaseStore);
+          entitlements[id] = evaluateEntitlementFrom(subscriptions, purchases, def, now);
         }
       }
 

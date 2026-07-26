@@ -203,7 +203,10 @@ export { validateGoogleReceipt } from './providers/google.js';
 
 // Entitlement evaluator — exported so hosts can evaluate entitlements
 // in-process (e.g. from non-HTTP background workers, custom routes).
-export { evaluateEntitlement } from './routes/entitlements.js';
+// `evaluateEntitlementFrom` is the store-free variant: read a user's
+// subscriptions/purchases once, then evaluate any number of entitlements
+// against them without further round-trips.
+export { evaluateEntitlement, evaluateEntitlementFrom } from './routes/entitlements.js';
 
 // Logger plumbing — expose so non-middleware callers (direct provider use)
 // can still redirect logs.

@@ -17,7 +17,12 @@ import { log } from '../logger.js';
 import { sendError } from '../errors.js';
 
 /**
- * Evaluate a single entitlement for a user.
+ * Evaluate one entitlement against records the caller already holds.
+ *
+ * This is the whole decision, with no store access — so a caller evaluating N
+ * entitlements for one user reads that user's records ONCE and calls this N
+ * times, instead of paying 2N store round-trips. `evaluateEntitlement` below
+ * is the convenience wrapper for the single-entitlement case.
  *
  * A user is entitled when EITHER condition holds for any productId in
  * `entitlement.productIds`:
@@ -31,18 +36,19 @@ import { sendError } from '../errors.js';
  * Subscription is preferred over purchase when both match (subs carry an
  * expiry; non-consumables are forever) so the source field skews toward the
  * more "interesting" signal for ops/analytics.
+ *
+ * `now` is injected so a batch evaluation scores every entitlement against one
+ * consistent instant rather than drifting across awaits.
  */
-export async function evaluateEntitlement(
-  userId: string,
+export function evaluateEntitlementFrom(
+  subs: readonly SubscriptionInfo[],
+  purchases: readonly PurchaseInfo[],
   entitlement: Entitlement,
-  store: SubscriptionStore,
-  purchaseStore: PurchaseStore,
-): Promise<EntitlementStatus> {
+  now: number = Date.now(),
+): EntitlementStatus {
   const productIdSet = new Set(entitlement.productIds);
-  const now = Date.now();
 
   // 1. Check subscriptions first (richer signal — has expiry).
-  const subs = await store.getAllByUserId(userId);
   for (const sub of subs) {
     if (!productIdSet.has(sub.productId)) continue;
     const statusAllows =
@@ -59,7 +65,6 @@ export async function evaluateEntitlement(
   }
 
   // 2. Check non-consumable purchases.
-  const purchases = await purchaseStore.getPurchasesByUserId(userId);
   for (const p of purchases) {
     if (p.type !== PURCHASE_TYPE.NON_CONSUMABLE) continue;
     if (!productIdSet.has(p.productId)) continue;
@@ -71,6 +76,32 @@ export async function evaluateEntitlement(
   }
 
   return { active: false, source: null };
+}
+
+/**
+ * Evaluate a single entitlement for a user, reading the records it needs.
+ *
+ * Thin wrapper over `evaluateEntitlementFrom` — see there for the entitlement
+ * rules. Evaluating several entitlements for the same user through this
+ * function costs 2 store reads each; prefer reading once and calling
+ * `evaluateEntitlementFrom` directly in that case.
+ */
+export async function evaluateEntitlement(
+  userId: string,
+  entitlement: Entitlement,
+  store: SubscriptionStore,
+  purchaseStore: PurchaseStore,
+): Promise<EntitlementStatus> {
+  const now = Date.now();
+  // Read subscriptions first and skip the purchase read entirely when one of
+  // them already grants the entitlement — same laziness this function had
+  // before `evaluateEntitlementFrom` was split out of it.
+  const subs = await store.getAllByUserId(userId);
+  const fromSubs = evaluateEntitlementFrom(subs, [], entitlement, now);
+  if (fromSubs.active) return fromSubs;
+
+  const purchases = await purchaseStore.getPurchasesByUserId(userId);
+  return evaluateEntitlementFrom([], purchases, entitlement, now);
 }
 
 const userIdSchema = z.string().min(1).max(256);
@@ -137,11 +168,17 @@ export function createEntitlementRouter(
     }
 
     try {
-      const entries = await Promise.all(
-        Object.entries(entitlements).map(async ([id, entitlement]) => {
-          const status = await evaluateEntitlement(userId, entitlement, store, purchaseStore);
-          return [id, status] as const;
-        }),
+      // Read this user's records ONCE for the whole map. Evaluating each
+      // entitlement through `evaluateEntitlement` would re-read them per
+      // entitlement — 2N store round-trips for a result that needs 2.
+      const [subs, purchases] = await Promise.all([
+        store.getAllByUserId(userId),
+        purchaseStore.getPurchasesByUserId(userId),
+      ]);
+      const now = Date.now();
+      const entries = Object.entries(entitlements).map(
+        ([id, entitlement]) =>
+          [id, evaluateEntitlementFrom(subs, purchases, entitlement, now)] as const,
       );
       const response: EntitlementsResponse = {
         entitlements: Object.fromEntries(entries),
