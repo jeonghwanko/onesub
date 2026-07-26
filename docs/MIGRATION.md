@@ -4,6 +4,51 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.25.x → 0.26.0
+
+### The remaining log lines carry `key=value` fields
+
+0.25.0 did this for the Apple and Google providers. This release finishes it: the
+routes, the app registry, the webhook handlers, the BullMQ queue and the Postgres
+pool. **`userId` becomes filterable for the first time** — it arrives in a request
+body, so it exists in the routes and never in the provider layer.
+
+```text
+before  [onesub/validate] account binding mismatch for 2000000123: receipt token does not match userId alice
+after   [onesub/validate] account binding mismatch — receipt token does not match userId originalTransactionId=2000000123 userId=alice
+
+before  [onesub/purchase] reassigned transaction t_9 from alice to bob
+after   [onesub/purchase] reassigned transaction to a new user transactionId=t_9 fromUserId=alice userId=bob
+
+before  [onesub] Multi-app mode: main, eu | default: main
+after   [onesub] Multi-app mode appIds="[\"main\",\"eu\"]" defaultAppId=main
+```
+
+**Impact.** Only if you match on log *text*. Beyond the fields themselves, three
+prefixes changed, because the value in them is now a field:
+
+| before | after |
+|---|---|
+| `[onesub/metrics/started] error:` | `[onesub/metrics] error route=started` |
+| `[onesub/mock/apple] receipt rejected` | `[onesub/mock] receipt rejected provider=apple` |
+| `[onesub] PostgresSubscriptionStore pool error (idle client):` | `[onesub] Postgres pool error (idle client) store=PostgresSubscriptionStore` |
+
+Everything else keeps its prefix, so `[onesub/validate]`, `[onesub/webhook/apple]`,
+`[onesub/webhook/google]` and `[onesub/admin/…]` greps still match. Trailing colons
+are gone from messages that had a value after them.
+
+**Errors.** Every `catch` now passes the `Error` itself, so the stack arrives as
+`    | ` continuation lines instead of being flattened — and error lines carry the
+request context they were missing (`userId`, `productId`, `platform`,
+`notificationUUID`, `messageId`).
+
+**`purchaseToken` and `orderId` are still logged in full**, under those field names,
+on the Google webhook paths that already logged them — they are the lookup keys an
+operator needs. Naming them is what makes a redaction pass expressible; this release
+does not redact. Treat these logs as credential-bearing.
+
+---
+
 ## `@onesub/server` 0.24.0 → 0.25.0
 
 ### Apple and Google log lines carry `key=value` fields
