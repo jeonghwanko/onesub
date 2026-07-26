@@ -159,6 +159,78 @@ derive `userId` from the authenticated session rather than trusting arbitrary pu
 place host authentication in front of Apple/Google webhook routes unless it explicitly supports the
 stores' authentication scheme.
 
+## Request Limits
+
+onesub ships **no rate limiting**. The only built-in request bound is a 50 kb JSON body cap on every
+onesub route. Limiting request volume is the host's responsibility, at the reverse proxy or in Express.
+
+This matters because the most expensive routes are the unauthenticated ones. Costs per request:
+
+| Route | Auth | Cost |
+|---|---|---|
+| `POST /onesub/validate` | none | Apple: JWS verification, entirely local — no outbound call. Google: an outbound Play Developer API call, plus a fire-and-forget acknowledge. Apple certificate-chain verification is memoised per process, so a repeat chain is cheap; the first of any chain is not |
+| `POST /onesub/purchase/validate` | none | Same, plus a store read scoped to the product |
+| `GET /onesub/status` | none | One indexed store read. Cheap, but enumerable — a caller who can guess `userId` values can probe them |
+| `GET /onesub/entitlement`, `/onesub/entitlements` | none | At most two store reads, independent of how many entitlements are configured |
+| `GET /onesub/purchase/status` | none | One store read; **unbounded response** without `?productId=`, since it returns the user's full purchase history |
+| `POST /onesub/webhook/apple` | JWS signature | See the warning below — do not limit these like public traffic |
+| `POST /onesub/webhook/google` | JWT, **only if `pushAudience` is set** | Same, and see the note below |
+| `/onesub/admin/*`, `/onesub/metrics/*` | `adminSecret` | Metrics reduce every record in the store; responses are cached for `metricsCacheTtlSeconds` |
+
+> **Do not rate-limit the webhook routes on request volume.** A `429` is not a
+> success, so Apple and Google will retry — but their retry budgets are finite.
+> Dropping notifications can permanently lose a state transition (an expiry, a
+> refund, a grace-period entry), leaving a subscription frozen in the store at
+> whatever it last was. If you must bound these routes, bound concurrency rather
+> than accepted requests, and alert instead of shedding.
+
+The control that belongs on a webhook route is caller authentication, not a request
+quota — and the two routes differ in whether you get it by default:
+
+- **Apple** always verifies the `signedPayload` JWS against the bundled Apple roots.
+- **Google** verifies the Pub/Sub OIDC token **only when `google.pushAudience` is
+  configured**. With no app configuring it, the authentication step is skipped and
+  the route accepts any well-formed notification body. That is the reason
+  `pushAudience` and `pushServiceAccountEmail` are on the production checklist:
+  without them the endpoint is both public and unauthenticated, and a forged
+  notification can move subscription state. Configure them rather than reaching for
+  a rate limit.
+
+### Limiting in Express
+
+`express-rate-limit` is not a onesub dependency; install it in the host. Register limiters **before**
+`createOneSubMiddleware`, and include your mount prefix in the paths if you use one:
+
+```ts
+import rateLimit from 'express-rate-limit'; // v7+: the option is `limit` (v6 called it `max`)
+
+// Behind a load balancer or CDN, req.ip is the proxy's address unless Express is
+// told how many hops to trust. Get this wrong in one direction and every client
+// shares a single bucket; wrong in the other and a client can spoof
+// X-Forwarded-For to reset its own. Set it to your actual number of proxies.
+app.set('trust proxy', 1);
+
+const validateLimiter = rateLimit({ windowMs: 60_000, limit: 30 });
+const readLimiter = rateLimit({ windowMs: 60_000, limit: 120 });
+
+app.use('/onesub/validate', validateLimiter);
+app.use('/onesub/purchase/validate', validateLimiter);
+app.use('/onesub/status', readLimiter);
+app.use('/onesub/entitlement', readLimiter);
+app.use('/onesub/entitlements', readLimiter);
+app.use('/onesub/purchase/status', readLimiter);
+
+app.use(createOneSubMiddleware(config)); // webhook routes deliberately unlimited
+```
+
+Key on the authenticated session once host authentication is in place. Keying on the request body's
+`userId` is not a control — it is client-supplied, which is the same reason validation must not trust
+it for identity (see *Known Limitations* in [SECURITY.md](./SECURITY.md)).
+
+The counters above are per process, so a K-instance deployment allows K times the configured rate.
+Use a shared store (`rate-limit-redis`) when the limit needs to hold across the cluster, or enforce it
+at the proxy, which sees all traffic anyway.
+
 ## Health and OpenAPI
 
 `createOneSubServer()` includes `GET /health`. When mounting middleware into an existing Express
@@ -247,6 +319,8 @@ Custom stores/queues should provide equivalent lifecycle handling in the host.
 - [ ] Google push audience and service-account email are configured.
 - [ ] HTTPS webhook URLs return 2xx for valid test notifications.
 - [ ] Admin/dashboard routes use a strong secret and restricted network exposure.
+- [ ] Public validation/status routes are rate-limited, webhook routes are not, and `trust proxy`
+      matches the real proxy count.
 - [ ] Multi-instance deployments use shared idempotency and a durable queue.
 - [ ] Dead letters, provider timeouts, and validation error rates are monitored.
 - [ ] Graceful shutdown closes HTTP, queue, database, and Redis resources.
