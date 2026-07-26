@@ -1,5 +1,12 @@
 # @onesub/dashboard
 
+## 0.1.16
+
+### Patch Changes
+
+- Updated dependencies [cab70d4]
+  - @onesub/shared@0.16.0
+
 ## 0.1.15
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @onesub/cli
 
+## 0.1.42
+
+### Patch Changes
+
+- Updated dependencies [cab70d4]
+  - @onesub/shared@0.16.0
+  - @onesub/server@0.27.0
+
 ## 0.1.41
 
 ### Patch Changes
