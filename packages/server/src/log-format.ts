@@ -37,11 +37,23 @@
  *
  * Use these names and no synonyms — `userId`, not `user` or `uid`. The point of
  * moving values out of the message is that an operator can filter on them, and that
- * is lost the moment the same thing is called three things across 16 files:
+ * is lost the moment the same thing is called three things across 16 files.
  *
- *   route · provider · userId · appId · platform · productId · transactionId ·
- *   originalTransactionId · purchaseToken · orderId · bundleId · packageName ·
- *   notificationType · status · httpStatus · environment · err
+ * This list is **mechanically enforced**: `field-vocabulary.test.ts` parses the
+ * block below and fails if any `log.*` call site in the package uses a name that is
+ * not in it. So the list is the contract, not a suggestion — adding a field means
+ * adding it here first. That check exists because per-call-site tests do not scale
+ * to ~100 sites: a mutation renaming `productId` to `product` at one un-asserted
+ * site passed the entire suite before it was added.
+ *
+ * FIELD VOCABULARY START
+ *   route provider userId appId platform productId transactionId
+ *   originalTransactionId purchaseToken orderId bundleId packageName
+ *   notificationType status httpStatus environment err
+ *   expected type subscriptionState purchaseState maxAgeHours purchaseDate
+ *   receiptPreview receiptLength jwsParts looksLikeJws responseBody
+ *   availableProductIds maxPages pageCount outcome
+ * FIELD VOCABULARY END
  *
  * `err` is reserved: it always routes through the error renderer.
  *
