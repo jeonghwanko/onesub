@@ -6,6 +6,12 @@ import {
   registerInFlight,
   clearInFlight,
   isUserCancelled,
+  isUserCancelledNativeCode,
+  isAlreadyOwnedNativeCode,
+  isDuplicatePurchaseNativeCode,
+  assertIapOperationAvailable,
+  initializeIapConnectionWithListeners,
+  mapNativePurchaseErrorCode,
   extractReceiptToken,
   isSubscriptionEvent,
   resolvePurchaseType,
@@ -598,6 +604,8 @@ describe('isUserCancelled', () => {
   it('matches raw react-native-iap cancel codes', () => {
     expect(isUserCancelled({ code: 'E_USER_CANCELLED' })).toBe(true);
     expect(isUserCancelled({ code: 'E_USER_ERROR' })).toBe(true);
+    expect(isUserCancelled({ code: 'user-cancelled' })).toBe(true);
+    expect(isUserCancelled({ code: 'user-error' })).toBe(true);
     expect(isUserCancelled({ code: 'E_UNKNOWN' })).toBe(false);
   });
 
@@ -613,6 +621,84 @@ describe('isUserCancelled', () => {
     expect(isUserCancelled(null)).toBe(false);
     expect(isUserCancelled(undefined)).toBe(false);
     expect(isUserCancelled('E_USER_CANCELLED')).toBe(false);
+  });
+});
+
+describe('native purchase error mapping', () => {
+  it('normalizes legacy and RN-IAP v15 cancellation spellings', () => {
+    expect(isUserCancelledNativeCode('E_USER_CANCELLED')).toBe(true);
+    expect(isUserCancelledNativeCode('E_USER_CANCELED')).toBe(true);
+    expect(isUserCancelledNativeCode('user-cancelled')).toBe(true);
+    expect(isUserCancelledNativeCode('user-error')).toBe(true);
+  });
+
+  it('recognizes RN-IAP v15 already-owned codes', () => {
+    expect(isAlreadyOwnedNativeCode('already-owned')).toBe(true);
+    expect(isAlreadyOwnedNativeCode('E_ITEM_ALREADY_OWNED')).toBe(true);
+  });
+
+  it('keeps duplicate purchase updates distinct from already-owned', () => {
+    expect(isDuplicatePurchaseNativeCode('duplicate-purchase')).toBe(true);
+    expect(isAlreadyOwnedNativeCode('duplicate-purchase')).toBe(false);
+  });
+
+  it('keeps a busy operation distinct from cancel/no-purchase null outcomes', () => {
+    expect(() => assertIapOperationAvailable(false)).not.toThrow();
+    expect(() => assertIapOperationAvailable(true)).toThrow(expect.objectContaining({
+      code: ONESUB_ERROR_CODE.CONCURRENT_PURCHASE,
+    }));
+  });
+
+  it('attaches listeners before init and retries after a successful connection', async () => {
+    const calls: string[] = [];
+    const attachListeners = vi.fn(() => { calls.push('attach'); });
+    const initConnection = vi.fn(async () => {
+      calls.push('init');
+      expect(attachListeners).toHaveBeenCalledOnce();
+      return true;
+    });
+
+    await expect(initializeIapConnectionWithListeners(
+      attachListeners,
+      initConnection,
+    )).resolves.toBe(true);
+    expect(calls).toEqual(['attach', 'init', 'attach']);
+  });
+
+  it('does not reattach after provider cancellation during init', async () => {
+    let cancelled = false;
+    const attachListeners = vi.fn();
+    const initConnection = vi.fn(async () => {
+      cancelled = true;
+      return true;
+    });
+
+    await expect(initializeIapConnectionWithListeners(
+      attachListeners,
+      initConnection,
+      () => cancelled,
+    )).resolves.toBe(false);
+    expect(attachListeners).toHaveBeenCalledOnce();
+  });
+
+  it('rejects false init without a post-init listener retry', async () => {
+    const attachListeners = vi.fn();
+    await expect(initializeIapConnectionWithListeners(
+      attachListeners,
+      async () => false,
+    )).rejects.toMatchObject({ code: ONESUB_ERROR_CODE.INTERNAL_ERROR });
+    expect(attachListeners).toHaveBeenCalledOnce();
+  });
+
+  it('maps ownership only for non-consumable purchase entries', () => {
+    const nonConsumable = { kind: 'purchase' as const, purchaseType: 'non_consumable' as const };
+    const consumable = { kind: 'purchase' as const, purchaseType: 'consumable' as const };
+    expect(mapNativePurchaseErrorCode({ code: 'already-owned' }, nonConsumable))
+      .toBe(ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED);
+    expect(mapNativePurchaseErrorCode({ code: 'duplicate-purchase' }, nonConsumable))
+      .toBe(ONESUB_ERROR_CODE.INTERNAL_ERROR);
+    expect(mapNativePurchaseErrorCode({ code: 'already-owned' }, consumable))
+      .toBe(ONESUB_ERROR_CODE.INTERNAL_ERROR);
   });
 });
 

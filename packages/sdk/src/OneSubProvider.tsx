@@ -21,11 +21,16 @@ import {
   registerInFlight as registerInFlightPure,
   clearInFlight,
   isUserCancelled,
+  isAlreadyOwnedNativeCode,
+  isDuplicatePurchaseNativeCode,
+  assertIapOperationAvailable,
+  initializeIapConnectionWithListeners,
+  mapNativePurchaseErrorCode,
   extractReceiptToken,
   extractTransactionId,
   type InFlightEntry,
 } from './purchaseFlow.js';
-import { OneSubError } from './OneSubError.js';
+import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
 import { createSdkLogger } from './logger.js';
 import { buildRequestPurchaseArgs } from './iapRequest.js';
 
@@ -150,14 +155,11 @@ function getCurrentPlatform(): 'ios' | 'android' {
 //      no promise to resolve, no UI side-effect).
 //
 // Why this fixes the "TestFlight: sheet doesn't appear, app says 결제 복구됨"
-// bug: under the old per-call listener pattern, attaching the listener after
-// initConnection immediately delivered the pending transaction (before
-// requestPurchase could show the StoreKit sheet). The listener resolved the
-// promise with that stale event. Under this mount-level pattern, pending
-// transactions are drained silently right after initConnection, so by the
-// time the user taps Subscribe the queue is empty and the only event that
-// can fire is the fresh transaction StoreKit creates after the user confirms
-// in the sheet.
+// bug: the mount listener is registered BEFORE initConnection because RN-IAP
+// can emit queued StoreKit transactions during initialization. The drain gate
+// handles those as orphan replays, so by the time the user taps Subscribe the
+// queue is empty and the only event that can match their in-flight entry is
+// the fresh transaction StoreKit creates after confirmation.
 // ---------------------------------------------------------------------------
 
 export interface OneSubProviderProps {
@@ -315,39 +317,66 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         releaseDrain(mockMode ? 'mockMode' : 'no-rn-iap');
         return;
       }
-      try {
-        logger.trace('initConnection start');
-        await RNIap.initConnection();
-        logger.trace('initConnection ok');
-      } catch (err) {
-        logger.warn('initConnection failed', err);
-        releaseDrain('init-failed');
-        return;
-      }
-      if (cancelled) return;
 
-      // Attach listeners BEFORE any further await so we catch every replay
-      // from Transaction.updates.
+      // Keep callback identity stable across the pre-init registration and
+      // post-init retry. RN-IAP v15 fans out through a Set, so the retry does
+      // not duplicate delivery when the first registration was already live.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      updatedSub = RNIap.purchaseUpdatedListener((purchase: any) => {
+      const onPurchaseUpdated = (purchase: any) => {
         void handlePurchaseEvent(purchase);
-      });
+      };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      errorSub = RNIap.purchaseErrorListener((err: any) => {
+      const onPurchaseError = (err: any) => {
         // Errors are routed to every in-flight promise (we can't tell which
-        // SKU StoreKit was processing when an error fires). RN-IAP surfaces
-        // 'E_USER_CANCELLED' / 'E_USER_ERROR' — map both to USER_CANCELLED.
+        // SKU StoreKit was processing when an error fires). Map each entry
+        // separately because already-owned is only a restore signal for a
+        // non-consumable; cancellation is common to every purchase kind.
         const rnCode: string | undefined = typeof err?.code === 'string' ? err.code : undefined;
-        const code = (rnCode === 'E_USER_CANCELLED' || rnCode === 'E_USER_ERROR')
-          ? ONESUB_ERROR_CODE.USER_CANCELLED
-          : ONESUB_ERROR_CODE.INTERNAL_ERROR;
-        logger.trace('purchase error event', { code, rnCode, inFlightCount: inFlightRef.current.size });
-        const wrapped = new OneSubError(code, err?.message ?? '[onesub] Purchase error', err);
+        // RN-IAP sends this only after it already delivered the original
+        // purchaseUpdated event. Rejecting here races the original async server
+        // validation and can strand a paid transaction before host fulfillment.
+        if (isDuplicatePurchaseNativeCode(rnCode)) {
+          logger.trace('duplicate purchase update ignored', { rnCode });
+          return;
+        }
         for (const [pid, entry] of inFlightRef.current.entries()) {
+          const code = mapNativePurchaseErrorCode(err, entry);
+          logger.trace('purchase error event', { code, rnCode, productId: pid });
+          const wrapped = new OneSubError(code, err?.message ?? '[onesub] Purchase error', err);
           entry.reject(wrapped);
           inFlightRef.current.delete(pid);
         }
-      });
+      };
+
+      function attachListeners(): void {
+        const nextUpdatedSub = RNIap.purchaseUpdatedListener(onPurchaseUpdated);
+        if (!updatedSub) updatedSub = nextUpdatedSub;
+        const nextErrorSub = RNIap.purchaseErrorListener(onPurchaseError);
+        if (!errorSub) errorSub = nextErrorSub;
+      }
+
+      try {
+        const ready = await initializeIapConnectionWithListeners(
+          attachListeners,
+          async () => {
+            logger.trace('initConnection start');
+            const connected = await RNIap.initConnection();
+            logger.trace('initConnection ok', { connected });
+            return connected;
+          },
+          () => cancelled,
+        );
+        if (!ready) return;
+      } catch (err) {
+        logger.warn('initConnection failed', err);
+        try { updatedSub?.remove?.(); } catch { /* ignore */ }
+        try { errorSub?.remove?.(); } catch { /* ignore */ }
+        updatedSub = null;
+        errorSub = null;
+        try { await RNIap.endConnection?.(); } catch { /* ignore */ }
+        releaseDrain('init-failed');
+        return;
+      }
       logger.trace('listeners attached; drain window open', { drainMs: DRAIN_WINDOW_MS });
 
       // Release the drain gate after the window closes. Any queued replays
@@ -596,7 +625,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       productId: string,
       type: 'consumable' | 'non_consumable',
     ): Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null> => {
-      if (isBusyRef.current) return null;
+      assertIapOperationAvailable(isBusyRef.current);
       if (mockMode) {
         return mockPurchaseInfo(productId, type);
       }
@@ -636,9 +665,23 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         try {
           await RNIap.requestPurchase(buildRequestPurchaseArgs(productId, platform, 'in-app', accountTokenRef.current));
         } catch (err) {
-          clearInFlight(inFlightRef.current, productId);
-          if (isUserCancelled(err)) return null;
-          throw err;
+          const nativeCode = (err as { code?: unknown } | null)?.code;
+          // Same contract as the listener: the original updated event owns the
+          // result promise. Keep the entry registered and await it below.
+          if (isDuplicatePurchaseNativeCode(nativeCode)) {
+            logger.trace('requestPurchase duplicate update ignored', { productId });
+          } else {
+            clearInFlight(inFlightRef.current, productId);
+            if (isUserCancelled(err)) return null;
+            if (type === 'non_consumable' && isAlreadyOwnedNativeCode(nativeCode)) {
+              throw new OneSubError(
+                ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED,
+                err instanceof Error ? err.message : '[onesub] Product is already owned.',
+                err,
+              );
+            }
+            throw err;
+          }
         }
 
         const result = await resultPromise;
@@ -664,7 +707,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       productId: string,
       type: 'consumable' | 'non_consumable',
     ): Promise<(PurchaseInfo & { action?: 'new' | 'restored' }) | null> => {
-      if (isBusyRef.current) return null;
+      assertIapOperationAvailable(isBusyRef.current);
       if (mockMode) {
         return mockPurchaseInfo(productId, type);
       }
@@ -728,7 +771,10 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
           } satisfies PurchaseInfo & { action: 'restored' };
         }
 
-        throw new OneSubError(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, validationResult.error ?? '[onesub] Restore validation failed.');
+        const validationCode = isOneSubErrorCode(validationResult.errorCode)
+          ? validationResult.errorCode
+          : ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED;
+        throw new OneSubError(validationCode, validationResult.error ?? '[onesub] Restore validation failed.');
       } finally {
         releaseIapOperation();
       }

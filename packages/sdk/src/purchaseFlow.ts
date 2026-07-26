@@ -362,6 +362,105 @@ export function clearInFlight(inFlight: Map<string, InFlightEntry>, productId: s
   inFlight.delete(productId);
 }
 
+const USER_CANCELLED_NATIVE_CODES = new Set([
+  'e-user-cancelled',
+  'e-user-canceled',
+  'e-user-error',
+  'user-cancelled',
+  'user-canceled',
+  'user-error',
+]);
+
+const ALREADY_OWNED_NATIVE_CODES = new Set([
+  'already-owned',
+  'e-already-owned',
+  'e-item-already-owned',
+]);
+
+function normalizeNativeErrorCode(code: unknown): string {
+  return typeof code === 'string'
+    ? code.trim().toLowerCase().replace(/[\s_]+/g, '-')
+    : '';
+}
+
+/** True for both legacy RN-IAP E_* and v15/OpenIAP normalized cancel codes. */
+export function isUserCancelledNativeCode(code: unknown): boolean {
+  return USER_CANCELLED_NATIVE_CODES.has(normalizeNativeErrorCode(code));
+}
+
+/** True when RN-IAP reports that a one-time product is already present. */
+export function isAlreadyOwnedNativeCode(code: unknown): boolean {
+  return ALREADY_OWNED_NATIVE_CODES.has(normalizeNativeErrorCode(code));
+}
+
+/**
+ * RN-IAP emitted the same purchase update twice and deliberately skipped the
+ * second delivery. This is not an ownership error: the first update is already
+ * being validated and must be allowed to settle the in-flight promise.
+ */
+export function isDuplicatePurchaseNativeCode(code: unknown): boolean {
+  return normalizeNativeErrorCode(code) === 'duplicate-purchase';
+}
+
+/** Keep a busy SDK operation distinct from cancel/no-purchase null outcomes. */
+export function assertIapOperationAvailable(isBusy: boolean): void {
+  if (isBusy) {
+    throw new OneSubError(
+      ONESUB_ERROR_CODE.CONCURRENT_PURCHASE,
+      '[onesub] Another purchase or restore operation is already in progress.',
+    );
+  }
+}
+
+/**
+ * RN-IAP 15 can emit queued StoreKit transactions while `initConnection()` is
+ * still resolving. Register first, then retry registration after init for the
+ * rare Nitro-not-ready path where the pre-init JS subscription was inert.
+ */
+export async function initializeIapConnectionWithListeners(
+  attachListeners: () => void,
+  initConnection: () => Promise<boolean>,
+  isCancelled: () => boolean = () => false,
+): Promise<boolean> {
+  attachListeners();
+  const connected = await initConnection();
+  if (!connected) {
+    throw new OneSubError(
+      ONESUB_ERROR_CODE.INTERNAL_ERROR,
+      '[onesub] IAP connection initialization returned false.',
+    );
+  }
+  if (isCancelled()) return false;
+  attachListeners();
+  return true;
+}
+
+/**
+ * Convert a native purchase error into OneSub's stable public error contract.
+ * `already-owned` is only canonicalized for non-consumables: treating a
+ * consumable duplicate event as ownership would incorrectly send callers down
+ * a restore path for a product that must be consumed instead.
+ */
+export function mapNativePurchaseErrorCode(
+  err: unknown,
+  entry?: Pick<InFlightEntry, 'kind' | 'purchaseType'>,
+): OneSubErrorCode {
+  const nativeCode = err && typeof err === 'object'
+    ? (err as Record<string, unknown>).code
+    : undefined;
+  if (isUserCancelledNativeCode(nativeCode)) {
+    return ONESUB_ERROR_CODE.USER_CANCELLED;
+  }
+  if (
+    entry?.kind === 'purchase'
+    && entry.purchaseType === 'non_consumable'
+    && isAlreadyOwnedNativeCode(nativeCode)
+  ) {
+    return ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED;
+  }
+  return ONESUB_ERROR_CODE.INTERNAL_ERROR;
+}
+
 /**
  * True when the error represents the user dismissing the purchase sheet —
  * either a raw react-native-iap error code or the SDK's own OneSubError
@@ -375,5 +474,5 @@ export function isUserCancelled(err: unknown): boolean {
   }
   if (!err || typeof err !== 'object') return false;
   const code = (err as Record<string, unknown>).code;
-  return code === 'E_USER_CANCELLED' || code === 'E_USER_ERROR';
+  return isUserCancelledNativeCode(code);
 }
