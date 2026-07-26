@@ -196,6 +196,14 @@ quota — and the two routes differ in whether you get it by default:
   notification can move subscription state. Configure them rather than reaching for
   a rate limit.
 
+  Note that the route is mounted whether or not Google is configured, and that a
+  server where no app declares `google.packageName` runs in open mode — it serves
+  notifications for any package. An Apple-only deployment therefore has an
+  unauthenticated `/onesub/webhook/google` whose voided-purchase path can still
+  delete a purchase row by `orderId`. As of `@onesub/server@0.21.2` the server warns
+  at startup for both conditions when `NODE_ENV=production`; block the path at your
+  proxy if the deployment does not serve Google Play.
+
 ### Limiting in Express
 
 `express-rate-limit` is not a onesub dependency; install it in the host. Register limiters **before**

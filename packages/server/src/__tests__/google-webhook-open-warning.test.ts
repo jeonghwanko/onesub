@@ -1,0 +1,165 @@
+/**
+ * Startup warning for the two conditions that leave the Google RTDN route open.
+ *
+ * `POST /onesub/webhook/google` verifies the Pub/Sub OIDC token only when an app
+ * declares `pushAudience`, and serves any `packageName` when none declares one.
+ * The route is mounted either way. Both behaviours are pre-existing and
+ * deliberate — a host may front the route with its own verification — so this
+ * warns instead of refusing, and these tests pin down that it says so exactly
+ * when it should and stays quiet otherwise.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { OneSubLogger, OneSubServerConfig } from '@onesub/shared';
+import { createOneSubMiddleware } from '../index.js';
+import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
+
+/** Captures what the configured logger was told. */
+function recordingLogger() {
+  const warns: string[] = [];
+  const logger: OneSubLogger = {
+    info: () => {},
+    warn: (...args: unknown[]) => {
+      warns.push(args.map(String).join(' '));
+    },
+    error: () => {},
+  };
+  return { logger, warns, joined: () => warns.join('\n') };
+}
+
+function build(config: Partial<OneSubServerConfig>, logger: OneSubLogger) {
+  createOneSubMiddleware({
+    database: { url: '' },
+    logger,
+    store: new InMemorySubscriptionStore(),
+    purchaseStore: new InMemoryPurchaseStore(),
+    ...config,
+  });
+}
+
+const originalNodeEnv = process.env['NODE_ENV'];
+
+beforeEach(() => {
+  process.env['NODE_ENV'] = 'production';
+});
+
+afterEach(() => {
+  if (originalNodeEnv === undefined) delete process.env['NODE_ENV'];
+  else process.env['NODE_ENV'] = originalNodeEnv;
+  vi.restoreAllMocks();
+});
+
+describe('unauthenticated Google webhook', () => {
+  it('warns when a Google app has no pushAudience', () => {
+    const { logger, joined } = recordingLogger();
+    build({ google: { packageName: 'com.example.app', serviceAccountKey: '{}' } }, logger);
+
+    expect(joined()).toContain('accepts unauthenticated requests');
+    expect(joined()).toContain('google.pushAudience');
+  });
+
+  it('names the actual consequence, not just the setting', () => {
+    // The subscription paths re-fetch from Google, so the exposure is
+    // revocation rather than forged entitlement. The warning has to say which.
+    const { logger, joined } = recordingLogger();
+    build({ google: { packageName: 'com.example.app', serviceAccountKey: '{}' } }, logger);
+
+    expect(joined()).toMatch(/cancel a subscription or delete a one-time purchase/);
+  });
+
+  it('stays quiet once pushAudience is configured', () => {
+    const { logger, joined } = recordingLogger();
+    build(
+      {
+        google: {
+          packageName: 'com.example.app',
+          serviceAccountKey: '{}',
+          pushAudience: 'https://api.example.com/onesub/webhook/google',
+        },
+      },
+      logger,
+    );
+
+    expect(joined()).not.toContain('accepts unauthenticated requests');
+  });
+
+  it('is satisfied when any app in a multi-app config sets pushAudience', () => {
+    const { logger, joined } = recordingLogger();
+    build(
+      {
+        apps: [
+          {
+            id: 'a',
+            google: {
+              packageName: 'com.example.a',
+              pushAudience: 'https://api.example.com/onesub/webhook/google',
+            },
+          },
+          { id: 'b', google: { packageName: 'com.example.b' } },
+        ],
+      },
+      logger,
+    );
+
+    // One shared push endpoint across apps is the documented topology, so this
+    // must not nag when it is set on the app that actually receives the push.
+    expect(joined()).not.toContain('accepts unauthenticated requests');
+  });
+
+  it('does not warn about authentication when Google is not configured at all', () => {
+    // Nothing to authenticate against; the open-mode warning covers the fact
+    // that the route is mounted regardless.
+    const { logger, joined } = recordingLogger();
+    build({ apple: { bundleId: 'com.example.app' } }, logger);
+
+    expect(joined()).not.toContain('accepts unauthenticated requests');
+  });
+});
+
+describe('open mode (no packageName declared)', () => {
+  it('warns for an Apple-only deployment, which still mounts the route', () => {
+    const { logger, joined } = recordingLogger();
+    build({ apple: { bundleId: 'com.example.app' } }, logger);
+
+    expect(joined()).toContain('open mode');
+    expect(joined()).toContain('ANY package');
+  });
+
+  it('warns when google is configured without a packageName', () => {
+    const { logger, joined } = recordingLogger();
+    build({ google: { serviceAccountKey: '{}' } as OneSubServerConfig['google'] }, logger);
+    expect(joined()).toContain('open mode');
+  });
+
+  it('stays quiet once a packageName is declared', () => {
+    const { logger, joined } = recordingLogger();
+    build(
+      {
+        google: {
+          packageName: 'com.example.app',
+          serviceAccountKey: '{}',
+          pushAudience: 'https://api.example.com/onesub/webhook/google',
+        },
+      },
+      logger,
+    );
+
+    expect(joined()).not.toContain('open mode');
+  });
+});
+
+describe('outside production', () => {
+  it('says nothing, so it cannot drown itself out in dev and tests', () => {
+    // A missing pushAudience is normal locally — no real RTDN arrives — and an
+    // unconditional warning would fire on nearly every test in this repo.
+    delete process.env['NODE_ENV'];
+    const { logger, warns } = recordingLogger();
+    build({ apple: { bundleId: 'com.example.app' } }, logger);
+    expect(warns).toEqual([]);
+
+    process.env['NODE_ENV'] = 'development';
+    const dev = recordingLogger();
+    build({ google: { packageName: 'com.example.app' } }, dev.logger);
+    expect(dev.warns).toEqual([]);
+  });
+});

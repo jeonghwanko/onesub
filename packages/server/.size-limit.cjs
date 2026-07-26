@@ -24,17 +24,24 @@
 //
 // 2026-07-26: 34.17/34.55 KB after the metrics aggregation split and response
 // cache (`metrics-aggregate.ts`, `metrics-cache.ts`). Limit unchanged.
+//
+// 2026-07-26: raised 36 → 38 KB. Measured 35.12/35.47 KB after the
+// product-scoped purchase lookup, the `parseOrSend` consolidation (which cut
+// ~80 lines from the route handlers but adds a shared helper), and the Google
+// webhook startup warning. Cumulative growth this session: 32.78 → 35.47 KB,
+// each step recorded above. Raised because 0.53 KB of headroom means the next
+// unrelated commit fails this gate rather than the change that earned it.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '36 KB',
+    limit: '38 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '36 KB',
+    limit: '38 KB',
     gzip: true,
   },
 ];
