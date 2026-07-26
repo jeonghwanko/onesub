@@ -4,6 +4,50 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.23.x → 0.24.0
+
+### Your log sink now receives one pre-formatted string
+
+`config.logger` previously got printf-style arguments — a message, then whatever
+values the call site passed, including raw `Error` objects. It now receives **exactly
+one string** per log: the message, contextual values as `key=value` pairs, and any
+stack trace as `    | `-prefixed continuation lines.
+
+```text
+before  logger.warn('[onesub/apple] Bundle ID mismatch:', 'com.evil', '!==', 'com.real')
+after   logger.warn('[onesub/apple] bundle id mismatch bundleId=com.evil expected=com.real')
+```
+
+**Why.** Values interpolated into a message could not be escaped without also
+escaping the message, and a caller-supplied newline in one of them could end the log
+line and forge the next — `userId` arrives in a request body, and bundle ids and
+purchase tokens are decoded out of submitted receipts and notifications. Passing
+values as a trailing object does not fix it either: `console` escapes strings inside
+objects, but `pino` treats the object as a printf argument, and a JSON sink drops an
+`Error` entirely because its properties are non-enumerable. Rendering in the server
+is the only place the guarantee holds for every sink.
+
+**Impact.** If you pass `console`, `pino`, `winston` or `bunyan`, nothing to do — the
+string arrives as the message. You are affected if you:
+
+- **Inspected arguments beyond the first.** There is only one now.
+- **Relied on receiving the raw `Error`** so your sink could serialise it. The stack
+  is now rendered into the string instead. It is still complete and still readable;
+  it is no longer an object.
+- **Parse onesub log lines.** Contextual values are `key=value` pairs, quoted when
+  they contain anything but `[A-Za-z0-9_.:/@+-]`. Logfmt parsers in Loki, Splunk,
+  Datadog and CloudWatch Insights extract them as fields.
+- **Join multi-line records.** Stack frames are continuation lines beginning with
+  four spaces and `| `. Shippers that already join `^\s` to the previous record need
+  no change.
+
+**Not the end state.** Fields are text inside the message, not typed JSON fields. A
+typed structured sink is a planned follow-up now that the call sites carry
+`(message, fields)`; this release is the step that makes the guarantee hold
+everywhere first.
+
+---
+
 ## `@onesub/server` 0.21.x → 0.22.0
 
 ### `POST /onesub/webhook/google` is mounted only when the config serves Google Play

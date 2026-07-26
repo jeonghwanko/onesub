@@ -1,11 +1,18 @@
 /**
- * The process-wide logger, and specifically that a caller cannot forge log lines.
+ * The process-wide logger: routing, and the shape of what reaches the sink.
  *
- * Much of what this server logs is attacker-influenced — `userId` arrives in the
- * request body, and bundle ids, package names and receipt previews come out of
- * submitted receipts. A newline in any of those would let a caller end the current
- * line and write an entry of their own, and these logs are what support and fraud
- * decisions get read from.
+ * The escaping and rendering details moved to `log-format.test.ts`, which tests them
+ * as properties of a pure function over a hostile matrix rather than one case at a
+ * time. What is left here is what only this module can answer: that each level goes
+ * where it should, and that a sink receives **exactly one string argument**.
+ *
+ * That last one is the load-bearing assertion. It is the contract every documented
+ * sink depends on — `pino` treats a second argument as a printf interpolation
+ * parameter, not as structured fields, so anything "helpfully" passing fields
+ * alongside the message would silently degrade for the sink this package recommends
+ * for production. There is also then no shape for a JSON serialiser to drop: an
+ * `Error` passed as an object would serialise to `{}`, because its own properties
+ * are non-enumerable.
  */
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -53,89 +60,79 @@ describe('routing', () => {
   });
 });
 
-describe('log-line forgery', () => {
-  it('escapes a newline in a user-controlled value', () => {
+describe('the sink always receives exactly one string', () => {
+  it('for a message on its own', () => {
     const { logger, calls } = recorder();
     setLogger(logger);
 
-    // What a malicious userId would try to do.
-    log.warn(`[onesub/status] userId: alice\n[onesub] admin granted premium to mallory`);
+    log.info('[onesub/apple] receipt rejected');
+
+    expect(calls[0]!.args).toEqual(['[onesub/apple] receipt rejected']);
+  });
+
+  it('for a message with fields', () => {
+    // Fields are rendered into that one string rather than passed alongside it.
+    // Passing them alongside works on `console`, whose util.inspect escapes strings
+    // inside objects — but not on `pino`, which would treat the object as a printf
+    // argument. Rendering here is what makes the guarantee hold on every sink.
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.warn('account binding mismatch', { route: 'validate', userId: 'alice' });
+
+    expect(calls[0]!.args).toHaveLength(1);
+    expect(calls[0]!.args[0]).toBe('account binding mismatch route=validate userId=alice');
+  });
+
+  it('for a message with an Error', () => {
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.error('validation failed', { userId: 'alice', err: new Error('boom') });
+
+    expect(calls[0]!.args).toHaveLength(1);
+    const line = calls[0]!.args[0] as string;
+    expect(typeof line).toBe('string');
+    expect(line).toContain('err=Error');
+    expect(line).toContain('err.msg=boom');
+    // The stack survives, as continuation lines rather than a flattened blob.
+    expect(line).toContain('\n    | at ');
+  });
+
+  it('for a legacy varargs call that has not been migrated yet', () => {
+    // Call sites move file by file, so an un-migrated one still has to render
+    // sensibly — that is what makes the migration incremental, not a flag day.
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.warn('[onesub/apple] Bundle ID mismatch:', 'com.evil', '!==', 'com.real');
+
+    expect(calls[0]!.args).toEqual(['[onesub/apple] Bundle ID mismatch: com.evil !== com.real']);
+  });
+});
+
+describe('log-line forgery, end to end', () => {
+  it('a newline in a logged value cannot start a new line', () => {
+    // The matrix version of this lives in log-format.test.ts. This one proves the
+    // facade actually routes through the formatter, which no pure test can show.
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.warn('user lookup', { userId: 'alice\n[onesub] admin granted premium to mallory' });
 
     const line = calls[0]!.args[0] as string;
-    expect(line).not.toContain('\n');
+    expect(line.split('\n')).toHaveLength(1);
     expect(line).toContain('\\n');
-    // The attempt is still legible — scrubbing must not hide that it happened.
+    // The attempt stays legible — a guarantee that hid it would be worse than none.
     expect(line).toContain('admin granted premium to mallory');
   });
 
-  it('escapes carriage returns and unicode line separators', () => {
-    const { logger, calls } = recorder();
-    setLogger(logger);
-
-    log.info('a\rb c d');
-
-    const line = calls[0]!.args[0] as string;
-    expect(line).toBe('a\\rb\\u2028c\\u2029d');
-  });
-
-  it('scrubs every string argument, not only the first', () => {
-    const { logger, calls } = recorder();
-    setLogger(logger);
-
-    log.error('prefix', 'mid\ndle', 'suffix\n');
-
-    expect(calls[0]!.args).toEqual(['prefix', 'mid\\ndle', 'suffix\\n']);
-  });
-
-  it('keeps a real newline distinguishable from a submitted backslash-n', () => {
-    // Escaping `\n` to `\` + `n` without escaping `\` first makes these two
-    // inputs render identically, and an operator reading the log then cannot
-    // tell an escaped terminator from two characters the caller typed — which
-    // is the forensic value the escaping exists to protect.
-    const { logger, calls } = recorder();
-    setLogger(logger);
-
-    log.warn('userId: alice\nFORGED');
-    log.warn('userId: alice\\nFORGED');
-
-    const [fromRealNewline, fromLiteral] = calls.map((c) => c.args[0] as string);
-    expect(fromRealNewline).toBe('userId: alice\\nFORGED');
-    expect(fromLiteral).toBe('userId: alice\\\\nFORGED');
-    expect(fromRealNewline).not.toBe(fromLiteral);
-  });
-
-  it('escapes a backslash before anything that produces one', () => {
-    const { logger, calls } = recorder();
-    setLogger(logger);
-
-    log.info('path C:\\tmp\\r');
-
-    // Neither the `\t` nor the `\r` here is a control character — they are
-    // literal pairs, and must not be mistaken for escaped ones.
-    expect(calls[0]!.args[0]).toBe('path C:\\\\tmp\\\\r');
-  });
-
-  it('leaves ordinary text untouched, including tabs', () => {
+  it('leaves ordinary text alone, including tabs', () => {
     const { logger, calls } = recorder();
     setLogger(logger);
 
     log.info('[onesub/apple] bundle\tid ok — 100% fine');
 
     expect(calls[0]!.args[0]).toBe('[onesub/apple] bundle\tid ok — 100% fine');
-  });
-
-  it('passes non-strings through unchanged', () => {
-    // Structured loggers serialise objects and Errors themselves; rewriting them
-    // here would corrupt what the operator asked to see.
-    const { logger, calls } = recorder();
-    setLogger(logger);
-    const err = new Error('boom');
-    const detail = { userId: 'alice\nnot-scrubbed-here', count: 2 };
-
-    log.error('failed:', err, detail, 42, null, undefined);
-
-    expect(calls[0]!.args[1]).toBe(err);
-    expect(calls[0]!.args[2]).toBe(detail);
-    expect(calls[0]!.args.slice(3)).toEqual([42, null, undefined]);
   });
 });

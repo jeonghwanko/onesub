@@ -25,6 +25,12 @@
 // 2026-07-26: 34.17/34.55 KB after the metrics aggregation split and response
 // cache (`metrics-aggregate.ts`, `metrics-cache.ts`). Limit unchanged.
 //
+// 2026-07-27: raised 38 → 40 KB for `log-format.ts`, which renders a log call into
+// one escaped string so the anti-forgery guarantee holds on every sink rather than
+// only on `console`. Measured 37.45/37.78 KB — the formatter itself is +0.98 KB.
+// Raised rather than left at 0.22 KB of headroom, with the call-site migration
+// (104 sites, two further PRs) still to land and expected to move this again.
+//
 // 2026-07-26: 36.35/36.69 KB after the metrics SQL aggregation pushdown
 // (`aggregateViaSql` plus the optional store methods). Limit unchanged.
 //
@@ -38,13 +44,13 @@ module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '38 KB',
+    limit: '40 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '38 KB',
+    limit: '40 KB',
     gzip: true,
   },
 ];

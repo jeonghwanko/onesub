@@ -59,7 +59,7 @@ verify contents against the source before quoting them.
 | SQL schema shipped to users | `packages/server/sql/schema.sql` (parity-tested against `stores/schema.ts`) |
 | OpenAPI spec | `packages/server/src/openapi.ts` (parity-tested against mounted routers) |
 | Webhook durability | `packages/server/src/webhook-queue.ts`, `webhook-events.ts` |
-| Outbound HTTP, caching, logging, tracing | `packages/server/src/http.ts`, `cache.ts`, `logger.ts`, `tracing.ts` |
+| Outbound HTTP, caching, logging, tracing | `packages/server/src/http.ts`, `cache.ts`, `logger.ts`, `log-format.ts`, `tracing.ts` |
 | Multi-app credential resolution | `packages/server/src/apps.ts` |
 | SDK provider (listeners, drain gate, purchase/restore entry points) | `packages/sdk/src/OneSubProvider.tsx` |
 | SDK pure purchase-flow logic (in-flight map, native error mapping, type resolution) | `packages/sdk/src/purchaseFlow.ts` |
