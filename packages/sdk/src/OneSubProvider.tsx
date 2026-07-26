@@ -194,6 +194,16 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   // without needing to be in their dependency arrays.
   const accountTokenRef = useRef(accountToken);
   accountTokenRef.current = accountToken;
+  // Same rationale as accountTokenRef, applied to the whole config object.
+  // Hosts commonly pass an inline literal (`config={{ ... }}`), which is a new
+  // object every render — so depending on `config` in a useCallback recreated
+  // every purchase/restore callback, and through them the context value, making
+  // every useOneSub() consumer re-render on any parent render. Reading the
+  // config through a ref keeps those callbacks stable AND always current: they
+  // are imperative actions that need the latest values when invoked, not a new
+  // identity when the values change.
+  const configRef = useRef(config);
+  configRef.current = config;
   const inFlightRef = useRef<Map<string, InFlightEntry>>(new Map());
   // Recreate only when the relevant config fields change — referential
   // stability keeps re-mount effects from firing on every parent render.
@@ -304,7 +314,12 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     async function handlePurchaseEvent(purchase: any): Promise<void> {
       const platform = getCurrentPlatform();
       await handlePurchaseEventPure(purchase, {
-        config,
+        // Via the ref, not the captured prop: this effect only re-runs on
+        // serverUrl/userId, so a host that changes another field (e.g. adds a
+        // `consumableProductIds` entry) would otherwise keep feeding the
+        // listener the config from mount time — and orphan-replay type
+        // resolution reads exactly that list.
+        config: configRef.current,
         userId,
         platform,
         inFlight: inFlightRef.current,
@@ -458,7 +473,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     if (mockMode) {
       const mockSubscription = {
         userId,
-        productId: getProductId(config, 'ios'),
+        productId: getProductId(configRef.current, 'ios'),
       } as SubscriptionInfo;
       setIsActive(true);
       setSubscription(mockSubscription);
@@ -479,7 +494,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
 
     try {
       const platform = getCurrentPlatform();
-      const productId = getProductId(config, platform);
+      const productId = getProductId(configRef.current, platform);
       logger.trace('subscribe() called', { productId, drainReady: drainCompleteRef.current });
 
       // Wait until the mount drain window closes. During drain StoreKit may
@@ -555,7 +570,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       // the busy lock only after finishTransaction settles.
       if (!cleanupHandedOff) releaseIapOperation();
     }
-  }, [config, userId, mockMode, releaseIapOperation]);
+  }, [userId, mockMode, releaseIapOperation, logger]);
 
   // -------------------------------------------------------------------------
   // restore() — query the store's existing purchases and re-validate with server.
@@ -581,11 +596,12 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       const platform = getCurrentPlatform();
       const purchases = await RNIap.getAvailablePurchases();
 
-      const productId = getProductId(config, platform);
+      const cfg = configRef.current;
+      const productId = getProductId(cfg, platform);
       const match = purchases.find((p: { productId: string }) => p.productId === productId);
 
       if (!match) {
-        const status = await checkStatus(config.serverUrl, userId);
+        const status = await checkStatus(cfg.serverUrl, userId);
         setIsActive(status.active);
         setSubscription(status.subscription);
         return;
@@ -598,26 +614,26 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         throw new OneSubError(ONESUB_ERROR_CODE.NO_RECEIPT_DATA, '[onesub] Matched purchase has no receipt data.');
       }
 
-      const result = await validateReceipt(config.serverUrl, {
+      const result = await validateReceipt(cfg.serverUrl, {
         platform: platform === 'ios' ? 'apple' : 'google',
         receipt: receiptToken,
         userId,
         productId,
-        ...(config.appId ? { appId: config.appId } : {}),
+        ...(cfg.appId ? { appId: cfg.appId } : {}),
       });
 
       if (result.valid && result.subscription) {
         setIsActive(true);
         setSubscription(result.subscription);
       } else {
-        const status = await checkStatus(config.serverUrl, userId);
+        const status = await checkStatus(cfg.serverUrl, userId);
         setIsActive(status.active);
         setSubscription(status.subscription);
       }
     } finally {
       releaseIapOperation();
     }
-  }, [config, userId, mockMode, releaseIapOperation]);
+  }, [userId, mockMode, releaseIapOperation]);
 
   // -------------------------------------------------------------------------
   // purchaseProduct() — consumable or non-consumable one-time purchase
@@ -698,7 +714,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         releaseIapOperation();
       }
     },
-    [config, userId, mockMode, releaseIapOperation],
+    [userId, mockMode, releaseIapOperation, logger],
   );
 
   // -------------------------------------------------------------------------
@@ -742,13 +758,14 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         const purchaseType: PurchaseType =
           type === 'consumable' ? PURCHASE_TYPE.CONSUMABLE : PURCHASE_TYPE.NON_CONSUMABLE;
 
-        const validationResult = await validatePurchase(config.serverUrl, {
+        const cfg = configRef.current;
+        const validationResult = await validatePurchase(cfg.serverUrl, {
           platform: platform === 'ios' ? 'apple' : 'google',
           receipt,
           userId,
           productId,
           type: purchaseType,
-          ...(config.appId ? { appId: config.appId } : {}),
+          ...(cfg.appId ? { appId: cfg.appId } : {}),
         });
 
         if (validationResult.valid && validationResult.purchase) {
@@ -781,7 +798,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         releaseIapOperation();
       }
     },
-    [config, userId, mockMode, releaseIapOperation],
+    [userId, mockMode, releaseIapOperation],
   );
 
   // Stable refresh function exposed via context. Re-fetches the entitlements
@@ -859,20 +876,40 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     [restoreProduct, refreshEntitlements],
   );
 
-  const value: OneSubContextValue = {
-    isActive,
-    isLoading,
-    isBusy,
-    subscription,
-    subscribe: subscribeWithRefresh,
-    subscribeWithResult: subscribeWithResultAndRefresh,
-    restore: restoreWithRefresh,
-    purchaseProduct: purchaseProductWithRefresh,
-    restoreProduct: restoreProductWithRefresh,
-    entitlements,
-    hasEntitlement,
-    refreshEntitlements,
-  };
+  // Memoized so the context identity changes only when something in it
+  // actually changed. Without this, every Provider render handed consumers a
+  // new object and re-rendered all of them — and the Provider wraps the app
+  // root, so that is every render of the tree above it.
+  const value: OneSubContextValue = useMemo(
+    () => ({
+      isActive,
+      isLoading,
+      isBusy,
+      subscription,
+      subscribe: subscribeWithRefresh,
+      subscribeWithResult: subscribeWithResultAndRefresh,
+      restore: restoreWithRefresh,
+      purchaseProduct: purchaseProductWithRefresh,
+      restoreProduct: restoreProductWithRefresh,
+      entitlements,
+      hasEntitlement,
+      refreshEntitlements,
+    }),
+    [
+      isActive,
+      isLoading,
+      isBusy,
+      subscription,
+      subscribeWithRefresh,
+      subscribeWithResultAndRefresh,
+      restoreWithRefresh,
+      purchaseProductWithRefresh,
+      restoreProductWithRefresh,
+      entitlements,
+      hasEntitlement,
+      refreshEntitlements,
+    ],
+  );
 
   return <OneSubContext.Provider value={value}>{children}</OneSubContext.Provider>;
 }
