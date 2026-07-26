@@ -33,11 +33,16 @@ export function setLogger(logger: OneSubLogger | undefined): void {
  * left alone.
  */
 function escapeLineBreaks(value: string): string {
-  return value.replace(/[\r\n\u2028\u2029]/g, (ch) => {
-    if (ch === '\n') return '\\n';
-    if (ch === '\r') return '\\r';
-    return `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`;
-  });
+  // One literal replacement per character rather than a single regex with a
+  // callback. Same output, but a taint analyser can see that the line terminator
+  // is gone -- CodeQL's js/log-injection sanitiser recognition could not prove it
+  // through the callback form, and an unrecognised sanitiser is indistinguishable
+  // from an absent one to anyone reading the alert list.
+  return value
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 /**
