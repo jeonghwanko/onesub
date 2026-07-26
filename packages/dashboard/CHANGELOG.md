@@ -1,5 +1,12 @@
 # @onesub/dashboard
 
+## 0.1.15
+
+### Patch Changes
+
+- Updated dependencies [3cff4eb]
+  - @onesub/shared@0.15.1
+
 ## 0.1.14
 
 ### Patch Changes
