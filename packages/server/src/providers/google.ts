@@ -350,7 +350,7 @@ export async function acknowledgeGoogleSubscription(
   try {
     accessToken = await getCachedAccessToken(config.serviceAccountKey);
   } catch (err) {
-    log.warn('[onesub/google] Could not get access token for subscription ack:', err);
+    log.warn('[onesub/google] Could not get access token for subscription ack', { productId, err });
     return;
   }
 
@@ -368,10 +368,14 @@ export async function acknowledgeGoogleSubscription(
 
     if (!resp.ok) {
       const body = await resp.text();
-      log.warn(`[onesub/google] Subscription acknowledge API error ${resp.status}: ${body} — auto-refund risk`);
+      log.warn('[onesub/google] Subscription acknowledge API error — auto-refund risk', {
+        httpStatus: resp.status,
+        productId,
+        responseBody: body,
+      });
     }
   } catch (err) {
-    log.warn('[onesub/google] Subscription acknowledge network error — auto-refund risk:', err);
+    log.warn('[onesub/google] Subscription acknowledge network error — auto-refund risk', { productId, err });
   }
 }
 
@@ -394,7 +398,7 @@ export async function acknowledgeGoogleProduct(
   try {
     accessToken = await getCachedAccessToken(config.serviceAccountKey);
   } catch (err) {
-    log.warn('[onesub/google] Could not get access token for product ack:', err);
+    log.warn('[onesub/google] Could not get access token for product ack', { productId, err });
     return;
   }
 
@@ -412,10 +416,14 @@ export async function acknowledgeGoogleProduct(
 
     if (!resp.ok) {
       const body = await resp.text();
-      log.warn(`[onesub/google] Product acknowledge API error ${resp.status}: ${body} — auto-refund risk`);
+      log.warn('[onesub/google] Product acknowledge API error — auto-refund risk', {
+        httpStatus: resp.status,
+        productId,
+        responseBody: body,
+      });
     }
   } catch (err) {
-    log.warn('[onesub/google] Product acknowledge network error — auto-refund risk:', err);
+    log.warn('[onesub/google] Product acknowledge network error — auto-refund risk', { productId, err });
   }
 }
 
@@ -439,7 +447,7 @@ export async function consumeGoogleProductReceipt(
   try {
     accessToken = await getCachedAccessToken(config.serviceAccountKey);
   } catch (err) {
-    log.warn('[onesub/google] Could not get access token for consume:', err);
+    log.warn('[onesub/google] Could not get access token for consume', { productId, err });
     return;
   }
 
@@ -456,10 +464,14 @@ export async function consumeGoogleProductReceipt(
 
     if (!resp.ok) {
       const body = await resp.text();
-      log.warn(`[onesub/google] Consume API error ${resp.status}: ${body} — auto-refund risk`);
+      log.warn('[onesub/google] Consume API error — auto-refund risk', {
+        httpStatus: resp.status,
+        productId,
+        responseBody: body,
+      });
     }
   } catch (err) {
-    log.warn('[onesub/google] Consume network error — auto-refund risk:', err);
+    log.warn('[onesub/google] Consume network error — auto-refund risk', { productId, err });
   }
 }
 
@@ -511,11 +523,11 @@ export async function validateGoogleReceipt(
 ): Promise<SubscriptionInfo | null> {
   if (config.mockMode) return mockValidateGoogleSubscription(receipt, productId);
   if (!config.serviceAccountKey) {
-    log.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API');
+    log.warn('[onesub/google] No serviceAccountKey provided — cannot call Play API', { productId });
     return null;
   }
   if (!config.packageName) {
-    log.warn('[onesub/google] No packageName provided — cannot call Play API');
+    log.warn('[onesub/google] No packageName provided — cannot call Play API', { productId });
     return null;
   }
 
@@ -524,16 +536,20 @@ export async function validateGoogleReceipt(
     const token = await getCachedAccessToken(config.serviceAccountKey);
     purchase = await fetchSubscriptionPurchaseV2(config.packageName, receipt, token);
   } catch (err) {
-    log.error('[onesub/google] Receipt validation failed:', err);
+    log.error('[onesub/google] Receipt validation failed', {
+      productId,
+      packageName: config.packageName,
+      err,
+    });
     return null;
   }
 
   const status = deriveStatusV2(purchase.subscriptionState);
   if (!status) {
-    log.warn(
-      '[onesub/google] Unrecognised or pending subscriptionState — rejecting:',
-      purchase.subscriptionState,
-    );
+    log.warn('[onesub/google] Unrecognised or pending subscriptionState — rejecting', {
+      productId,
+      subscriptionState: purchase.subscriptionState,
+    });
     return null;
   }
 
@@ -542,12 +558,10 @@ export async function validateGoogleReceipt(
   // the caller for the productId they explicitly asked about.
   const lineItem = purchase.lineItems?.find((item) => item.productId === productId);
   if (!lineItem) {
-    log.warn(
-      '[onesub/google] productId not found in subscription lineItems:',
+    log.warn('[onesub/google] productId not found in subscription lineItems', {
       productId,
-      'available:',
-      purchase.lineItems?.map((i) => i.productId).join(', ') ?? '(none)',
-    );
+      availableProductIds: purchase.lineItems?.map((i) => i.productId) ?? [],
+    });
     return null;
   }
 
@@ -621,11 +635,11 @@ export async function validateGoogleProductReceipt(
 ): Promise<GoogleProductResult | null> {
   if (config.mockMode) return mockValidateGoogleProduct(purchaseToken, productId);
   if (!config.serviceAccountKey) {
-    log.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt');
+    log.warn('[onesub/google] No serviceAccountKey — cannot validate product receipt', { productId });
     return null;
   }
   if (!config.packageName) {
-    log.warn('[onesub/google] No packageName — cannot validate product receipt');
+    log.warn('[onesub/google] No packageName — cannot validate product receipt', { productId });
     return null;
   }
 
@@ -634,20 +648,32 @@ export async function validateGoogleProductReceipt(
     const token = await getCachedAccessToken(config.serviceAccountKey);
     purchase = await fetchProductPurchase(config.packageName, productId, purchaseToken, token);
   } catch (err) {
-    log.error('[onesub/google] Product receipt validation failed:', err);
+    log.error('[onesub/google] Product receipt validation failed', {
+      productId,
+      packageName: config.packageName,
+      type,
+      err,
+    });
     return null;
   }
 
   // purchaseState 0 = completed (1 = canceled, 2 = pending)
   if (purchase.purchaseState !== 0) {
-    log.warn('[onesub/google] Purchase not completed, state:', purchase.purchaseState);
+    log.warn('[onesub/google] Purchase not completed', {
+      productId,
+      purchaseState: purchase.purchaseState,
+      orderId: purchase.orderId,
+    });
     return null;
   }
 
   // For consumables: consumptionState 1 means already consumed by a previous request.
   // This is the primary replay-attack signal for consumables on Android.
   if (type === 'consumable' && purchase.consumptionState === 1) {
-    log.warn('[onesub/google] Consumable already consumed — possible replay attack');
+    log.warn('[onesub/google] Consumable already consumed — possible replay attack', {
+      productId,
+      orderId: purchase.orderId,
+    });
     return null;
   }
 
@@ -657,13 +683,18 @@ export async function validateGoogleProductReceipt(
     const purchaseTime = parseInt(purchase.purchaseTimeMillis, 10);
     const maxAgeMs = (config.productReceiptMaxAgeHours ?? 72) * 60 * 60 * 1000;
     if (Date.now() - purchaseTime > maxAgeMs) {
-      log.warn(`[onesub/google] Product receipt too old (>${config.productReceiptMaxAgeHours ?? 72}h)`);
+      log.warn('[onesub/google] Product receipt too old', {
+        productId,
+        orderId: purchase.orderId,
+        maxAgeHours: config.productReceiptMaxAgeHours ?? 72,
+        purchaseDate: new Date(purchaseTime).toISOString(),
+      });
       return null;
     }
   }
 
   if (!purchase.orderId) {
-    log.warn('[onesub/google] No orderId in product purchase');
+    log.warn('[onesub/google] No orderId in product purchase', { productId });
     return null;
   }
 
@@ -781,7 +812,11 @@ export function decodeGoogleOneTimeProductNotification(
   if (!notification.oneTimeProductNotification) return null;
   const { notificationType, purchaseToken, sku } = notification.oneTimeProductNotification;
   if (notificationType !== 1 && notificationType !== 2) {
-    log.warn('[onesub/google] Unknown oneTimeProductNotification type:', notificationType);
+    log.warn('[onesub/google] Unknown oneTimeProductNotification type', {
+      notificationType,
+      productId: sku,
+      packageName: notification.packageName,
+    });
     return null;
   }
   return { notificationType, purchaseToken, sku, packageName: notification.packageName };

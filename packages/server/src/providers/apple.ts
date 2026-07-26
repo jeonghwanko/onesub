@@ -279,11 +279,12 @@ export async function validateAppleReceipt(
   } catch (err) {
     const preview = receipt.slice(0, 60);
     const parts = receipt.split('.').length;
-    log.warn(
-      '[onesub/apple] Failed to decode receipt as JWS:',
-      (err as Error)?.message ?? err,
-      `| preview: "${preview}..." (len=${receipt.length}, parts=${parts})`,
-    );
+    log.warn('[onesub/apple] Failed to decode receipt as JWS', {
+      receiptPreview: preview,
+      receiptLength: receipt.length,
+      jwsParts: parts,
+      err,
+    });
     return null;
   }
 
@@ -293,7 +294,7 @@ export async function validateAppleReceipt(
 
   // Validate bundle ID — missing or mismatched both rejected
   if (!tx.bundleId || tx.bundleId !== config.bundleId) {
-    log.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    log.warn('[onesub/apple] Bundle ID mismatch', { bundleId: tx.bundleId, expected: config.bundleId });
     return null;
   }
 
@@ -305,7 +306,7 @@ export async function validateAppleReceipt(
     tx.environment !== 'Production' &&
     process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
   ) {
-    log.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
+    log.warn('[onesub/apple] Sandbox receipt rejected in production', { environment: tx.environment });
     return null;
   }
 
@@ -379,23 +380,25 @@ export async function validateAppleConsumableReceipt(
     const preview = signedTransaction.slice(0, 60);
     const parts = signedTransaction.split('.').length;
     const looksLikeJws = parts === 3;
-    log.warn(
-      '[onesub/apple] Failed to decode consumable JWS:',
-      (err as Error)?.message ?? err,
-      `| receipt preview: "${preview}..." (len=${signedTransaction.length}, parts=${parts}, looksLikeJws=${looksLikeJws})`,
-    );
+    log.warn('[onesub/apple] Failed to decode consumable JWS', {
+      receiptPreview: preview,
+      receiptLength: signedTransaction.length,
+      jwsParts: parts,
+      looksLikeJws,
+      err,
+    });
     return null;
   }
 
   // bundleId must be present and match
   if (!tx.bundleId || tx.bundleId !== config.bundleId) {
-    log.warn('[onesub/apple] Bundle ID mismatch:', tx.bundleId, '!==', config.bundleId);
+    log.warn('[onesub/apple] Bundle ID mismatch', { bundleId: tx.bundleId, expected: config.bundleId });
     return null;
   }
 
   // Must be a one-time purchase type (not a subscription)
   if (tx.type !== 'Consumable' && tx.type !== 'Non-Consumable') {
-    log.warn('[onesub/apple] Invalid purchase type for product validation:', tx.type);
+    log.warn('[onesub/apple] Invalid purchase type for product validation', { type: tx.type });
     return null;
   }
 
@@ -407,7 +410,7 @@ export async function validateAppleConsumableReceipt(
     tx.environment !== 'Production' &&
     process.env['ONESUB_ALLOW_SANDBOX'] !== 'true'
   ) {
-    log.warn('[onesub/apple] Sandbox receipt rejected in production:', tx.environment);
+    log.warn('[onesub/apple] Sandbox receipt rejected in production', { environment: tx.environment });
     return null;
   }
 
@@ -417,13 +420,16 @@ export async function validateAppleConsumableReceipt(
   }
 
   if (expectedProductId && tx.productId !== expectedProductId) {
-    log.warn('[onesub/apple] Product ID mismatch:', tx.productId, '!==', expectedProductId);
+    log.warn('[onesub/apple] Product ID mismatch', { productId: tx.productId, expected: expectedProductId });
     return null;
   }
 
   // Reject refunded purchases
   if (tx.revocationDate) {
-    log.warn('[onesub/apple] Purchase was revoked/refunded');
+    log.warn('[onesub/apple] Purchase was revoked/refunded', {
+      productId: tx.productId,
+      transactionId: tx.transactionId,
+    });
     return null;
   }
 
@@ -432,7 +438,11 @@ export async function validateAppleConsumableReceipt(
   // receipts on purpose (migrations from another IAP backend, e2e tests).
   const maxAgeMs = (config.productReceiptMaxAgeHours ?? 72) * 60 * 60 * 1000;
   if (tx.purchaseDate && Date.now() - tx.purchaseDate > maxAgeMs) {
-    log.warn(`[onesub/apple] Consumable receipt too old (>${config.productReceiptMaxAgeHours ?? 72}h)`);
+    log.warn('[onesub/apple] Consumable receipt too old', {
+      productId: tx.productId,
+      maxAgeHours: config.productReceiptMaxAgeHours ?? 72,
+      purchaseDate: new Date(tx.purchaseDate).toISOString(),
+    });
     return null;
   }
 
@@ -441,7 +451,7 @@ export async function validateAppleConsumableReceipt(
   // as the deduplication key for consumables.
   const transactionId = tx.transactionId ?? tx.originalTransactionId;
   if (!transactionId) {
-    log.warn('[onesub/apple] No transactionId in consumable transaction');
+    log.warn('[onesub/apple] No transactionId in consumable transaction', { productId: tx.productId });
     return null;
   }
 
@@ -637,7 +647,7 @@ export async function sendAppleConsumptionResponse(
   try {
     jwt = await makeAppleApiJwt(config);
   } catch (err) {
-    log.warn('[onesub/apple] Cannot send consumption response — JWT mint failed:', err);
+    log.warn('[onesub/apple] Cannot send consumption response — JWT mint failed', { transactionId, err });
     return;
   }
 
@@ -657,10 +667,14 @@ export async function sendAppleConsumptionResponse(
     });
     if (!resp.ok) {
       const text = await resp.text();
-      log.warn(`[onesub/apple] Consumption response API error ${resp.status}: ${text}`);
+      log.warn('[onesub/apple] Consumption response API error', {
+        httpStatus: resp.status,
+        transactionId,
+        responseBody: text,
+      });
     }
   } catch (err) {
-    log.warn('[onesub/apple] Consumption response network error:', err);
+    log.warn('[onesub/apple] Consumption response network error', { transactionId, err });
   }
 }
 
@@ -737,7 +751,10 @@ export async function fetchAppleSubscriptionStatus(
   try {
     jwt = await makeAppleApiJwt(config);
   } catch (err) {
-    log.warn('[onesub/apple] Cannot fetch subscription status — JWT mint failed:', err);
+    log.warn('[onesub/apple] Cannot fetch subscription status — JWT mint failed', {
+      originalTransactionId,
+      err,
+    });
     return null;
   }
 
@@ -753,12 +770,16 @@ export async function fetchAppleSubscriptionStatus(
     });
     if (!resp.ok) {
       const text = await resp.text();
-      log.warn(`[onesub/apple] Status API error ${resp.status}: ${text}`);
+      log.warn('[onesub/apple] Status API error', {
+        httpStatus: resp.status,
+        originalTransactionId,
+        responseBody: text,
+      });
       return null;
     }
     body = (await resp.json()) as AppleSubscriptionStatusResponse;
   } catch (err) {
-    log.warn('[onesub/apple] Status API network error:', err);
+    log.warn('[onesub/apple] Status API network error', { originalTransactionId, err });
     return null;
   }
 
@@ -769,7 +790,7 @@ export async function fetchAppleSubscriptionStatus(
     .find((t) => t.originalTransactionId === originalTransactionId);
 
   if (!entry || entry.status == null || !entry.signedTransactionInfo) {
-    log.warn('[onesub/apple] Status API returned no matching transaction for', originalTransactionId);
+    log.warn('[onesub/apple] Status API returned no matching transaction', { originalTransactionId });
     return null;
   }
 
@@ -777,7 +798,10 @@ export async function fetchAppleSubscriptionStatus(
   try {
     tx = await decodeJws<AppleTransactionPayload>(entry.signedTransactionInfo, config.skipJwsVerification);
   } catch (err) {
-    log.warn('[onesub/apple] Failed to decode signedTransactionInfo from Status API:', err);
+    log.warn('[onesub/apple] Failed to decode signedTransactionInfo from Status API', {
+      originalTransactionId,
+      err,
+    });
     return null;
   }
 
@@ -791,7 +815,10 @@ export async function fetchAppleSubscriptionStatus(
   }
 
   if (!tx.productId || !tx.expiresDate) {
-    log.warn('[onesub/apple] Status API transaction missing productId or expiresDate');
+    log.warn('[onesub/apple] Status API transaction missing productId or expiresDate', {
+      originalTransactionId,
+      productId: tx.productId,
+    });
     return null;
   }
 
@@ -866,7 +893,10 @@ export async function fetchAppleTransactionHistory(
   try {
     jwt = await makeAppleApiJwt(config);
   } catch (err) {
-    log.warn('[onesub/apple] Cannot fetch transaction history — JWT mint failed:', err);
+    log.warn('[onesub/apple] Cannot fetch transaction history — JWT mint failed', {
+      originalTransactionId,
+      err,
+    });
     return null;
   }
 
@@ -889,12 +919,16 @@ export async function fetchAppleTransactionHistory(
       });
       if (!resp.ok) {
         const text = await resp.text();
-        log.warn(`[onesub/apple] Transaction History API error ${resp.status}: ${text}`);
+        log.warn('[onesub/apple] Transaction History API error', {
+          httpStatus: resp.status,
+          originalTransactionId,
+          responseBody: text,
+        });
         return null;
       }
       page = (await resp.json()) as AppleTransactionHistoryResponse;
     } catch (err) {
-      log.warn('[onesub/apple] Transaction History API network error:', err);
+      log.warn('[onesub/apple] Transaction History API network error', { originalTransactionId, err });
       return null;
     }
 
@@ -925,13 +959,15 @@ export async function fetchAppleTransactionHistory(
     if (!page.revision || page.revision === revision) {
       log.warn(
         '[onesub/apple] Transaction History API returned hasMore without a new revision cursor — stopping pagination (partial history returned)',
+        { originalTransactionId, pageCount },
       );
       break;
     }
     if (pageCount >= MAX_HISTORY_PAGES) {
-      log.warn(
-        `[onesub/apple] Transaction History pagination hit the ${MAX_HISTORY_PAGES}-page cap — stopping (partial history returned)`,
-      );
+      log.warn('[onesub/apple] Transaction History pagination hit the page cap — stopping (partial history returned)', {
+        originalTransactionId,
+        maxPages: MAX_HISTORY_PAGES,
+      });
       break;
     }
     revision = page.revision;
