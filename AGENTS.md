@@ -304,7 +304,7 @@ The remaining workflows never gate a PR, so do not wait on them or try to trigge
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `publish.yml` (`Release`) | push to `master` | Runs Changesets: opens/updates the "Version Packages" PR, publishes on merge |
-| `docker-dashboard.yml` | push to `master` touching `packages/dashboard/**` or `packages/shared/src/**` (also manual) | Builds and publishes the dashboard Docker image |
+| `docker-dashboard.yml` | push to `master` touching `packages/dashboard/**`, `packages/shared/**`, the root `package.json` / `package-lock.json`, or `tsconfig.base.json` (also manual) | Builds and publishes the dashboard Docker image |
 | `e2e.yml` | manual dispatch only | Real Apple/Google sandbox round-trips; needs shared secrets, so it cannot run on a PR |
 | `bench.yml` | weekly schedule (also manual) | k6 status/webhook load tests from `bench/` |
 
@@ -337,8 +337,10 @@ If a change needs real sandbox coverage, say so in the PR description and ask a 
    Do not hand-edit package versions or generated per-package changelogs.
 8. Breaking changes also require `docs/MIGRATION.md`. Docs, tests, CI, `examples/*`, and
    `packages/dashboard` changes need no changeset — the dashboard is private and ships as a Docker
-   image published by `docker-dashboard.yml`, which also republishes on any `packages/shared/src`
-   change.
+   image published by `docker-dashboard.yml`, which also republishes on any `packages/shared`,
+   root-manifest, or `tsconfig.base.json` change. The image builds with `npm ci` against the root
+   lockfile, so a dependency bump touching nothing under `packages/` still changes what ships; keep
+   that workflow's `paths` filter in sync with what `packages/dashboard/Dockerfile` copies.
 
 ### Before You Call a Task Done
 
