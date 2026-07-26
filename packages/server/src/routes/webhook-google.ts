@@ -126,23 +126,53 @@ export function servesGoogle(config: OneSubServerConfig): boolean {
  * `orderId`. So the exposure is entitlement *revocation* for a caller who knows
  * or guesses one of those ids — not free entitlement.
  */
+/**
+ * True when at least one app declares a `pushAudience`, so an incoming RTDN can be
+ * cryptographically attributed to Google.
+ *
+ * Shared by the boot warning and the handler on purpose. When those two answered the
+ * question separately they could disagree — the warning saying the endpoint is open
+ * while the handler rejects, or worse the reverse.
+ */
+function googleWebhookIsAuthenticated(config: OneSubServerConfig): boolean {
+  return getAppRegistry(config).apps.some((a) => a.google?.pushAudience);
+}
+
+/** True when an app opts into running the webhook unauthenticated in production. */
+function googleWebhookAllowsUnauthenticated(config: OneSubServerConfig): boolean {
+  return getAppRegistry(config).apps.some((a) => a.google?.allowUnauthenticatedWebhook);
+}
+
 export function warnIfGoogleWebhookOpen(config: OneSubServerConfig): void {
   if (process.env['NODE_ENV'] !== 'production') return;
   // Nothing to warn about when the route is not mounted at all.
   if (!servesGoogle(config)) return;
 
   const apps = getAppRegistry(config).apps;
-  const googleApps = apps.map((a) => a.google).filter((g): g is NonNullable<typeof g> => !!g);
 
-  // Authentication is skipped entirely when no app declares a pushAudience —
-  // see handleGoogleWebhook, which only verifies when it has one to verify.
-  if (!googleApps.some((g) => g.pushAudience)) {
-    log.warn(
-      '[onesub] SECURITY: POST /onesub/webhook/google accepts unauthenticated requests — ' +
-        'no configured app sets google.pushAudience, so the Pub/Sub OIDC token is never verified. ' +
-        'A caller who knows a purchaseToken or orderId can cancel a subscription or delete a ' +
-        'one-time purchase. Set google.pushAudience (and google.pushServiceAccountEmail).',
-    );
+  if (!googleWebhookIsAuthenticated(config)) {
+    if (googleWebhookAllowsUnauthenticated(config)) {
+      // Explicitly opted in. Still worth a line every boot: whoever reads the logs
+      // during an incident should not have to go and check the config to learn that
+      // this endpoint trusts its caller.
+      log.warn(
+        '[onesub] SECURITY: POST /onesub/webhook/google runs unauthenticated by explicit opt-in — ' +
+          'google.allowUnauthenticatedWebhook is set and no app sets google.pushAudience. Anything ' +
+          'that can reach this endpoint can cancel a subscription or delete a one-time purchase, so ' +
+          'the request must already be authenticated in front of this server.',
+      );
+    } else {
+      // Was a silent accept before 0.27.0. It is now a 401, so the warning has to
+      // say the endpoint is refusing traffic — an operator reading "insecure" would
+      // go looking for a security problem instead of a missing config value.
+      log.warn(
+        '[onesub] POST /onesub/webhook/google will reject every request with 401 — no configured ' +
+          'app sets google.pushAudience, so the Pub/Sub OIDC token cannot be verified. Set ' +
+          'google.pushAudience (and google.pushServiceAccountEmail), or set ' +
+          'google.allowUnauthenticatedWebhook when something in front of this server already ' +
+          'authenticates the request.',
+      );
+    }
   }
 
   // Open mode: any packageName is served, so a notification does not even have
@@ -352,7 +382,22 @@ export async function handleGoogleWebhook(
     .apps.map((app) => app.google)
     .filter((g): g is NonNullable<typeof g> => !!g?.pushAudience);
 
-  if (pushIdentities.length > 0) {
+  if (pushIdentities.length === 0) {
+    // No push identity to verify against. Before 0.27.0 this accepted the request,
+    // which made a `purchaseToken` or `orderId` sufficient to revoke an entitlement
+    // — and for a Google subscription the purchase token IS the record's
+    // originalTransactionId, so it is in the database, in RTDN payloads and in logs.
+    // Treating it as a secret was never going to work; refusing unattributable
+    // requests is what actually removes the capability.
+    //
+    // Production-gated, matching the mockMode guard and the sandbox-receipt
+    // rejection: locally and in CI no real RTDN arrives, and requiring credentials
+    // there would break every test and the `onesub dev` server for no security gain.
+    if (process.env['NODE_ENV'] === 'production' && !googleWebhookAllowsUnauthenticated(config)) {
+      sendError(res, 401, ONESUB_ERROR_CODE.UNAUTHORIZED, 'Unauthorized');
+      return;
+    }
+  } else {
     let authenticated = false;
     for (const google of pushIdentities) {
       if (await verifyGooglePushToken(req, google.pushAudience!, google.pushServiceAccountEmail)) {
