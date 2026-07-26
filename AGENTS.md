@@ -53,6 +53,7 @@ verify contents against the source before quoting them.
 | Middleware assembly and public exports | `packages/server/src/index.ts` |
 | Routes | `packages/server/src/routes/` — `validate.ts`, `status.ts`, `purchase.ts`, `admin.ts`, `entitlements.ts`, `metrics.ts`, `apple-offer.ts`, `webhook-apple.ts`, `webhook-google.ts`, `webhook.ts` |
 | Admin-secret comparison | `packages/server/src/routes/secret-compare.ts` |
+| Sandbox-only entitlement overrides (process-local, never persisted) | `packages/server/src/test-overrides.ts` |
 | Providers (Apple, Google, mock) | `packages/server/src/providers/` |
 | Stores | `packages/server/src/store.ts` (in-memory), `packages/server/src/stores/postgres.ts`, `stores/redis.ts`, `stores/schema.ts` (DDL constants) |
 | SQL schema shipped to users | `packages/server/sql/schema.sql` (parity-tested against `stores/schema.ts`) |
