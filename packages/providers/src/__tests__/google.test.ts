@@ -39,6 +39,20 @@ interface MockCall {
   body?: unknown;
 }
 
+/**
+ * Exact host match. `isGoogleTokenEndpoint(u)` would also accept
+ * `https://evil.test/?x=oauth2.googleapis.com`, which is the pattern CodeQL flags
+ * as `js/incomplete-url-substring-sanitization` — worth not teaching here even in
+ * a test double.
+ */
+function isGoogleTokenEndpoint(url: string): boolean {
+  try {
+    return new URL(url).hostname === 'oauth2.googleapis.com';
+  } catch {
+    return false;
+  }
+}
+
 function mockFetch(
   routes: Array<{ match: (url: string, method: string) => boolean; status?: number; body?: unknown }>,
   opts?: { tokens?: string[] },
@@ -48,7 +62,7 @@ function mockFetch(
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
     const method = init?.method ?? 'GET';
-    if (u.includes('oauth2.googleapis.com')) {
+    if (isGoogleTokenEndpoint(u)) {
       const token = opts?.tokens?.[tokenCount] ?? `tok_${tokenCount}`;
       tokenCount += 1;
       calls.push({ url: u, method });
@@ -74,7 +88,7 @@ function mockFetchSequence(
   let i = 0;
   vi.stubGlobal('fetch', vi.fn(async (url: string | URL) => {
     const u = String(url);
-    if (u.includes('oauth2.googleapis.com')) {
+    if (isGoogleTokenEndpoint(u)) {
       const token = JSON.stringify({ access_token: 'tok_seq' });
       return { ok: true, status: 200, headers: new Headers(), text: async () => token, json: async () => JSON.parse(token) } as Response;
     }
@@ -135,7 +149,7 @@ describe('playRequest — 429 retry', () => {
     const assertions: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       const u = String(url);
-      if (u.includes('oauth2.googleapis.com')) {
+      if (isGoogleTokenEndpoint(u)) {
         tokenCalls += 1;
         assertions.push(new URLSearchParams(String(init?.body)).get('assertion') ?? '');
         if (tokenCalls === 1) {
@@ -175,7 +189,7 @@ describe('token cache isolation', () => {
     await listProducts({ packageName: 'com.a', serviceAccountKey: keyA });
     await listProducts({ packageName: 'com.b', serviceAccountKey: keyB });
 
-    const tokenFetches = calls.filter((c) => c.url.includes('oauth2.googleapis.com'));
+    const tokenFetches = calls.filter((c) => isGoogleTokenEndpoint(c.url));
     expect(tokenFetches).toHaveLength(2);
   });
 });
