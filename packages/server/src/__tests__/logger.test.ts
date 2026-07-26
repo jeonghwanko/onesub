@@ -87,6 +87,34 @@ describe('log-line forgery', () => {
     expect(calls[0]!.args).toEqual(['prefix', 'mid\\ndle', 'suffix\\n']);
   });
 
+  it('keeps a real newline distinguishable from a submitted backslash-n', () => {
+    // Escaping `\n` to `\` + `n` without escaping `\` first makes these two
+    // inputs render identically, and an operator reading the log then cannot
+    // tell an escaped terminator from two characters the caller typed — which
+    // is the forensic value the escaping exists to protect.
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.warn('userId: alice\nFORGED');
+    log.warn('userId: alice\\nFORGED');
+
+    const [fromRealNewline, fromLiteral] = calls.map((c) => c.args[0] as string);
+    expect(fromRealNewline).toBe('userId: alice\\nFORGED');
+    expect(fromLiteral).toBe('userId: alice\\\\nFORGED');
+    expect(fromRealNewline).not.toBe(fromLiteral);
+  });
+
+  it('escapes a backslash before anything that produces one', () => {
+    const { logger, calls } = recorder();
+    setLogger(logger);
+
+    log.info('path C:\\tmp\\r');
+
+    // Neither the `\t` nor the `\r` here is a control character — they are
+    // literal pairs, and must not be mistaken for escaped ones.
+    expect(calls[0]!.args[0]).toBe('path C:\\\\tmp\\\\r');
+  });
+
   it('leaves ordinary text untouched, including tabs', () => {
     const { logger, calls } = recorder();
     setLogger(logger);
