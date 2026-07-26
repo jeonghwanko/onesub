@@ -53,6 +53,8 @@
  *   expected type subscriptionState purchaseState maxAgeHours purchaseDate
  *   receiptPreview receiptLength jwsParts looksLikeJws responseBody
  *   availableProductIds maxPages pageCount outcome
+ *   appIds defaultAppId store entitlement entitled fromUserId userIdSource
+ *   notificationUUID messageId linkedPurchaseToken kind deadLetterId
  * FIELD VOCABULARY END
  *
  * `err` is reserved: it always routes through the error renderer.
