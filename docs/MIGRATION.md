@@ -4,6 +4,52 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.24.0 → 0.25.0
+
+### Apple and Google log lines carry `key=value` fields
+
+0.24.0 made every log arrive as one escaped string. This release changes what is
+*in* that string for the Apple and Google providers: the message is now a fixed
+literal and the values that used to be interpolated into it are named fields.
+
+```text
+before  [onesub/apple] Bundle ID mismatch: com.evil !== com.real
+after   [onesub/apple] Bundle ID mismatch bundleId=com.evil expected=com.real
+
+before  [onesub/google] Product receipt too old (>72h)
+after   [onesub/google] Product receipt too old productId=coins_50 orderId=GPA.1234 maxAgeHours=72 purchaseDate=2026-01-02T03:04:05.000Z
+```
+
+**Why.** A value spelled into a sentence cannot be filtered on, so "show me every
+rejection for `productId=coins_50`" was not answerable. It also cannot be redacted,
+which matters because these lines carry receipt content.
+
+**Impact.** Only if you match on log *text*. Alerts and saved searches that pin the
+old wording need updating; the change is mechanical:
+
+- Trailing colons are gone from messages that had a value after them
+  (`Bundle ID mismatch:` → `Bundle ID mismatch`).
+- Values interpolated into the message are now fields. `(>72h)` became
+  `maxAgeHours=72`; `Status API error 503: <body>` became
+  `Status API error httpStatus=503 originalTransactionId=… responseBody="<body>"`.
+- One message was reworded because the number in it became a field:
+  `Transaction History pagination hit the 50-page cap` is now
+  `Transaction History pagination hit the page cap` with `maxPages=50`.
+- Rejections that previously identified nothing now carry `productId` and, where
+  known, `transactionId` / `orderId`.
+
+The `[onesub/apple]` and `[onesub/google]` prefixes are unchanged, so anything
+grepping those still matches. Routes, stores and the webhook handlers are not part
+of this release and still interpolate; they follow in a later one.
+
+**Still not redacted.** Upstream error bodies are logged under `responseBody`, and a
+Google Play error body can echo the request URL, which contains a `purchaseToken` —
+a value that is enough to cancel a subscription. Naming the field is what makes
+redacting it possible; this release does not redact it. Treat these logs as
+credential-bearing.
+
+---
+
 ## `@onesub/server` 0.23.x → 0.24.0
 
 ### Your log sink now receives one pre-formatted string
@@ -15,8 +61,11 @@ stack trace as `    | `-prefixed continuation lines.
 
 ```text
 before  logger.warn('[onesub/apple] Bundle ID mismatch:', 'com.evil', '!==', 'com.real')
-after   logger.warn('[onesub/apple] bundle id mismatch bundleId=com.evil expected=com.real')
+after   logger.warn('[onesub/apple] Bundle ID mismatch: com.evil !== com.real')
 ```
+
+The message text itself is unchanged in 0.24.0 — only the argument count is. Call
+sites moved to `key=value` fields in 0.25.0; see the entry below.
 
 **Why.** Values interpolated into a message could not be escaped without also
 escaping the message, and a caller-supplied newline in one of them could end the log
