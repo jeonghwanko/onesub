@@ -77,6 +77,33 @@ const BARE_VALUE = /^[\w.:/@+-]+$/;
 /** Any character that could end a line, including the two Unicode separators. */
 const LINE_TERMINATORS = /\r\n|\r|\n|\u2028|\u2029/;
 
+/**
+ * Longest a single field value may render before it is cut.
+ *
+ * This is log hygiene, not defence against a caller: the values that actually reach
+ * this bound are upstream response bodies, which Apple and Google produce, not an
+ * attacker. `fetchSubscriptionPurchaseV2` interpolates the whole Play error body into
+ * its `Error` message, so `err.msg` was as unbounded as `responseBody` \u2014 bounding in
+ * `renderValue` covers both, and every future field, from one place.
+ */
+const MAX_VALUE_CHARS = 512;
+
+/**
+ * Google Play Developer API URL segment carrying a purchase token.
+ *
+ * A Play error body, and the `Error` message that embeds it, can echo the request
+ * URL \u2014 `.../purchases/products/<productId>/tokens/<purchaseToken>:consume`. That
+ * puts the token on log lines that deliberately do not carry it: the acknowledge,
+ * consume and validation-failure sites log `productId` and `httpStatus` and no token.
+ *
+ * This is not an attempt to treat the purchase token as a secret in general \u2014 it
+ * cannot be. For a Google subscription the token *is* the record's
+ * `originalTransactionId`, so it is in the database, in every RTDN payload, and in
+ * the three webhook lines where it is the subject of the investigation. What this
+ * does is stop it leaking onto the lines that had decided not to log it.
+ */
+const PLAY_TOKEN_IN_URL = /\/tokens\/[^/:"'\s\\]+/g;
+
 /** How far to follow `Error.cause`, and how many `AggregateError.errors` to render. */
 const MAX_CAUSE_DEPTH = 2;
 const MAX_AGGREGATE_ERRORS = 3;
@@ -120,6 +147,34 @@ function escQuoted(value: string): string {
 }
 
 /**
+ * Cut an over-long value, saying how much was dropped.
+ *
+ * The count matters: `…` alone leaves an operator unable to tell a body that was
+ * 20 characters too long from one that was a megabyte, which is the difference
+ * between "read the rest upstream" and "something is very wrong upstream".
+ *
+ * Applied before escaping, so the bound is on the caller's characters rather than on
+ * the expansion — otherwise a value made entirely of newlines would be cut at half
+ * the length of an ordinary one.
+ */
+function clamp(value: string): string {
+  if (value.length <= MAX_VALUE_CHARS) return value;
+  return `${value.slice(0, MAX_VALUE_CHARS)}…+${value.length - MAX_VALUE_CHARS} more`;
+}
+
+/**
+ * Redact then bound — every rendered value goes through here.
+ *
+ * One helper rather than three call sites, because the object and symbol branches
+ * produce strings too: a serialised webhook payload can be arbitrarily large and can
+ * carry the same Play URL. Applying this only to the `string` branch would have left
+ * exactly the shapes an attacker controls unbounded.
+ */
+function sanitize(value: string): string {
+  return clamp(value.replace(PLAY_TOKEN_IN_URL, '/tokens/[redacted]'));
+}
+
+/**
  * Render one field value in logfmt.
  *
  * The quoting is a security control, not formatting. An unquoted `userId` of
@@ -138,21 +193,23 @@ function renderValue(value: unknown): string | undefined {
       return String(value);
     case 'bigint':
       return `${value}n`;
-    case 'string':
-      return BARE_VALUE.test(value) ? value : `"${escQuoted(value)}"`;
+    case 'string': {
+      const safe = sanitize(value);
+      return BARE_VALUE.test(safe) ? safe : `"${escQuoted(safe)}"`;
+    }
     case 'object':
       // Depth 1 only, and inside a try/catch. Webhook payloads are attacker-shaped
       // and arbitrarily deep; a recursive walk here would be both bundle weight and
       // a CPU-DoS surface, and JSON.stringify already throws on cycles.
       try {
-        return `"${escQuoted(JSON.stringify(value) ?? 'null')}"`;
+        return `"${escQuoted(sanitize(JSON.stringify(value) ?? 'null'))}"`;
       } catch {
         return '"[unserialisable]"';
       }
     default:
       // symbol, function — String() is safe for both.
       try {
-        return `"${escQuoted(String(value))}"`;
+        return `"${escQuoted(sanitize(String(value)))}"`;
       } catch {
         return '"[unrenderable]"';
       }
