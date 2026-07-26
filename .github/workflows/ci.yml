@@ -13,6 +13,31 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+
+    # The Postgres stores are what production runs on, and until this service
+    # existed nothing executed their SQL: `schema.test.ts` compares the embedded
+    # DDL to sql/schema.sql as text, and every other suite uses the in-memory
+    # store. `postgres-store.test.ts` skips itself when DATABASE_URL is unset, so
+    # a local `npm test` without a database still passes — which means this
+    # service is the only thing that runs those tests. Removing it silently drops
+    # ~28 tests rather than failing.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: onesub_test
+        ports:
+          - 5432:5432
+        # Without a health check the steps can start before the server accepts
+        # connections, which shows up as a flaky ECONNREFUSED rather than a
+        # failure anyone can read.
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -25,6 +50,8 @@ jobs:
         run: npm run build  # tsc per-workspace — fails on type errors
       - name: Test
         run: npm test
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/onesub_test
       - name: Validate Unity UPM boundaries
         shell: pwsh
         run: ./validate-unity-packages.ps1

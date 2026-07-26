@@ -282,9 +282,25 @@ Reconstructing this from the workflows is slow, so it is stated once here. `.git
 
 1. `npm ci`
 2. `npm run build`  (this is the real type-error gate; CI never runs root `npm run type-check`)
-3. `npm test`
+3. `npm test`, with `DATABASE_URL` pointing at a `postgres:17-alpine` service container
 4. `pwsh ./validate-unity-packages.ps1`
 5. `npm run size -w @onesub/server`
+
+**The Postgres store tests only run in CI unless you give them a database.**
+`packages/server/src/__tests__/postgres-store.test.ts` skips itself when
+`DATABASE_URL` is unset, so a green local `npm test` says nothing about the SQL. To
+run them, point `DATABASE_URL` at a throwaway database — the tests `TRUNCATE` both
+onesub tables between cases, so do not aim it at anything you care about:
+
+```bash
+docker run -d --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=onesub_test postgres:17-alpine
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/onesub_test npm test -- packages/server/src/__tests__/postgres-store.test.ts
+```
+
+That file is the only thing that executes the Postgres SQL; `schema.test.ts`
+compares the embedded DDL to `sql/schema.sql` as text and proves nothing about
+whether either works. Any change under `packages/server/src/stores/postgres.ts`
+wants a run against a real database before it is trusted.
 
 Plus a **separate `dashboard` job** — `npm run build -w @onesub/shared` → `type-check` → `build` for
 `@onesub/dashboard`. CI can therefore be red for a dashboard break while the entire root build is
@@ -327,6 +343,7 @@ If a change needs real sandbox coverage, say so in the PR description and ask a 
    | `packages/server/src` | `npm run build -w @onesub/server`, `npm test`, `npm run size -w @onesub/server` |
    | A route or the OpenAPI spec | the above plus `npm test -- packages/server/src/__tests__/openapi.test.ts` |
    | A store or SQL schema | the above plus `npm test -- packages/server/src/__tests__/schema.test.ts` |
+   | `stores/postgres.ts` or `sql/schema.sql` | the above plus `postgres-store.test.ts` **with a real `DATABASE_URL`** — it skips silently without one |
    | `packages/dashboard` | the three dashboard commands under Commands |
    | `packages/unity*` | `pwsh ./validate-unity-packages.ps1` |
    | Any `.md` | `npm run docs:check` |

@@ -35,6 +35,36 @@ behavior, and their message reads as a puzzle unless you know that:
 The schema test strips SQL comments, collapses whitespace, and does a normalized substring check — it
 also strips `\r` first, so a CRLF checkout does not break it.
 
+Note what the schema test does **not** prove: it compares two pieces of SQL to each other as text, so
+it fails when they drift apart but passes when both are wrong. Executing them is
+`postgres-store.test.ts` below.
+
+### Postgres store tests
+
+`packages/server/src/__tests__/postgres-store.test.ts` runs the real SQL against a real database. It
+is the only suite that does — everything else uses the in-memory store — and it **skips itself when
+`DATABASE_URL` is unset**, so a green `npm test` on a machine without a database says nothing about
+`stores/postgres.ts`.
+
+CI supplies a `postgres:17-alpine` service container, so these tests always run there. To run them
+locally, point `DATABASE_URL` at a throwaway database. The tests `TRUNCATE onesub_subscriptions,
+onesub_purchases` between cases, so do not aim it at anything you care about:
+
+```bash
+docker run -d --rm -p 5432:5432 \
+  -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=onesub_test \
+  postgres:17-alpine
+
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/onesub_test \
+  npm test -- packages/server/src/__tests__/postgres-store.test.ts
+```
+
+Beyond CRUD, it covers the things only a database can answer: that `initSchema()` is safe to re-run
+against an already-migrated database, that the shipped `sql/schema.sql` produces a schema the stores
+can actually drive, that the partial unique index really blocks a second non-consumable row for one
+user and product, and that `listFiltered` combines filters as AND while reporting the unpaged total
+next to a limited page.
+
 ## Build and Type Checks
 
 ```bash
@@ -229,10 +259,15 @@ npm run build -w @onesub/dashboard
 npm run docs:check
 ```
 
-This is a superset of CI, not a mirror of it. CI's `ci.yml` job runs `npm ci` → `build` → `test` →
-the Unity validator → the size check; it never runs root `npm run type-check`, because `build` is the
-type gate. `docs:check` runs in its own path-filtered workflow, and CodeQL (`security-extended`) runs
-separately and can fail a PR.
+This is a superset of CI in one way and a subset in another. It is a superset because CI never runs
+root `npm run type-check` — `build` is the type gate. It is a **subset** because CI runs `npm test`
+with `DATABASE_URL` pointing at a Postgres service container, so the Postgres store tests run there
+and skip in the list above. Add a `DATABASE_URL` (see *Postgres store tests*) when your change touches
+`stores/postgres.ts` or `sql/schema.sql`.
+
+Otherwise CI's `ci.yml` job runs `npm ci` → `build` → `test` → the Unity validator → the size check.
+`docs:check` runs in its own path-filtered workflow, and CodeQL (`security-extended`) runs separately
+and can fail a PR.
 
 Use focused checks for package-local changes. Documentation-only changes normally need only
 `npm run docs:check` — `ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs no build
