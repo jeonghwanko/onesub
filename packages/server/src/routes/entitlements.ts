@@ -14,7 +14,7 @@ import type {
 import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE, PURCHASE_TYPE } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
-import { sendError } from '../errors.js';
+import { sendError, parseOrSend } from '../errors.js';
 
 /**
  * Evaluate one entitlement against records the caller already holds.
@@ -107,6 +107,9 @@ export async function evaluateEntitlement(
 const userIdSchema = z.string().min(1).max(256);
 const entitlementIdSchema = z.string().min(1).max(128);
 
+const entitlementQuerySchema = z.object({ userId: userIdSchema, id: entitlementIdSchema });
+const entitlementsQuerySchema = z.object({ userId: userIdSchema });
+
 export function createEntitlementRouter(
   config: OneSubServerConfig,
   store: SubscriptionStore,
@@ -127,15 +130,11 @@ export function createEntitlementRouter(
    * Single entitlement check.
    */
   router.get(ROUTES.ENTITLEMENT, async (req: Request, res: Response) => {
-    let userId: string;
-    let id: string;
-    try {
-      userId = userIdSchema.parse(req.query['userId']);
-      id = entitlementIdSchema.parse(req.query['id']);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId and id are required');
-      return;
-    }
+    const query = parseOrSend(res, entitlementQuerySchema, req.query, {
+      message: 'userId and id are required',
+    });
+    if (!query) return;
+    const { userId, id } = query;
 
     const entitlement = entitlements[id];
     if (!entitlement) {
@@ -159,13 +158,11 @@ export function createEntitlementRouter(
    * app launch / login when the host wants the full entitlement map.
    */
   router.get(ROUTES.ENTITLEMENTS, async (req: Request, res: Response) => {
-    let userId: string;
-    try {
-      userId = userIdSchema.parse(req.query['userId']);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId is required');
-      return;
-    }
+    const query = parseOrSend(res, entitlementsQuerySchema, req.query, {
+      message: 'userId is required',
+    });
+    if (!query) return;
+    const { userId } = query;
 
     try {
       // Read this user's records ONCE for the whole map. Evaluating each

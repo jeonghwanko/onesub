@@ -13,7 +13,7 @@ import type {
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { evaluateEntitlementFrom } from './entitlements.js';
-import { sendError, sendZodError } from '../errors.js';
+import { sendError, parseOrSend } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
 import { secretsEqual } from './secret-compare.js';
@@ -80,13 +80,10 @@ export function createAdminRouter(
     productId: z.string().min(1).max(256),
   });
   router.delete('/onesub/purchase/admin/:userId/:productId', async (req: Request, res: Response) => {
-    let params;
-    try {
-      params = resetParamsSchema.parse(req.params);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId and productId required');
-      return;
-    }
+    const params = parseOrSend(res, resetParamsSchema, req.params, {
+      message: 'userId and productId required',
+    });
+    if (!params) return;
     const deleted = await purchaseStore.deletePurchases(params.userId, params.productId);
     res.json({ ok: true, deleted });
   });
@@ -98,16 +95,8 @@ export function createAdminRouter(
     newUserId: z.string().min(1).max(256),
   });
   router.post('/onesub/purchase/admin/transfer', async (req: Request, res: Response) => {
-    let body;
-    try {
-      body = transferSchema.parse(req.body);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err);
-        return;
-      }
-      throw err;
-    }
+    const body = parseOrSend(res, transferSchema, req.body);
+    if (!body) return;
     const existing = await purchaseStore.getPurchaseByTransactionId(body.transactionId);
     if (!existing) {
       sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
@@ -136,16 +125,8 @@ export function createAdminRouter(
   });
 
   router.post('/onesub/purchase/admin/grant', async (req: Request, res: Response) => {
-    let body;
-    try {
-      body = grantSchema.parse(req.body);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err);
-        return;
-      }
-      throw err;
-    }
+    const body = parseOrSend(res, grantSchema, req.body);
+    if (!body) return;
 
     const transactionId = body.transactionId ?? `admin_grant_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     const purchase: PurchaseInfo = {
@@ -183,16 +164,8 @@ export function createAdminRouter(
   });
 
   router.get(ROUTES.ADMIN_SUBSCRIPTIONS, async (req: Request, res: Response) => {
-    let query: z.infer<typeof listQuerySchema>;
-    try {
-      query = listQuerySchema.parse(req.query);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err);
-        return;
-      }
-      throw err;
-    }
+    const query = parseOrSend(res, listQuerySchema, req.query);
+    if (!query) return;
 
     try {
       const result = await store.listFiltered(query);
@@ -205,7 +178,8 @@ export function createAdminRouter(
       res.status(200).json(response);
     } catch (err) {
       // Bubble the message up but not the stack — admin clients log status code
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'list error');
+      log.error('[onesub/admin/subscriptions] list error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
 
@@ -215,13 +189,10 @@ export function createAdminRouter(
     transactionId: z.string().min(1).max(256),
   });
   router.get('/onesub/admin/subscriptions/:transactionId', async (req: Request, res: Response) => {
-    let params;
-    try {
-      params = detailParamsSchema.parse(req.params);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'transactionId required');
-      return;
-    }
+    const params = parseOrSend(res, detailParamsSchema, req.params, {
+      message: 'transactionId required',
+    });
+    if (!params) return;
     try {
       const sub = await store.getByTransactionId(params.transactionId);
       if (!sub) {
@@ -230,7 +201,8 @@ export function createAdminRouter(
       }
       res.status(200).json(sub);
     } catch (err) {
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'detail error');
+      log.error('[onesub/admin/subscriptions/:transactionId] detail error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
 
@@ -245,13 +217,10 @@ export function createAdminRouter(
     userId: z.string().min(1).max(256),
   });
   router.get('/onesub/admin/customers/:userId', async (req: Request, res: Response) => {
-    let params;
-    try {
-      params = customerParamsSchema.parse(req.params);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId required');
-      return;
-    }
+    const params = parseOrSend(res, customerParamsSchema, req.params, {
+      message: 'userId required',
+    });
+    if (!params) return;
     try {
       const [subscriptions, purchases] = await Promise.all([
         store.getAllByUserId(params.userId),
@@ -281,7 +250,8 @@ export function createAdminRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'customer error');
+      log.error('[onesub/admin/customers/:userId] error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
 
@@ -292,13 +262,10 @@ export function createAdminRouter(
     originalTransactionId: z.string().min(1).max(256),
   });
   router.post(ROUTES.ADMIN_SYNC_APPLE, async (req: Request, res: Response) => {
-    let params;
-    try {
-      params = syncAppleParamsSchema.parse(req.params);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'originalTransactionId required');
-      return;
-    }
+    const params = parseOrSend(res, syncAppleParamsSchema, req.params, {
+      message: 'originalTransactionId required',
+    });
+    if (!params) return;
 
     if (!config.apple?.issuerId || !config.apple?.keyId || !config.apple?.privateKey) {
       sendError(res, 400, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple API credentials not configured');
@@ -323,7 +290,8 @@ export function createAdminRouter(
       await store.save(fresh);
       res.status(200).json({ ok: true, subscription: fresh });
     } catch (err) {
-      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, (err as Error).message ?? 'sync error');
+      log.error('[onesub/admin/sync-apple] error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error');
     }
   });
 
@@ -340,19 +308,10 @@ export function createAdminRouter(
   });
 
   router.put(ROUTES.ADMIN_TEST_OVERRIDE, (req: Request, res: Response) => {
-    let params;
-    let body;
-    try {
-      params = overrideParamsSchema.parse(req.params);
-      body = overrideBodySchema.parse(req.body);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err);
-      } else {
-        sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId and { entitled: boolean } required');
-      }
-      return;
-    }
+    const params = parseOrSend(res, overrideParamsSchema, req.params);
+    if (!params) return;
+    const body = parseOrSend(res, overrideBodySchema, req.body);
+    if (!body) return;
     setTestOverride(params.userId, body.entitled);
     log.warn(
       `[onesub/admin] sandbox test override set for ${params.userId}: entitled=${body.entitled}`,
@@ -361,13 +320,10 @@ export function createAdminRouter(
   });
 
   router.delete(ROUTES.ADMIN_TEST_OVERRIDE, (req: Request, res: Response) => {
-    let params;
-    try {
-      params = overrideParamsSchema.parse(req.params);
-    } catch {
-      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId required');
-      return;
-    }
+    const params = parseOrSend(res, overrideParamsSchema, req.params, {
+      message: 'userId required',
+    });
+    if (!params) return;
     const cleared = clearTestOverride(params.userId);
     res.json({ ok: true, userId: params.userId, cleared });
   });
@@ -383,7 +339,8 @@ export function createAdminRouter(
         const items = await webhookQueue.listDeadLetters!();
         res.status(200).json({ items });
       } catch (err) {
-        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'list error');
+        log.error('[onesub/admin/webhook-deadletters] error:', err);
+        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
       }
     });
   }
@@ -391,18 +348,14 @@ export function createAdminRouter(
   if (webhookQueue?.replayDeadLetter) {
     const replayParamsSchema = z.object({ id: z.string().min(1).max(256) });
     router.post('/onesub/admin/webhook-replay/:id', async (req: Request, res: Response) => {
-      let params;
-      try {
-        params = replayParamsSchema.parse(req.params);
-      } catch {
-        sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'id required');
-        return;
-      }
+      const params = parseOrSend(res, replayParamsSchema, req.params, { message: 'id required' });
+      if (!params) return;
       try {
         await webhookQueue.replayDeadLetter!(params.id);
         res.status(200).json({ ok: true });
       } catch (err) {
-        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, (err as Error).message ?? 'replay error');
+        log.error('[onesub/admin/webhook-replay] error:', err);
+        sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
       }
     });
   }

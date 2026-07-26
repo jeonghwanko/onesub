@@ -17,7 +17,7 @@ import {
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
 import { log } from '../logger.js';
-import { sendError, sendZodError } from '../errors.js';
+import { sendError, parseOrSend } from '../errors.js';
 
 const NO_PURCHASE = { valid: false, purchase: null } as const;
 
@@ -78,17 +78,8 @@ export function createPurchaseRouter(
    *   enforces 72h receipt age, uses orderId as the dedup key
    */
   router.post(ROUTES.VALIDATE_PURCHASE, async (req: Request, res: Response) => {
-    let body: z.infer<typeof validatePurchaseSchema>;
-
-    try {
-      body = validatePurchaseSchema.parse(req.body);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err, NO_PURCHASE);
-        return;
-      }
-      throw err;
-    }
+    const body = parseOrSend(res, validatePurchaseSchema, req.body, { extra: NO_PURCHASE });
+    if (!body) return;
 
     const { platform, receipt, userId, productId, type, appId } = body;
 
@@ -285,17 +276,10 @@ export function createPurchaseRouter(
    * Returns all purchases for a user, optionally filtered by productId.
    */
   router.get(ROUTES.PURCHASE_STATUS, async (req: Request, res: Response) => {
-    let query: z.infer<typeof purchaseStatusQuerySchema>;
-
-    try {
-      query = purchaseStatusQuerySchema.parse(req.query);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err, { purchases: [] });
-        return;
-      }
-      throw err;
-    }
+    const query = parseOrSend(res, purchaseStatusQuerySchema, req.query, {
+      extra: { purchases: [] },
+    });
+    if (!query) return;
 
     const { userId, productId } = query;
 

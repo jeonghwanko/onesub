@@ -7,7 +7,7 @@ import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
-import { sendError, sendZodError } from '../errors.js';
+import { sendError, parseOrSend } from '../errors.js';
 import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 import { getTestOverride } from '../test-overrides.js';
 
@@ -30,21 +30,9 @@ export function createValidateRouter(
   const registry = getAppRegistry(config);
 
   router.post(ROUTES.VALIDATE, async (req: Request, res: Response) => {
-    let platform: string;
-    let receipt: string;
-    let userId: string;
-    let productId: string;
-    let appId: string | undefined;
-
-    try {
-      ({ platform, receipt, userId, productId, appId } = validateSchema.parse(req.body));
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err, NO_SUB);
-        return;
-      }
-      throw err;
-    }
+    const body = parseOrSend(res, validateSchema, req.body, { extra: NO_SUB });
+    if (!body) return;
+    const { platform, receipt, userId, productId, appId } = body;
 
     try {
       let sub = null;

@@ -4,8 +4,9 @@ import { z } from 'zod';
 import type { OneSubServerConfig } from '@onesub/shared';
 import { ONESUB_ERROR_CODE } from '@onesub/shared';
 import { signApplePromotionalOffer } from '../providers/apple.js';
-import { sendError, sendZodError } from '../errors.js';
+import { sendError, parseOrSend } from '../errors.js';
 import { secretsEqual } from './secret-compare.js';
+import { log } from '../logger.js';
 
 const OFFER_SECRET_HEADER = 'x-onesub-offer-secret';
 
@@ -46,16 +47,8 @@ export function createAppleOfferRouter(config: OneSubServerConfig): Router | nul
         return;
       }
     }
-    let body: z.infer<typeof offerBodySchema>;
-    try {
-      body = offerBodySchema.parse(req.body);
-    } catch (err) {
-      if (err instanceof z.ZodError) {
-        sendZodError(res, err);
-        return;
-      }
-      throw err;
-    }
+    const body = parseOrSend(res, offerBodySchema, req.body);
+    if (!body) return;
 
     if (!apple.bundleId) {
       sendError(res, 400, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'config.apple.bundleId is required for offer signing');
@@ -74,7 +67,11 @@ export function createAppleOfferRouter(config: OneSubServerConfig): Router | nul
       );
       res.status(200).json(result);
     } catch (err) {
-      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, (err as Error).message ?? 'Offer signing failed');
+      // The message is deliberately generic: this route signs with the
+      // promotional-offer private key, so a crypto/JOSE failure message is the
+      // last thing to hand an unauthenticated-until-proven caller.
+      log.error('[onesub/apple/offer] signing error:', err);
+      sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Offer signing failed');
     }
   });
 
