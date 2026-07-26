@@ -102,6 +102,7 @@ User already owns this non-consumable on the server side (first check, before re
 - **Symptom**: User taps "Purchase" on a non-consumable they already own; server returns 409 immediately.
 - **SDK behavior**: the SDK translates this into `{ valid: true, action: 'restored' }` for user-friendly handling. The 409 + `errorCode` is what non-SDK HTTP clients see.
 - **Fix (client UX)**: use `result.action === 'restored'` to show "이미 구매한 상품입니다" instead of "구매 완료". The SDK also auto-fires `finishTransaction` so StoreKit queue stays clean.
+- **Store-side variant**: the same code is also thrown client-side when the *store* — not the server — reports that the device already owns the SKU (`react-native-iap` `already-owned` / `E_ITEM_ALREADY_OWNED`, in either legacy `E_*` or OpenIAP spelling). Only non-consumables map this way; a consumable must be consumed, not restored, so its duplicate events keep the generic error path. Recover by calling `restoreProduct(productId, 'non_consumable')`.
 
 ### `TRANSACTION_BELONGS_TO_OTHER_USER` (409)
 
@@ -211,9 +212,14 @@ User dismissed the StoreKit / Play sheet. Not an error — handle silently.
 
 ### `CONCURRENT_PURCHASE`
 
-`subscribe()` / `purchaseProduct()` for the same `productId` called while a previous call for that same `productId` hasn't resolved yet.
+Another IAP operation was still running. Two sources:
 
-- **Fix (client)**: gate the buy button on `isLoading`. The SDK already protects with `isBusyRef` at the session level, but concurrent calls for different `productId`s via separate code paths can still race.
+- `purchaseProduct()` / `restoreProduct()` called while the SDK is busy — including the window after a subscription validates but before native `finishTransaction` cleanup settles. These **throw** this code rather than returning `null`, so a refusal is never mistaken for a user cancel.
+- `registerInFlight()` refusing a second in-flight entry for the same `productId`.
+
+`subscribe()` / `subscribeWithResult()` are deliberately quieter: while busy they no-op (`void` / `null`) instead of throwing.
+
+- **Fix (client)**: gate every IAP button on `isBusy` (not `isLoading`, which also covers passive status refreshes). Treat a caught `CONCURRENT_PURCHASE` as a double-tap and return silently.
 
 ### `PROVIDER_UNMOUNTED`
 

@@ -104,12 +104,12 @@ import { OneSubProvider, useOneSub } from '@jeonghwanko/onesub-sdk';
 ```tsx
 // Any component
 const {
-  isActive, subscribe, restore,         // auto-renewable subscriptions
+  isActive, isBusy, subscribe, restore,  // auto-renewable subscriptions
   purchaseProduct, restoreProduct,       // one-time products
 } = useOneSub();
 
-// Subscription
-if (!isActive) <Button onPress={subscribe} title="Subscribe" />;
+// Subscription — disable every IAP button while isBusy is true
+if (!isActive) <Button disabled={isBusy} onPress={subscribe} title="Subscribe" />;
 
 // Consumable (e.g. coins)
 const result = await purchaseProduct('credits_100', 'consumable');
@@ -123,7 +123,16 @@ if (owned?.action === 'restored') { /* user already owned — show "복원 완�
 const restored = await restoreProduct('premium_unlock', 'non_consumable');
 ```
 
-Peer dep: **`react-native-iap` v15+** (event-based purchase flow).
+**`null` versus throw.** `null` means "nothing was purchased and that's normal" — the user cancelled,
+or `restoreProduct` found no matching purchase in the store's history. A thrown `OneSubError` means
+the operation failed or was refused: `purchaseProduct` / `restoreProduct` throw `CONCURRENT_PURCHASE`
+when another IAP operation is still running, and `NON_CONSUMABLE_ALREADY_OWNED` when the store says
+the device already owns that SKU (recover with `restoreProduct`). `subscribe()` / `restore()` return
+`void` and no-op while busy. Always branch on both outcomes.
+
+Peer dep: **`react-native-iap` v15+** (event-based purchase flow). Google Play subscription offer
+tokens are read from the fetched product and forwarded automatically — no client wiring needed, but
+the subscription must have an active base-plan offer in Play Console.
 
 **Mock mode** for Expo Go / simulator UI testing (no native module needed):
 ```tsx
@@ -208,6 +217,8 @@ Full catalog (every `ONESUB_ERROR_CODE` with cause and fix): https://github.com/
 | SDK `isActive` stays false after purchase | Server didn't receive webhook | Verify webhook URL in App Store Connect / Pub/Sub push config. Check `POST /onesub/webhook/*` returns 2xx |
 | SDK throws `RN_IAP_NOT_INSTALLED` | Peer dep missing | `npm i react-native-iap@^15` in the app |
 | TestFlight purchase succeeds without sheet | Stale pending in StoreKit queue (fixed in sdk@0.5.1+) | Upgrade `@jeonghwanko/onesub-sdk` and rebuild |
+| SDK throws `CONCURRENT_PURCHASE` | A second purchase/restore started while one was still running — cleanup after a subscription counts | Disable IAP buttons on `isBusy`; treat a caught `CONCURRENT_PURCHASE` as a double-tap and return |
+| Google subscription purchase fails before the sheet | Subscription has no active base-plan offer, so there is no offer token to send | Activate a base plan + offer in Play Console; the SDK forwards the token automatically |
 
 Enable `config.debug: true` on the SDK for verbose `[onesub]` traces. Server logs are tagged `[onesub/*]` per provider/route.
 

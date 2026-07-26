@@ -179,6 +179,50 @@ CREATE UNIQUE INDEX idx_onesub_purchases_non_consumable
 ```
 Application-level `hasPurchased()` check is a fast path; the DB constraint is the atomic guarantee.
 
+## SDK Purchase Flow (client)
+
+The React Native SDK is split so the decision logic is testable without a native module:
+`packages/sdk/src/purchaseFlow.ts` holds pure functions (in-flight registry, event handling, native
+error mapping, purchase-type resolution), and `packages/sdk/src/OneSubProvider.tsx` holds the React
+state and `react-native-iap` wiring. New logic belongs in `purchaseFlow.ts`.
+
+**One listener pair per mount.** `purchaseUpdatedListener` / `purchaseErrorListener` are registered
+once at provider mount, *before* `initConnection()` — RN-IAP can emit queued StoreKit transactions
+while initialization is still resolving. Registration is repeated after init for the case where the
+pre-init subscription was inert; RN-IAP fans out through a Set, so the retry does not double-deliver.
+
+**Drain window.** For a short window after mount, in-flight matching is suppressed. Transactions the
+store replays at launch are therefore handled as orphans (validated and finished silently) instead of
+resolving a purchase the user has not made yet — the fix for the "sheet never appears, app reports
+success" class of bug. `subscribe()` awaits the drain before requesting a purchase.
+
+**In-flight registry.** A `Map<productId, InFlightEntry>` correlates the promise returned to the
+caller with the event the store delivers later. Each entry records its kind (`subscription` or
+`purchase`) and, for one-time products, the caller's declared type. A second registration for the
+same `productId` is refused with `CONCURRENT_PURCHASE`.
+
+**Event handling** (`handlePurchaseEvent`), for both matched events and orphan replays:
+
+1. Classify: `isSubscriptionEvent()` trusts the in-flight entry, then the transaction's
+   `productType`; it never guesses "subscription" for an unmatched event.
+2. For one-time products, `resolvePurchaseType()` prefers the caller's declared type, then
+   `config.consumableProductIds`, then `non_consumable`. This is why hosts that sell consumables must
+   declare them: an orphan replay has nothing else to read, and a wrong answer both records the wrong
+   `type` server-side and acknowledges instead of consuming on Android.
+3. Validate against the server, then `finishTransaction` **only on success** — a rejected receipt is
+   left unfinished so the store replays it, and the validation routes are idempotent.
+4. Settle the in-flight promise. Subscriptions resolve as soon as validation passes and hand native
+   cleanup back to the provider, which keeps the SDK-wide busy lock held until cleanup settles.
+
+**Error contract.** Native codes are normalized (legacy `E_*` and OpenIAP spellings) by
+`mapNativePurchaseErrorCode`: cancels become `USER_CANCELLED`, already-owned becomes
+`NON_CONSUMABLE_ALREADY_OWNED` for non-consumables only, everything else `INTERNAL_ERROR`.
+A `duplicate-purchase` native error is ignored outright — RN-IAP emits it only after it already
+delivered the original event, and rejecting on it would strand a paid transaction. Server
+`errorCode`s are preserved when a validation failure is rethrown. See
+[`../packages/sdk/README.md`](../packages/sdk/README.md) for which calls return `null` and which
+throw.
+
 ## MCP Tool Design
 
 The registered tools return MCP text content:

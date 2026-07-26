@@ -129,6 +129,11 @@ what your change touched — [`AGENTS.md`](AGENTS.md) has the table — and at m
 A Markdown-only PR skips the build and test job (`ci.yml` sets `paths-ignore: '**/*.md'`). Its gates
 are the `docs` workflow and CodeQL, which has no path filter and runs on every PR.
 
+AI-assisted PRs are welcome under the same bar: point the agent at [`AGENTS.md`](AGENTS.md), and
+state in the PR description which checks were actually run and which were skipped. An unrun check
+reported as passing is worse than an admitted gap. [`docs/AI-WORKFLOW.md`](docs/AI-WORKFLOW.md) has
+ready-made prompts and a session-setup checklist.
+
 ## Reporting security issues
 
 Do **not** open a public issue for security vulnerabilities. See [docs/SECURITY.md](docs/SECURITY.md#reporting-vulnerabilities).

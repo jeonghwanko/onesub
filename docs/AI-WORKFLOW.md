@@ -41,6 +41,27 @@ yet; report the current state, relevant commands, and likely risks.
 
 Claude reads `CLAUDE.md`, which imports the same canonical `AGENTS.md` used by Codex.
 
+## Session Setup
+
+Both agents read the same rules, but the environment around them differs. Settle these before the
+first edit:
+
+| Concern | What to check |
+|---|---|
+| Instructions loaded | Codex reads `AGENTS.md` directly; Claude Code reads `CLAUDE.md`, which imports it. If the agent has not read the *Build Model and Traps* section, tell it to. |
+| Network | `npm ci` needs registry access. In a sandboxed or offline session, install once up front — a mid-task install failure looks like a broken build. |
+| Approvals | Builds, tests, and `docs:check` are safe to run unattended. Git writes, package publishing, and any store-product write are not; require explicit approval for those. |
+| Shell | Command blocks here are bash. On Windows, translate them as described in `AGENTS.md`. `pwsh ./validate-unity-packages.ps1` needs PowerShell — if it is unavailable, the agent must report the skip. |
+| Working tree | Run `git status` first. The tree frequently carries unrelated in-progress work that must survive the task. |
+
+A useful standing instruction for either agent:
+
+```text
+Follow AGENTS.md. Do not commit, push, or release. Preserve unrelated working-tree changes. Before
+you finish, answer the five questions in "Before You Call a Task Done" — including which checks you
+ran and which you skipped, and why.
+```
+
 ## Repository Work Prompts
 
 ### Implement a focused change
