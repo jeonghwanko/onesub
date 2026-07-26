@@ -5,14 +5,20 @@ import { RedisSubscriptionStore, RedisPurchaseStore, RedisCacheAdapter, RedisWeb
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
 
+let sharedRedis: Redis | undefined;
+
 async function makeRedis(): Promise<Redis> {
   // ioredis-mock's surface matches ioredis enough for our store's methods
   // (set/get/zadd/zrevrange/sadd/smembers/multi). Cast to keep TS happy.
-  // The mock keeps a process-wide store across instances by default — flush
-  // so each test starts from a clean slate.
-  const r = new IORedisMock() as unknown as Redis;
-  await r.flushall();
-  return r;
+  //
+  // The mock keeps a process-wide store across instances, so a fresh instance
+  // buys no isolation — flushing is what gives each test a clean slate. One
+  // instance is reused because each `new IORedisMock()` registers a listener on
+  // a shared emitter, and this file makes enough of them to trip
+  // MaxListenersExceededWarning — noise that would mask a real leak later.
+  sharedRedis ??= new IORedisMock() as unknown as Redis;
+  await sharedRedis.flushall();
+  return sharedRedis;
 }
 
 const baseSub: SubscriptionInfo = {

@@ -57,8 +57,9 @@ export interface SubscriptionStore {
    * see all of a user's active subscriptions to decide whether any of them
    * grants the requested entitlement.
    *
-   * Implementations: in-memory currently coalesces by userId so this returns
-   * at most one row; Postgres returns the full history.
+   * All three built-in implementations return the user's full set, one record
+   * per `originalTransactionId`. "Most-recent-first" is last-written-first for
+   * the in-memory store and `updated_at DESC` for Postgres/Redis.
    */
   getAllByUserId(userId: string): Promise<SubscriptionInfo[]>;
 }
