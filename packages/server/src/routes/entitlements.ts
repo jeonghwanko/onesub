@@ -147,7 +147,7 @@ export function createEntitlementRouter(
       const response: EntitlementResponse = { id, ...status };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/entitlement] evaluation error:', err);
+      log.error('[onesub/entitlement] evaluation error', { userId, entitlement: id, err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
@@ -182,7 +182,7 @@ export function createEntitlementRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/entitlements] evaluation error:', err);
+      log.error('[onesub/entitlements] evaluation error', { userId, err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error', { entitlements: {} });
     }
   });

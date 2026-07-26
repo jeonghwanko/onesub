@@ -55,7 +55,7 @@ function outcomePasses(outcome: MockReceiptOutcome, tag: string): boolean {
     throw new Error(`[onesub/mock/${tag}] simulated upstream network error`);
   }
   if (outcome.kind === 'valid' || outcome.kind === 'sandbox') return true;
-  log.warn(`[onesub/mock/${tag}] receipt rejected`, { outcome: outcome.kind });
+  log.warn('[onesub/mock] receipt rejected', { provider: tag, outcome: outcome.kind });
   return false;
 }
 

@@ -187,7 +187,7 @@ export class BullMQWebhookQueue implements WebhookQueue {
         // Without an 'error' listener, a Redis hiccup on the EventEmitter
         // becomes an uncaught 'error' event and crashes the process.
         queue.on?.('error', (err) => {
-          log.error('[onesub] BullMQ queue error:', err);
+          log.error('[onesub] BullMQ queue error', { err });
         });
         return queue;
       })();
@@ -214,7 +214,7 @@ export class BullMQWebhookQueue implements WebhookQueue {
         // Same rationale as the queue's 'error' listener above. Job failures
         // are NOT this event — they go through the retry/dead-letter flow.
         worker.on?.('error', (err) => {
-          log.error('[onesub] BullMQ worker error:', err);
+          log.error('[onesub] BullMQ worker error', { err });
         });
         return worker;
       })();
@@ -223,7 +223,7 @@ export class BullMQWebhookQueue implements WebhookQueue {
       // missing) and surface it on the next enqueue instead.
       this.workerPromise.catch((err) => {
         this.workerStartupError = err instanceof Error ? err : new Error(String(err));
-        log.error('[onesub] BullMQ worker failed to start:', err);
+        log.error('[onesub] BullMQ worker failed to start', { err });
       });
     }
   }

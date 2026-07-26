@@ -57,7 +57,7 @@ export function createStatusRouter(store: SubscriptionStore): Router {
       const response: StatusResponse = { active, subscription: sub };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/status] Store error:', err);
+      log.error('[onesub/status] Store error', { userId, err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error', NO_SUB);
     }
   });

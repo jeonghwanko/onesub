@@ -182,9 +182,10 @@ export function createPurchaseRouter(
         ? boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()
         : boundAccountId && boundAccountId !== userId;
       if (bindingMismatch) {
-        log.warn(
-          `[onesub/purchase] account binding mismatch for transaction ${transactionId}: token does not match userId ${userId}`,
-        );
+        log.warn('[onesub/purchase] account binding mismatch — token does not match userId', {
+          transactionId,
+          userId,
+        });
         sendError(
           res,
           409,
@@ -208,9 +209,11 @@ export function createPurchaseRouter(
         if (existing.userId !== userId) {
           if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
             await purchaseStore.reassignPurchase(transactionId, userId);
-            log.info(
-              `[onesub/purchase] reassigned transaction ${transactionId} from ${existing.userId} to ${userId}`,
-            );
+            log.info('[onesub/purchase] reassigned transaction to a new user', {
+              transactionId,
+              fromUserId: existing.userId,
+              userId,
+            });
           } else {
             sendError(
               res,
@@ -265,7 +268,7 @@ export function createPurchaseRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/purchase/validate] Unexpected error:', err);
+      log.error('[onesub/purchase/validate] Unexpected error', { userId, productId, platform, type, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during purchase validation', NO_PURCHASE);
     }
   });
@@ -295,7 +298,7 @@ export function createPurchaseRouter(
       const response: PurchaseStatusResponse = { purchases };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/purchase/status] Store error:', err);
+      log.error('[onesub/purchase/status] Store error', { userId, productId, err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error', { purchases: [] });
     }
   });

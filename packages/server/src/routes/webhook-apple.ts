@@ -119,7 +119,7 @@ export async function processAppleNotification(
           });
         }
       } catch (err) {
-        log.warn('[onesub/webhook/apple] consumptionInfoProvider failed:', err);
+        log.warn('[onesub/webhook/apple] consumptionInfoProvider failed', { transactionId, err });
       }
     })();
   }
@@ -138,7 +138,7 @@ export async function processAppleNotification(
     const lookupId = transactionId ?? originalTransactionId;
     const removed = await purchaseStore.deletePurchaseByTransactionId(lookupId);
     if (!removed) {
-      log.warn('[onesub/webhook/apple] IAP refund for unknown transaction:', lookupId);
+      log.warn('[onesub/webhook/apple] IAP refund for unknown transaction', { transactionId: lookupId });
     }
     return;
   }
@@ -156,7 +156,10 @@ export async function processAppleNotification(
         ? appAccountToken
         : existing.userId;
     if (correctedUserId !== existing.userId) {
-      log.info('[onesub/webhook/apple] correcting userId from originalTransactionId to appAccountToken:', correctedUserId);
+      log.info('[onesub/webhook/apple] correcting userId from originalTransactionId to appAccountToken', {
+        originalTransactionId,
+        userId: correctedUserId,
+      });
     }
 
     const updated: SubscriptionInfo = keepEntitlement
@@ -177,20 +180,22 @@ export async function processAppleNotification(
       fresh.userId = appAccountToken ?? originalTransactionId;
       if (inAppOwnershipType === 'FAMILY_SHARED') {
         const source = appAccountToken ? 'appAccountToken' : 'originalTransactionId (fallback)';
-        log.info(`[onesub/webhook/apple] FAMILY_SHARED — userId: ${fresh.userId} (source: ${source})`);
+        log.info('[onesub/webhook/apple] FAMILY_SHARED', {
+          originalTransactionId,
+          userId: fresh.userId,
+          userIdSource: source,
+        });
       }
       await store.save(fresh);
     } else {
-      log.warn(
-        '[onesub/webhook/apple] Unknown transaction and Status API returned no record:',
+      log.warn('[onesub/webhook/apple] Unknown transaction and Status API returned no record', {
         originalTransactionId,
-      );
+      });
     }
   } else {
-    log.warn(
-      '[onesub/webhook/apple] Received notification for unknown transaction (no API creds to recover):',
+    log.warn('[onesub/webhook/apple] Received notification for unknown transaction (no API creds to recover)', {
       originalTransactionId,
-    );
+    });
   }
 }
 
@@ -217,7 +222,7 @@ export async function handleAppleWebhook(
       config.apple?.skipJwsVerification,
     );
   } catch (err) {
-    log.error('[onesub/webhook/apple] Failed to decode signedPayload:', err);
+    log.error('[onesub/webhook/apple] Failed to decode signedPayload', { err });
     sendError(res, 400, ONESUB_ERROR_CODE.INVALID_SIGNED_PAYLOAD, 'Invalid signedPayload');
     return;
   }
@@ -230,7 +235,9 @@ export async function handleAppleWebhook(
   if (webhookEventStore && typeof payload.notificationUUID === 'string') {
     const fresh = await webhookEventStore.markIfNew('apple', payload.notificationUUID);
     if (!fresh) {
-      log.info('[onesub/webhook/apple] dedupe: already processed', payload.notificationUUID);
+      log.info('[onesub/webhook/apple] dedupe: already processed', {
+        notificationUUID: payload.notificationUUID,
+      });
       res.status(200).json({ received: true, deduped: true });
       return;
     }
@@ -249,7 +256,7 @@ export async function handleAppleWebhook(
   // still rejects everything else.
   const notifiedApp = getAppRegistry(config).configFor({ bundleId: decoded.bundleId });
   if (decoded.bundleId && !notifiedApp.apple) {
-    log.warn('[onesub/webhook/apple] No app configured for bundleId:', decoded.bundleId);
+    log.warn('[onesub/webhook/apple] No app configured for bundleId', { bundleId: decoded.bundleId });
     sendError(res, 400, ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH, 'Bundle ID mismatch');
     return;
   }
@@ -284,7 +291,10 @@ export async function handleAppleWebhook(
       // Enqueue itself failed (e.g. Redis down) — the job was never durably
       // accepted, so the queue can't retry it. Fall back to source-retry
       // semantics: unmark + 5xx so Apple redelivers.
-      log.error('[onesub/webhook/apple] Failed to enqueue webhook job:', err);
+      log.error('[onesub/webhook/apple] Failed to enqueue webhook job', {
+        notificationUUID: payload.notificationUUID,
+        err,
+      });
       await unmarkWebhookEvent(webhookEventStore, 'apple', markedEventId);
       sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to update subscription');
     }
@@ -299,7 +309,10 @@ export async function handleAppleWebhook(
     await processAppleNotification(work, config, store, purchaseStore);
     res.status(200).json({ received: true });
   } catch (err) {
-    log.error('[onesub/webhook/apple] Store update error:', err);
+    log.error('[onesub/webhook/apple] Store update error', {
+      notificationUUID: payload.notificationUUID,
+      err,
+    });
     await unmarkWebhookEvent(webhookEventStore, 'apple', markedEventId);
     sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to update subscription');
   }
