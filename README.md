@@ -171,6 +171,25 @@ Mounted only when `config.adminSecret` is set. All requests must include the `X-
 | `GET /onesub/admin/webhook-deadletters` | List failed webhook jobs (requires BullMQ queue) |
 | `POST /onesub/admin/webhook-replay/:id` | Replay a failed webhook job (requires BullMQ queue) |
 | `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh one subscription from the Apple Status API (requires App Store Server API credentials) |
+| `GET /onesub/admin/test-overrides` | List active sandbox entitlement overrides |
+| `PUT /onesub/admin/test-overrides/:userId` | Force an entitlement verdict for one user — body `{ "entitled": false }` |
+| `DELETE /onesub/admin/test-overrides/:userId` | Clear that user's override |
+
+#### Sandbox entitlement overrides
+
+Apple offers no way to cancel a sandbox subscription bought with a real Apple
+Account through TestFlight — "Clear Purchase History" in App Store Connect only
+covers sandbox *tester* accounts. A developer who subscribes once to check the
+paywall therefore stays entitled and cannot re-run the purchase flow. Deleting
+server records does not help either: `/onesub/validate` re-derives entitlement
+from Apple on every call, so a local edit is overwritten on the next app launch.
+
+These endpoints sit in front of that verdict. An override is keyed by `userId`
+and is honoured **only when the receipt being validated came from Sandbox**, so
+a production customer is unaffected even if an override exists for their id.
+Overrides are process-local and non-persistent: they do not survive a restart,
+and in a multi-instance deployment they apply to the instance that received the
+request. That is deliberate — this is a debugging aid, not a product feature.
 
 ### Apple promotional offers (opt-in — separate mount and separate header)
 

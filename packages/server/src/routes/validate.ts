@@ -2,13 +2,14 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ValidateReceiptResponse, OneSubServerConfig } from '@onesub/shared';
-import { ROUTES, ONESUB_ERROR_CODE } from '@onesub/shared';
+import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
 import { sendError, sendZodError } from '../errors.js';
 import { getAppRegistry, peekAppleBundleId } from '../apps.js';
+import { getTestOverride } from '../test-overrides.js';
 
 const NO_SUB = { valid: false, subscription: null } as const;
 
@@ -99,6 +100,19 @@ export function createValidateRouter(
           NO_SUB,
         );
         return;
+      }
+
+      // Sandbox-only test override. Apple cannot cancel a sandbox subscription
+      // bought with a real Apple Account, so without this a tester who
+      // subscribed once can never see the paywall again. Gated on the receipt
+      // actually being a Sandbox one, so a Production receipt is unaffected
+      // even when an override exists for this userId.
+      const isSandbox = sub.sandbox === true;
+      delete sub.sandbox;
+      if (isSandbox && getTestOverride(userId) === false) {
+        log.warn(`[onesub/validate] sandbox test override active for ${userId}: forcing not-entitled`);
+        sub.status = SUBSCRIPTION_STATUS.EXPIRED;
+        sub.willRenew = false;
       }
 
       sub.userId = userId;

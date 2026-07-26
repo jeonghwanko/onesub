@@ -5,7 +5,11 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 import { generateKeyPairSync } from 'crypto';
-import { validateAppleConsumableReceipt } from '../providers/apple.js';
+import {
+  decodeAppleNotification,
+  validateAppleConsumableReceipt,
+  validateAppleReceipt,
+} from '../providers/apple.js';
 import {
   validateGoogleProductReceipt,
   acknowledgeGoogleSubscription,
@@ -26,6 +30,9 @@ function makeJws(payload: Record<string, unknown>): string {
 }
 
 const APPLE_CONFIG = { bundleId: 'com.example.app', skipJwsVerification: true as const };
+const EMPTY_APP_ACCOUNT_TOKEN = '00000000-0000-0000-0000-000000000000';
+const NEAR_EMPTY_APP_ACCOUNT_TOKEN = '00000000-0000-0000-0000-000000000001';
+const REAL_APP_ACCOUNT_TOKEN = '123e4567-e89b-12d3-a456-426614174000';
 
 function validApplePayload(overrides?: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -35,6 +42,19 @@ function validApplePayload(overrides?: Record<string, unknown>): Record<string, 
     transactionId: 'txn_apple_001',
     originalTransactionId: 'orig_apple_001',
     purchaseDate: Date.now(),
+    ...overrides,
+  };
+}
+
+function validAppleSubscriptionPayload(overrides?: Record<string, unknown>): Record<string, unknown> {
+  return {
+    bundleId: 'com.example.app',
+    type: 'Auto-Renewable Subscription',
+    productId: 'pro_monthly',
+    transactionId: 'txn_apple_subscription_001',
+    originalTransactionId: 'orig_apple_subscription_001',
+    purchaseDate: Date.now(),
+    expiresDate: Date.now() + 30 * 24 * 60 * 60 * 1000,
     ...overrides,
   };
 }
@@ -102,6 +122,43 @@ function mockGoogleFetch(productPurchase: MockProductPurchase) {
     throw new Error(`[test] Unexpected fetch URL: ${String(url)}`);
   });
 }
+
+// ============================================================================
+// validateAppleReceipt
+// ============================================================================
+
+describe('validateAppleReceipt — appAccountToken normalization', () => {
+  it('treats Guid.Empty as an absent account token', async () => {
+    const jws = makeJws(validAppleSubscriptionPayload({
+      appAccountToken: EMPTY_APP_ACCOUNT_TOKEN,
+    }));
+
+    const result = await validateAppleReceipt(jws, APPLE_CONFIG);
+
+    expect(result).not.toBeNull();
+    expect(result?.boundAccountId).toBeUndefined();
+  });
+
+  it('preserves a real account token', async () => {
+    const jws = makeJws(validAppleSubscriptionPayload({
+      appAccountToken: REAL_APP_ACCOUNT_TOKEN,
+    }));
+
+    const result = await validateAppleReceipt(jws, APPLE_CONFIG);
+
+    expect(result?.boundAccountId).toBe(REAL_APP_ACCOUNT_TOKEN);
+  });
+
+  it('preserves a near-empty UUID as a real account token', async () => {
+    const jws = makeJws(validAppleSubscriptionPayload({
+      appAccountToken: NEAR_EMPTY_APP_ACCOUNT_TOKEN,
+    }));
+
+    const result = await validateAppleReceipt(jws, APPLE_CONFIG);
+
+    expect(result?.boundAccountId).toBe(NEAR_EMPTY_APP_ACCOUNT_TOKEN);
+  });
+});
 
 // ============================================================================
 // validateAppleConsumableReceipt
@@ -195,6 +252,56 @@ describe('validateAppleConsumableReceipt', () => {
     const jws = makeJws(validApplePayload({ type: 'Non-Consumable', productId: 'premium_unlock' }));
     const result = await validateAppleConsumableReceipt(jws, APPLE_CONFIG);
     expect(result).not.toBeNull();
+  });
+
+  it('treats a Guid.Empty appAccountToken as absent', async () => {
+    const jws = makeJws(validApplePayload({ appAccountToken: EMPTY_APP_ACCOUNT_TOKEN }));
+
+    const result = await validateAppleConsumableReceipt(jws, APPLE_CONFIG);
+
+    expect(result?.appAccountToken).toBeUndefined();
+  });
+
+  it('preserves a real appAccountToken', async () => {
+    const jws = makeJws(validApplePayload({ appAccountToken: REAL_APP_ACCOUNT_TOKEN }));
+
+    const result = await validateAppleConsumableReceipt(jws, APPLE_CONFIG);
+
+    expect(result?.appAccountToken).toBe(REAL_APP_ACCOUNT_TOKEN);
+  });
+});
+
+// ============================================================================
+// decodeAppleNotification
+// ============================================================================
+
+describe('decodeAppleNotification — appAccountToken normalization', () => {
+  function notificationWithToken(appAccountToken: string) {
+    return {
+      notificationType: 'DID_RENEW',
+      data: {
+        signedTransactionInfo: makeJws(validAppleSubscriptionPayload({ appAccountToken })),
+        signedRenewalInfo: makeJws({ autoRenewStatus: 1 }),
+      },
+    };
+  }
+
+  it('treats Guid.Empty as an absent account token', async () => {
+    const result = await decodeAppleNotification(
+      notificationWithToken(EMPTY_APP_ACCOUNT_TOKEN),
+      true,
+    );
+
+    expect(result?.appAccountToken).toBeNull();
+  });
+
+  it('preserves a real account token', async () => {
+    const result = await decodeAppleNotification(
+      notificationWithToken(REAL_APP_ACCOUNT_TOKEN),
+      true,
+    );
+
+    expect(result?.appAccountToken).toBe(REAL_APP_ACCOUNT_TOKEN);
   });
 });
 

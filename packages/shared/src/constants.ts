@@ -20,6 +20,16 @@ export const ROUTES = {
   ADMIN_CUSTOMER_DETAIL: '/onesub/admin/customers/:userId',
   /** Sync a subscription from Apple Status API; takes :originalTransactionId path param. */
   ADMIN_SYNC_APPLE: '/onesub/admin/sync-apple/:originalTransactionId',
+  /**
+   * Sandbox-only entitlement overrides for manual testing. Listing endpoint.
+   * Apple gives no way to cancel a sandbox subscription bought with a real
+   * Apple Account, so a tester who subscribes once stays entitled until the
+   * store expires it on its own. These let a tester force "not entitled"
+   * without waiting. They apply ONLY to Sandbox receipts.
+   */
+  ADMIN_TEST_OVERRIDES: '/onesub/admin/test-overrides',
+  /** Set/clear one override; takes :userId path param. */
+  ADMIN_TEST_OVERRIDE: '/onesub/admin/test-overrides/:userId',
   /** Sign an Apple Promotional Offer payload (requires apple.offerKeyId + offerPrivateKey). */
   APPLE_OFFER_SIGNATURE: '/onesub/apple/offer-signature',
 } as const;

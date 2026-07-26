@@ -83,6 +83,14 @@ export interface SubscriptionInfo {
    * stripped by every route before the record is stored.
    */
   boundAccountId?: string;
+  /**
+   * True when the receipt came from Apple's Sandbox (TestFlight / StoreKit
+   * testing) rather than Production. Transient in the same sense as
+   * `boundAccountId`: the validators set it, the validate route reads it to
+   * decide whether a test override may apply, and the route strips it before
+   * the record reaches a store. Never persisted.
+   */
+  sandbox?: boolean;
 }
 
 /** Subscription status check response */

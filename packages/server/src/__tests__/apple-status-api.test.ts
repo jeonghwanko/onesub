@@ -239,7 +239,7 @@ describe('fetchAppleSubscriptionStatus', () => {
 // ── fetchAppleTransactionHistory pagination guards ──────────────────────────
 
 describe('fetchAppleTransactionHistory pagination guards', () => {
-  function historyTx(id: number): string {
+  function historyTx(id: number, appAccountToken?: string): string {
     return makeJws({
       bundleId: 'com.example.app',
       type: 'Auto-Renewable Subscription',
@@ -247,6 +247,7 @@ describe('fetchAppleTransactionHistory pagination guards', () => {
       transactionId: `tx_${id}`,
       originalTransactionId: 'orig_hist',
       purchaseDate: Date.now(),
+      appAccountToken,
     });
   }
 
@@ -320,6 +321,22 @@ describe('fetchAppleTransactionHistory pagination guards', () => {
     expect(counter.count()).toBe(3);
     expect(result).toHaveLength(3);
     expect(result?.map((t) => t.transactionId)).toEqual(['tx_0', 'tx_1', 'tx_2']);
+  });
+
+  it('normalizes Guid.Empty account tokens while preserving real tokens', async () => {
+    const emptyToken = '00000000-0000-0000-0000-000000000000';
+    const realToken = '123e4567-e89b-12d3-a456-426614174000';
+    mockHistoryFetch(() => ({
+      signedTransactions: [
+        historyTx(0, emptyToken),
+        historyTx(1, realToken),
+      ],
+      hasMore: false,
+    }));
+
+    const result = await fetchAppleTransactionHistory('orig_hist', appleConfigWithApi());
+
+    expect(result?.map((tx) => tx.appAccountToken)).toEqual([null, realToken]);
   });
 });
 

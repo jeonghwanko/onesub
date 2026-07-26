@@ -89,6 +89,9 @@ createOneSubMiddleware(config)
           ├── GET    /onesub/admin/subscriptions/:transactionId  → subscription detail
           ├── GET    /onesub/admin/customers/:userId             → customer profile
           ├── POST   /onesub/admin/sync-apple/:originalTransactionId → Apple Status API sync
+          ├── GET    /onesub/admin/test-overrides                → list sandbox overrides
+          ├── PUT    /onesub/admin/test-overrides/:userId        → force entitlement (Sandbox only)
+          ├── DELETE /onesub/admin/test-overrides/:userId        → clear it
           ├── GET    /onesub/admin/webhook-deadletters           → failed BullMQ jobs
           ├── POST   /onesub/admin/webhook-replay/:id            → replay a failed job
           └── GET    /onesub/metrics/*                            → active/started/expired counts
