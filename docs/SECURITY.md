@@ -5,6 +5,13 @@
 ### Apple StoreKit 2
 - JWS signature verified with the leaf certificate from the `x5c` header
 - **Full certificate chain verified up to Apple Root CA G3** (as of `@onesub/server@0.6.0`) using `node:crypto.X509Certificate` — each cert in the chain must be signed by the next, be within its validity window, and the final cert must be issued by a bundled Apple root. Leaf-only verification was insufficient because a self-signed cert could mint a passing signature
+- The result of a **successful** chain verification is memoised per process, keyed on the full `x5c`
+  chain plus the JWS `alg`, so repeated receipts and webhooks reuse the imported leaf key instead of
+  re-walking the chain. A failed verification is never cached — an untrusted chain is rejected on
+  every attempt. An entry's lifetime is capped by the earliest `notAfter` in the chain it came from,
+  so an expired certificate is never honoured from cache, and by a 1-hour ceiling. The cache is
+  process-local by design and is not affected by the Redis-backed `cache` adapter. Note that
+  certificate **revocation** is not checked, before or after this change
 - Sandbox receipts rejected in `NODE_ENV=production` unless `ONESUB_ALLOW_SANDBOX=true` is set (for TestFlight / pre-launch QA)
 - One-time-purchase receipt age limit, defaulting to 72 hours. It is a default, not an invariant: a
   host can raise or disable it with `apple.productReceiptMaxAgeHours` (see `docs/CONFIGURATION.md`)

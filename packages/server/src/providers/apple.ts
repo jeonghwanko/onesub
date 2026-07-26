@@ -11,6 +11,7 @@ import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
 import { fetchWithTimeout } from '../http.js';
 import { getDefaultCache } from '../cache.js';
+import { VerifiedKeyCache } from './verified-key-cache.js';
 import {
   mockValidateAppleSubscription,
   mockValidateAppleProduct,
@@ -96,28 +97,53 @@ export function assertIssuerCanSign(cert: Pick<X509Certificate, 'ca'>, index: nu
   }
 }
 
+/** A chain that passed `verifyAppleCertChain`. */
+interface VerifiedAppleChain {
+  /** PEM of the leaf certificate whose public key signs the JWS. */
+  leafPem: string;
+  /**
+   * Earliest `validTo` across the chain, as ms-since-epoch. Callers that cache
+   * anything derived from this chain must not keep it past this instant, or
+   * they would be honouring an expired certificate.
+   */
+  notAfter: number;
+}
+
 /**
  * Validate that the x5c chain from the JWS terminates at one of Apple's
  * bundled root CAs. Each cert in the chain must be signed by the next (or
  * the bundled root), every issuing cert must be a CA (BasicConstraints), and
  * all certs must currently be within their validity window.
  *
- * Returns the leaf certificate PEM on success. Throws on any failure.
+ * Returns the leaf certificate PEM and the chain's earliest expiry on success.
+ * Throws on any failure.
  */
-function verifyAppleCertChain(x5c: string[]): string {
+function verifyAppleCertChain(x5c: string[]): VerifiedAppleChain {
   if (x5c.length === 0) {
     throw new Error('[onesub/apple] empty x5c');
   }
 
   const chain = x5c.map((der) => new X509Certificate(derBase64ToPem(der)));
   const now = new Date();
+  let notAfter = Infinity;
 
   // Validity window + leaf→intermediate→... signature chain
   for (let i = 0; i < chain.length; i++) {
     const cert = chain[i];
-    if (new Date(cert.validFrom) > now || new Date(cert.validTo) < now) {
+    const validTo = new Date(cert.validTo).getTime();
+    if (new Date(cert.validFrom) > now || validTo < now.getTime()) {
       throw new Error(`[onesub/apple] cert[${i}] outside validity window`);
     }
+    // The whole chain is only as valid as its soonest-expiring link.
+    //
+    // An unparseable `validTo` yields NaN, and every comparison against NaN is
+    // false — so the window check above lets it through (pre-existing, and not
+    // reachable via a cert node itself parsed and formatted). Guard it here
+    // anyway: a chain whose expiry cannot be established reports notAfter 0,
+    // which is in the past, so the caller refuses to cache it and re-verifies
+    // every time. Accept/reject behaviour is deliberately left unchanged.
+    if (Number.isNaN(validTo)) notAfter = 0;
+    else if (validTo < notAfter) notAfter = validTo;
     // Every cert above the leaf signs the cert below it → must be a CA.
     if (i >= 1) assertIssuerCanSign(cert, i);
     if (i + 1 < chain.length) {
@@ -144,7 +170,25 @@ function verifyAppleCertChain(x5c: string[]): string {
     throw new Error('[onesub/apple] cert chain does not terminate at a trusted Apple root');
   }
 
-  return chain[0].toString();
+  return { leafPem: chain[0].toString(), notAfter };
+}
+
+/**
+ * Verified x5c chain → imported leaf key. See `verified-key-cache.ts` for why
+ * this is process-local rather than going through the pluggable `CacheAdapter`,
+ * and for the invariants it maintains.
+ *
+ * Every receipt validation and every Apple webhook lands in `decodeJws`, and
+ * without this each one re-ran the full chain walk (X509 parse per cert, an
+ * ECDSA verify per link, plus the root comparison) and re-imported the leaf —
+ * all synchronous, all on the event loop, all with the same result for weeks at
+ * a time.
+ */
+const appleLeafKeys = new VerifiedKeyCache<Awaited<ReturnType<typeof importX509>>>();
+
+/** Test/diagnostic hook — drop every memoised chain verification. */
+export function clearAppleCertCache(): void {
+  appleLeafKeys.clear();
 }
 
 /**
@@ -174,9 +218,14 @@ export async function decodeJws<T>(jws: string, skipVerification = false): Promi
     throw new Error('[onesub/apple] JWS header missing x5c certificate chain');
   }
 
-  const leafPem = verifyAppleCertChain(x5c);
   const alg = header.alg ?? 'ES256';
-  const key = await importX509(leafPem, alg);
+  // `alg` is part of the cache identity, not just the x5c: it is caller-supplied
+  // and decides what the key is imported for, so a chain claiming a different
+  // alg must never be served a key imported for another one.
+  const key = await appleLeafKeys.resolve([alg, ...x5c], async () => {
+    const { leafPem, notAfter } = verifyAppleCertChain(x5c);
+    return { key: await importX509(leafPem, alg), notAfter };
+  });
 
   const { payload } = await jwtVerify(jws, key);
   return payload as T;
