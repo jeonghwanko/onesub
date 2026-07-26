@@ -244,10 +244,18 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   // -------------------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
+    // Every subscription handed back by RN-IAP, including the post-init retry.
+    // Storing only the first one would leak a live listener past unmount if a
+    // release ever stops deduping identical callbacks; removing an already
+    // removed subscription is a no-op, so keeping both is strictly safer.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let updatedSub: any = null;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let errorSub: any = null;
+    const listenerSubs: any[] = [];
+    function removeListeners(): void {
+      while (listenerSubs.length) {
+        const sub = listenerSubs.pop();
+        try { sub?.remove?.(); } catch { /* ignore */ }
+      }
+    }
 
     // Re-runs of this effect (userId/serverUrl change) re-init the IAP
     // connection, which can replay queued transactions all over again — the
@@ -349,10 +357,8 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       };
 
       function attachListeners(): void {
-        const nextUpdatedSub = RNIap.purchaseUpdatedListener(onPurchaseUpdated);
-        if (!updatedSub) updatedSub = nextUpdatedSub;
-        const nextErrorSub = RNIap.purchaseErrorListener(onPurchaseError);
-        if (!errorSub) errorSub = nextErrorSub;
+        listenerSubs.push(RNIap.purchaseUpdatedListener(onPurchaseUpdated));
+        listenerSubs.push(RNIap.purchaseErrorListener(onPurchaseError));
       }
 
       try {
@@ -369,10 +375,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         if (!ready) return;
       } catch (err) {
         logger.warn('initConnection failed', err);
-        try { updatedSub?.remove?.(); } catch { /* ignore */ }
-        try { errorSub?.remove?.(); } catch { /* ignore */ }
-        updatedSub = null;
-        errorSub = null;
+        removeListeners();
         try { await RNIap.endConnection?.(); } catch { /* ignore */ }
         releaseDrain('init-failed');
         return;
@@ -396,8 +399,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     return () => {
       cancelled = true;
       logger.trace('provider unmount', { pendingInFlight: inFlightRef.current.size });
-      try { updatedSub?.remove?.(); } catch { /* ignore */ }
-      try { errorSub?.remove?.(); } catch { /* ignore */ }
+      removeListeners();
       // Reject any dangling in-flight promises so callers don't hang forever
       for (const [pid, entry] of inFlightRef.current.entries()) {
         entry.reject(new OneSubError(ONESUB_ERROR_CODE.PROVIDER_UNMOUNTED, '[onesub] Provider unmounted'));

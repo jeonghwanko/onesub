@@ -690,6 +690,17 @@ describe('native purchase error mapping', () => {
     expect(attachListeners).toHaveBeenCalledOnce();
   });
 
+  it('treats a void init resolution as connected', async () => {
+    // Some react-native-iap builds resolve undefined on success — tearing the
+    // listeners down there would kill purchasing on a healthy connection.
+    const attachListeners = vi.fn();
+    await expect(initializeIapConnectionWithListeners(
+      attachListeners,
+      async () => undefined,
+    )).resolves.toBe(true);
+    expect(attachListeners).toHaveBeenCalledTimes(2);
+  });
+
   it('maps ownership only for non-consumable purchase entries', () => {
     const nonConsumable = { kind: 'purchase' as const, purchaseType: 'non_consumable' as const };
     const consumable = { kind: 'purchase' as const, purchaseType: 'consumable' as const };

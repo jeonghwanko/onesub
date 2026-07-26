@@ -416,15 +416,20 @@ export function assertIapOperationAvailable(isBusy: boolean): void {
  * RN-IAP 15 can emit queued StoreKit transactions while `initConnection()` is
  * still resolving. Register first, then retry registration after init for the
  * rare Nitro-not-ready path where the pre-init JS subscription was inert.
+ *
+ * Only an explicit `false` counts as a failed connection. Some react-native-iap
+ * builds resolve `undefined` on success, and tearing the listeners down there
+ * would kill purchasing on a perfectly healthy connection; a real failure
+ * rejects rather than resolving falsy.
  */
 export async function initializeIapConnectionWithListeners(
   attachListeners: () => void,
-  initConnection: () => Promise<boolean>,
+  initConnection: () => Promise<boolean | void>,
   isCancelled: () => boolean = () => false,
 ): Promise<boolean> {
   attachListeners();
   const connected = await initConnection();
-  if (!connected) {
+  if (connected === false) {
     throw new OneSubError(
       ONESUB_ERROR_CODE.INTERNAL_ERROR,
       '[onesub] IAP connection initialization returned false.',
