@@ -77,9 +77,10 @@ export function createValidateRouter(
         ? boundAccountId && boundAccountId.toLowerCase() !== userId.toLowerCase()
         : boundAccountId && boundAccountId !== userId;
       if (bindingMismatch) {
-        log.warn(
-          `[onesub/validate] account binding mismatch for ${sub.originalTransactionId}: receipt token does not match userId ${userId}`,
-        );
+        log.warn('[onesub/validate] account binding mismatch — receipt token does not match userId', {
+          originalTransactionId: sub.originalTransactionId,
+          userId,
+        });
         sendError(
           res,
           409,
@@ -98,7 +99,7 @@ export function createValidateRouter(
       const isSandbox = sub.sandbox === true;
       delete sub.sandbox;
       if (isSandbox && getTestOverride(userId) === false) {
-        log.warn(`[onesub/validate] sandbox test override active for ${userId}: forcing not-entitled`);
+        log.warn('[onesub/validate] sandbox test override active — forcing not-entitled', { userId });
         sub.status = SUBSCRIPTION_STATUS.EXPIRED;
         sub.willRenew = false;
       }
@@ -116,7 +117,7 @@ export function createValidateRouter(
       const response: ValidateReceiptResponse = { valid: true, subscription: sub };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/validate] Unexpected error:', err);
+      log.error('[onesub/validate] Unexpected error', { userId, productId, platform, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during receipt validation', NO_SUB);
     }
   });

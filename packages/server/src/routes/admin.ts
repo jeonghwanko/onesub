@@ -178,7 +178,7 @@ export function createAdminRouter(
       res.status(200).json(response);
     } catch (err) {
       // Bubble the message up but not the stack — admin clients log status code
-      log.error('[onesub/admin/subscriptions] list error:', err);
+      log.error('[onesub/admin/subscriptions] list error', { err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
@@ -201,7 +201,10 @@ export function createAdminRouter(
       }
       res.status(200).json(sub);
     } catch (err) {
-      log.error('[onesub/admin/subscriptions/:transactionId] detail error:', err);
+      log.error('[onesub/admin/subscriptions/:transactionId] detail error', {
+        transactionId: params.transactionId,
+        err,
+      });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
@@ -250,7 +253,7 @@ export function createAdminRouter(
       };
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/admin/customers/:userId] error:', err);
+      log.error('[onesub/admin/customers/:userId] error', { userId: params.userId, err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
@@ -290,7 +293,10 @@ export function createAdminRouter(
       await store.save(fresh);
       res.status(200).json({ ok: true, subscription: fresh });
     } catch (err) {
-      log.error('[onesub/admin/sync-apple] error:', err);
+      log.error('[onesub/admin/sync-apple] error', {
+        originalTransactionId: params.originalTransactionId,
+        err,
+      });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error');
     }
   });
@@ -313,9 +319,10 @@ export function createAdminRouter(
     const body = parseOrSend(res, overrideBodySchema, req.body);
     if (!body) return;
     setTestOverride(params.userId, body.entitled);
-    log.warn(
-      `[onesub/admin] sandbox test override set for ${params.userId}: entitled=${body.entitled}`,
-    );
+    log.warn('[onesub/admin] sandbox test override set', {
+      userId: params.userId,
+      entitled: body.entitled,
+    });
     res.json({ ok: true, userId: params.userId, entitled: body.entitled, sandboxOnly: true });
   });
 
@@ -339,7 +346,7 @@ export function createAdminRouter(
         const items = await webhookQueue.listDeadLetters!();
         res.status(200).json({ items });
       } catch (err) {
-        log.error('[onesub/admin/webhook-deadletters] error:', err);
+        log.error('[onesub/admin/webhook-deadletters] error', { err });
         sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
       }
     });
@@ -354,7 +361,7 @@ export function createAdminRouter(
         await webhookQueue.replayDeadLetter!(params.id);
         res.status(200).json({ ok: true });
       } catch (err) {
-        log.error('[onesub/admin/webhook-replay] error:', err);
+        log.error('[onesub/admin/webhook-replay] error', { deadLetterId: params.id, err });
         sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
       }
     });

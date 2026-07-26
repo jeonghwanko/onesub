@@ -70,7 +70,7 @@ export function createAppleOfferRouter(config: OneSubServerConfig): Router | nul
       // The message is deliberately generic: this route signs with the
       // promotional-offer private key, so a crypto/JOSE failure message is the
       // last thing to hand an unauthenticated-until-proven caller.
-      log.error('[onesub/apple/offer] signing error:', err);
+      log.error('[onesub/apple/offer] signing error', { productId: body.productId, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Offer signing failed');
     }
   });

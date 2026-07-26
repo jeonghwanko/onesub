@@ -34,7 +34,7 @@ async function createPgPool(connectionString: string, label: string): Promise<im
   // an unhandled EventEmitter 'error' — it crashes the process. Log it and
   // let the pool replace the client.
   pool.on('error', (err) => {
-    log.error(`[onesub] ${label} pool error (idle client):`, err);
+    log.error('[onesub] Postgres pool error (idle client)', { store: label, err });
   });
   return pool;
 }

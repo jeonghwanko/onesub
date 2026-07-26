@@ -82,15 +82,15 @@ export type GoogleWebhookWork =
 /** Per-kind log prefixes / error messages, kept identical to the pre-refactor inline handlers. */
 const GOOGLE_FAILURE_MESSAGES: Record<GoogleWebhookWork['kind'], { logPrefix: string; message: string }> = {
   voided: {
-    logPrefix: '[onesub/webhook/google] voided notification error:',
+    logPrefix: '[onesub/webhook/google] voided notification error',
     message: 'Failed to process voided notification',
   },
   oneTimeProduct: {
-    logPrefix: '[onesub/webhook/google] oneTimeProduct error:',
+    logPrefix: '[onesub/webhook/google] oneTimeProduct error',
     message: 'Failed to process oneTimeProduct notification',
   },
   subscription: {
-    logPrefix: '[onesub/webhook/google] Error handling notification:',
+    logPrefix: '[onesub/webhook/google] Error handling notification',
     message: 'Failed to process notification',
   },
 };
@@ -206,12 +206,14 @@ export async function processGoogleNotification(
           : { ...existing, status: SUBSCRIPTION_STATUS.CANCELED };
         await store.save(updated);
       } else {
-        log.warn('[onesub/webhook/google] voided subscription for unknown purchaseToken:', voided.purchaseToken);
+        log.warn('[onesub/webhook/google] voided subscription for unknown purchaseToken', {
+          purchaseToken: voided.purchaseToken,
+        });
       }
     } else {
       const removed = await purchaseStore.deletePurchaseByTransactionId(voided.orderId);
       if (!removed) {
-        log.warn('[onesub/webhook/google] voided IAP for unknown orderId:', voided.orderId);
+        log.warn('[onesub/webhook/google] voided IAP for unknown orderId', { orderId: voided.orderId });
       }
     }
     return;
@@ -224,16 +226,20 @@ export async function processGoogleNotification(
   if (work.kind === 'oneTimeProduct') {
     const { notificationType, purchaseToken, sku } = work.oneTimeProduct;
     if (notificationType === 1 /* PURCHASED */) {
-      log.info('[onesub/webhook/google] oneTimeProduct PURCHASED:', sku);
+      log.info('[onesub/webhook/google] oneTimeProduct PURCHASED', { productId: sku });
       const googleCfg = googleFor(work.oneTimeProduct.packageName);
       if (googleCfg?.serviceAccountKey && googleCfg.packageName) {
         void acknowledgeGoogleProduct(purchaseToken, sku, googleCfg).catch(
-          (err) => log.warn(`[onesub/webhook/google] oneTimeProduct ack failed for SKU ${sku} — 3-day auto-refund risk:`, err),
+          (err) =>
+            log.warn('[onesub/webhook/google] oneTimeProduct ack failed — 3-day auto-refund risk', {
+              productId: sku,
+              err,
+            }),
         );
       }
     } else {
       // notificationType === 2: CANCELED (user aborted before purchase completed)
-      log.info('[onesub/webhook/google] oneTimeProduct CANCELED (pre-completion):', sku);
+      log.info('[onesub/webhook/google] oneTimeProduct CANCELED (pre-completion)', { productId: sku });
     }
     return;
   }
@@ -270,7 +276,7 @@ export async function processGoogleNotification(
     const hook = subGoogleCfg.onPriceChangeConfirmed;
     void Promise.resolve()
       .then(() => hook({ purchaseToken, subscriptionId, packageName }))
-      .catch((err) => log.warn('[onesub/webhook/google] onPriceChangeConfirmed hook failed:', err));
+      .catch((err) => log.warn('[onesub/webhook/google] onPriceChangeConfirmed hook failed', { err }));
   }
 
   if (existing) {
@@ -311,7 +317,11 @@ export async function processGoogleNotification(
           const previous = await store.getByTransactionId(fresh.linkedPurchaseToken);
           fresh.userId = previous ? previous.userId : boundAccountId ?? purchaseToken;
           if (previous) {
-            log.info(`[onesub/webhook/google] inherited userId ${previous.userId} from linkedPurchaseToken ${fresh.linkedPurchaseToken} → new token ${purchaseToken}`);
+            log.info('[onesub/webhook/google] inherited userId from linkedPurchaseToken', {
+              userId: previous.userId,
+              linkedPurchaseToken: fresh.linkedPurchaseToken,
+              purchaseToken,
+            });
           }
         } else {
           fresh.userId = boundAccountId ?? purchaseToken;
@@ -319,7 +329,9 @@ export async function processGoogleNotification(
         await store.save(fresh);
       }
     } else {
-      log.warn('[onesub/webhook/google] Unknown purchase token and no serviceAccountKey to re-fetch:', purchaseToken);
+      log.warn('[onesub/webhook/google] Unknown purchase token and no serviceAccountKey to re-fetch', {
+        purchaseToken,
+      });
     }
   }
 }
@@ -369,7 +381,9 @@ export async function handleGoogleWebhook(
   if (webhookEventStore && typeof body.message.messageId === 'string') {
     const fresh = await webhookEventStore.markIfNew('google', body.message.messageId);
     if (!fresh) {
-      log.info('[onesub/webhook/google] dedupe: already processed', body.message.messageId);
+      log.info('[onesub/webhook/google] dedupe: already processed', {
+        messageId: body.message.messageId,
+      });
       res.status(200).json({ received: true, deduped: true });
       return;
     }
@@ -389,7 +403,9 @@ export async function handleGoogleWebhook(
   const voided = decodeGoogleVoidedNotification(body as GoogleNotificationPayload);
   if (voided) {
     if (!servesPackage(voided.packageName)) {
-      log.warn('[onesub/webhook/google] voided package name not served:', voided.packageName);
+      log.warn('[onesub/webhook/google] voided package name not served', {
+        packageName: voided.packageName,
+      });
       sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
       return;
     }
@@ -398,7 +414,9 @@ export async function handleGoogleWebhook(
     const oneTimeProduct = decodeGoogleOneTimeProductNotification(body as GoogleNotificationPayload);
     if (oneTimeProduct) {
       if (!servesPackage(oneTimeProduct.packageName)) {
-        log.warn('[onesub/webhook/google] oneTimeProduct package name not served:', oneTimeProduct.packageName);
+        log.warn('[onesub/webhook/google] oneTimeProduct package name not served', {
+          packageName: oneTimeProduct.packageName,
+        });
         sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
         return;
       }
@@ -410,7 +428,9 @@ export async function handleGoogleWebhook(
         return;
       }
       if (!servesPackage(notification.packageName)) {
-        log.warn('[onesub/webhook/google] Package name not served:', notification.packageName);
+        log.warn('[onesub/webhook/google] Package name not served', {
+          packageName: notification.packageName,
+        });
         sendError(res, 400, ONESUB_ERROR_CODE.PACKAGE_NAME_MISMATCH, 'Package name mismatch');
         return;
       }
@@ -443,7 +463,11 @@ export async function handleGoogleWebhook(
       // Enqueue itself failed (e.g. Redis down) — the job was never durably
       // accepted, so the queue can't retry it. Fall back to source-retry
       // semantics: unmark + 5xx so Pub/Sub redelivers.
-      log.error('[onesub/webhook/google] Failed to enqueue webhook job:', err);
+      log.error('[onesub/webhook/google] Failed to enqueue webhook job', {
+        kind: work.kind,
+        messageId: body.message.messageId,
+        err,
+      });
       await unmarkWebhookEvent(webhookEventStore, 'google', markedEventId);
       sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, GOOGLE_FAILURE_MESSAGES[work.kind].message);
     }
@@ -459,7 +483,7 @@ export async function handleGoogleWebhook(
     res.status(200).json({ received: true });
   } catch (err) {
     const { logPrefix, message } = GOOGLE_FAILURE_MESSAGES[work.kind];
-    log.error(logPrefix, err);
+    log.error(logPrefix, { kind: work.kind, err });
     await unmarkWebhookEvent(webhookEventStore, 'google', markedEventId);
     sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, message);
   }

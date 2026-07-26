@@ -106,7 +106,7 @@ export function createMetricsRouter(
       );
       res.status(200).json(response);
     } catch (err) {
-      log.error('[onesub/metrics/active] error:', err);
+      log.error('[onesub/metrics/active] error', { err });
       sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
   });
@@ -206,7 +206,7 @@ export function createMetricsRouter(
         };
         res.status(200).json(response);
       } catch (err) {
-        log.error(`[onesub/metrics/${name}] error:`, err);
+        log.error('[onesub/metrics] error', { route: name, err });
         sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
       }
     };

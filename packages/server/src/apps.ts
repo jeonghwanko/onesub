@@ -65,7 +65,10 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
     (config.apple || config.google || apps.length === 1 ? apps[0] : undefined);
 
   if (apps.length > 1) {
-    log.info('[onesub] Multi-app mode:', apps.map(appName).join(', '), '| default:', defaultApp ? appName(defaultApp) : '(none)');
+    log.info('[onesub] Multi-app mode', {
+      appIds: apps.map(appName),
+      defaultAppId: defaultApp ? appName(defaultApp) : null,
+    });
   }
 
   function match(hint: AppHint): OneSubAppConfig | undefined {
@@ -79,7 +82,7 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
       if (byId) return byId;
       // An appId we don't serve must not silently fall through to the default —
       // that would validate it against some other app's credentials.
-      log.warn('[onesub] Unknown appId:', hint.appId);
+      log.warn('[onesub] Unknown appId', { appId: hint.appId });
       return undefined;
     }
 
@@ -87,7 +90,7 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
     if (hint.bundleId) {
       const byBundle = apps.find((a) => a.apple?.bundleId === hint.bundleId);
       if (byBundle) return byBundle;
-      log.warn('[onesub] No app configured for bundleId:', hint.bundleId);
+      log.warn('[onesub] No app configured for bundleId', { bundleId: hint.bundleId });
       return undefined;
     }
 
