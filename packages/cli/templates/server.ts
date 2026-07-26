@@ -28,7 +28,10 @@ app.use(
       ? {
           packageName: process.env.GOOGLE_PACKAGE_NAME,
           serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+          // Required in production: without it the RTDN webhook cannot attribute a
+          // request to Google and refuses it. See docs/SECURITY.md.
           pushAudience: process.env.GOOGLE_PUSH_AUDIENCE,
+          pushServiceAccountEmail: process.env.GOOGLE_PUSH_SERVICE_ACCOUNT_EMAIL,
         }
       : undefined,
     database: { url: dbUrl ?? '' },
