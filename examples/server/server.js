@@ -88,6 +88,11 @@ app.use(
       ? {
           packageName: process.env.GOOGLE_PACKAGE_NAME,
           serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+          // Required in production. Without it POST /onesub/webhook/google cannot
+          // attribute a request to Google and answers 401 when NODE_ENV=production.
+          // Unset here so this example runs locally with no Pub/Sub setup.
+          pushAudience: process.env.GOOGLE_PUSH_AUDIENCE,
+          pushServiceAccountEmail: process.env.GOOGLE_PUSH_SERVICE_ACCOUNT_EMAIL,
         }
       : undefined,
     database: { url: process.env.DATABASE_URL ?? '' },
