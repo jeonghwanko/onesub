@@ -34,10 +34,10 @@ export function setLogger(logger: OneSubLogger | undefined): void {
  */
 function escapeLineBreaks(value: string): string {
   // One literal replacement per character rather than a single regex with a
-  // callback. Same output, but a taint analyser can see that the line terminator
-  // is gone -- CodeQL's js/log-injection sanitiser recognition could not prove it
-  // through the callback form, and an unrecognised sanitiser is indistinguishable
-  // from an absent one to anyone reading the alert list.
+  // callback. This was changed hoping CodeQL's js/log-injection sanitiser
+  // recognition would follow it; it did not, and the alert points at the spread in
+  // `log.*` rather than here. The form is kept because it reads more plainly, not
+  // because it satisfies an analyser.
   return value
     .replace(/\r/g, '\\r')
     .replace(/\n/g, '\\n')
@@ -46,10 +46,22 @@ function escapeLineBreaks(value: string): string {
 }
 
 /**
- * Applied to top-level string arguments only. Objects and `Error`s are passed
- * through untouched — a structured logger serialises those itself, and rewriting
- * them here would corrupt data the operator asked for. The line-forgery vector is
- * the message string, which is what this covers.
+ * Applied to top-level string arguments only. Objects and `Error`s pass through
+ * untouched, which is a real and deliberate gap rather than an oversight: an
+ * `Error` reaching `log.error('...:', err)` can carry attacker-influenced text in
+ * its message, so a newline there can still break a line.
+ *
+ * It is left that way because the alternative is worse. A stack trace is multi-line
+ * by nature and is the main reason to log an `Error` at all; escaping its newlines
+ * would turn every trace into one unreadable line, and escaping only `message`
+ * achieves nothing because `stack` repeats it. Recursively rewriting strings inside
+ * objects would likewise corrupt structured fields an operator asked to see.
+ *
+ * So the guarantee is scoped: message strings this server composes cannot be used
+ * to forge a line. Reading a trace still requires distinguishing it from
+ * surrounding entries by context, as it always has. CodeQL reports this gap on the
+ * spread in `log.*` and is correct to; the alert is dismissed as won't-fix with
+ * this reasoning, not as a false positive.
  */
 function scrub(args: unknown[]): unknown[] {
   return args.map((arg) => (typeof arg === 'string' ? escapeLineBreaks(arg) : arg));
