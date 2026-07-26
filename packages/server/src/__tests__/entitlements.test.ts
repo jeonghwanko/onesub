@@ -110,6 +110,21 @@ const PREMIUM: EntitlementsConfig = {
   premium: { productIds: ['pro_monthly', 'pro_yearly', 'lifetime_pass'] },
 };
 
+/**
+ * Wrap one method on a live store instance and count how often it is called.
+ * The middleware holds a reference to the same object, and resolves the method
+ * at call time, so patching after `buildServer` is observed by the routes.
+ */
+function countCalls<T extends object, K extends keyof T>(target: T, method: K): () => number {
+  let calls = 0;
+  const original = target[method] as unknown as (...args: unknown[]) => unknown;
+  (target as Record<K, unknown>)[method] = (...args: unknown[]) => {
+    calls++;
+    return original.apply(target, args);
+  };
+  return () => calls;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // evaluateEntitlement (unit, no HTTP)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +279,37 @@ describe('GET /onesub/entitlements (bulk)', () => {
 
     expect(resp.body.entitlements.premium.active).toBe(false);
     expect(resp.body.entitlements.addon.active).toBe(false);
+  });
+
+  // The route's whole cost model is "read the user's records once, evaluate N
+  // entitlements against them". Evaluating each one through
+  // `evaluateEntitlement` instead re-reads both stores per entitlement — 2N
+  // round-trips for a result that needs 2 — and produces an identical
+  // response, so nothing above would catch the regression. Count the reads.
+  it('reads each store exactly once regardless of how many entitlements are configured', async () => {
+    const config: EntitlementsConfig = {
+      premium: { productIds: ['pro_monthly', 'pro_yearly'] },
+      promode: { productIds: ['dev_tools_addon'] },
+      lifetime: { productIds: ['lifetime_pass'] },
+      cosmetics: { productIds: ['skin_pack'] },
+    };
+    const { store, purchaseStore, server } = buildServer({ entitlements: config });
+    await store.save(sub({ userId: 'u_reads', productId: 'pro_yearly' }));
+    await purchaseStore.savePurchase(purchase({ userId: 'u_reads', productId: 'lifetime_pass' }));
+
+    const subReads = countCalls(store, 'getAllByUserId');
+    const purchaseReads = countCalls(purchaseStore, 'getPurchasesByUserId');
+
+    const resp = await server.get<EntitlementsResponse>('/onesub/entitlements?userId=u_reads');
+
+    expect(resp.status).toBe(200);
+    // Sanity: the reads that did happen produced the right answer.
+    expect(resp.body.entitlements.premium.active).toBe(true);
+    expect(resp.body.entitlements.lifetime.active).toBe(true);
+    expect(resp.body.entitlements.cosmetics.active).toBe(false);
+
+    expect(subReads()).toBe(1);
+    expect(purchaseReads()).toBe(1);
   });
 });
 
