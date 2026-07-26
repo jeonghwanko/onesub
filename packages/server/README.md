@@ -96,6 +96,9 @@ explicit app IDs fail closed and are never validated with another app's credenti
 | `GET  /onesub/admin/subscriptions/:transactionId` | Get subscription detail (requires `adminSecret`) |
 | `GET  /onesub/admin/customers/:userId` | Get a customer profile (requires `adminSecret`) |
 | `POST /onesub/admin/sync-apple/:originalTransactionId` | Refresh a subscription from Apple (requires `adminSecret`) |
+| `GET /onesub/admin/test-overrides` | List sandbox-only entitlement overrides (requires `adminSecret`) |
+| `PUT /onesub/admin/test-overrides/:userId` | Force an entitlement verdict for one user — body `{ "entitled": false }`. Honoured **only for Sandbox receipts**, so production customers are unaffected. Exists because Apple cannot cancel a sandbox subscription bought with a real Apple Account, which otherwise locks a tester out of the purchase flow. Process-local and non-persistent |
+| `DELETE /onesub/admin/test-overrides/:userId` | Clear that user's override (requires `adminSecret`) |
 | `GET  /onesub/admin/webhook-deadletters` | List failed webhook jobs in DLQ (requires `adminSecret` + BullMQ) |
 | `POST /onesub/admin/webhook-replay/:id` | Replay a dead-letter job (requires `adminSecret` + BullMQ) |
 | `GET  /onesub/entitlement?userId=&id=` | Evaluate one configured entitlement |

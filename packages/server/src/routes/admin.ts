@@ -17,6 +17,8 @@ import { sendError, sendZodError } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
 import { secretsEqual } from './secret-compare.js';
+import { setTestOverride, clearTestOverride, listTestOverrides } from '../test-overrides.js';
+import { log } from '../logger.js';
 
 const ADMIN_SECRET_HEADER = 'x-admin-secret';
 
@@ -318,6 +320,51 @@ export function createAdminRouter(
     } catch (err) {
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, (err as Error).message ?? 'sync error');
     }
+  });
+
+  // ── Sandbox-only entitlement overrides (manual testing) ──
+  // Apple cannot cancel a sandbox subscription bought with a real Apple Account,
+  // so a tester who subscribes once stays entitled and can never re-run the
+  // purchase flow. These force "not entitled" for one userId, and are honoured
+  // only when the receipt being validated is a Sandbox one. See test-overrides.ts.
+  const overrideParamsSchema = z.object({ userId: z.string().min(1).max(256) });
+  const overrideBodySchema = z.object({ entitled: z.boolean() });
+
+  router.get(ROUTES.ADMIN_TEST_OVERRIDES, (_req: Request, res: Response) => {
+    res.json({ overrides: listTestOverrides() });
+  });
+
+  router.put(ROUTES.ADMIN_TEST_OVERRIDE, (req: Request, res: Response) => {
+    let params;
+    let body;
+    try {
+      params = overrideParamsSchema.parse(req.params);
+      body = overrideBodySchema.parse(req.body);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        sendZodError(res, err);
+      } else {
+        sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId and { entitled: boolean } required');
+      }
+      return;
+    }
+    setTestOverride(params.userId, body.entitled);
+    log.warn(
+      `[onesub/admin] sandbox test override set for ${params.userId}: entitled=${body.entitled}`,
+    );
+    res.json({ ok: true, userId: params.userId, entitled: body.entitled, sandboxOnly: true });
+  });
+
+  router.delete(ROUTES.ADMIN_TEST_OVERRIDE, (req: Request, res: Response) => {
+    let params;
+    try {
+      params = overrideParamsSchema.parse(req.params);
+    } catch {
+      sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'userId required');
+      return;
+    }
+    const cleared = clearTestOverride(params.userId);
+    res.json({ ok: true, userId: params.userId, cleared });
   });
 
   // GET /onesub/admin/webhook-deadletters

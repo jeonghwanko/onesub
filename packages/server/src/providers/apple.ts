@@ -274,6 +274,9 @@ export async function validateAppleReceipt(
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
     ...(appAccountToken ? { boundAccountId: appAccountToken } : {}),
+    // Transient, like boundAccountId: the validate route uses it to decide
+    // whether a sandbox-only test override may apply, then strips it.
+    ...(tx.environment === 'Sandbox' ? { sandbox: true } : {}),
   };
 }
 
