@@ -323,6 +323,27 @@ export class PostgresPurchaseStore implements PurchaseStore {
     return result.rows.map(rowToPurchaseInfo);
   }
 
+  /**
+   * Purchases for one user + product, most-recent-first.
+   *
+   * Same shape and ordering as `getPurchasesByUserId`, with `product_id` pushed
+   * into the WHERE clause instead of filtered in process. Non-consumables also
+   * have a partial unique index on `(user_id, product_id)`, so the ownership
+   * check this backs is a single index lookup rather than a full read of the
+   * user's purchase history.
+   */
+  async getPurchasesForProduct(userId: string, productId: string): Promise<PurchaseInfo[]> {
+    const pool = await this.getPool();
+    const result = await pool.query<PurchaseDbRow>(
+      `SELECT *
+         FROM onesub_purchases
+        WHERE user_id = $1 AND product_id = $2
+        ORDER BY purchased_at DESC`,
+      [userId, productId]
+    );
+    return result.rows.map(rowToPurchaseInfo);
+  }
+
   async getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null> {
     const pool = await this.getPool();
     const result = await pool.query<PurchaseDbRow>(

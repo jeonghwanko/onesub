@@ -148,7 +148,28 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
  */
 export interface PurchaseStore {
   savePurchase(purchase: PurchaseInfo): Promise<void>;
+  /**
+   * Every purchase for the user, most-recent-first (by `purchasedAt`).
+   *
+   * Unbounded: a user with a long consumable history has a long row set. Prefer
+   * `getPurchasesForProduct` when only one product matters.
+   */
   getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
+  /**
+   * Purchases for one `userId` + `productId`, most-recent-first.
+   *
+   * OPTIONAL. When a store does not implement it, callers fall back to
+   * `getPurchasesByUserId` and filter in process — correct, but it transfers
+   * every row the user has. That is the hot path for non-consumable validation:
+   * a user who has bought thousands of consumables paid for all of them on every
+   * lifetime-product purchase. Implement this and the same answer comes from an
+   * index (`WHERE user_id = $1 AND product_id = $2` in Postgres, the
+   * `user_product` set in Redis).
+   *
+   * Optional rather than required so existing custom `PurchaseStore`
+   * implementations keep compiling; all three built-in stores implement it.
+   */
+  getPurchasesForProduct?(userId: string, productId: string): Promise<PurchaseInfo[]>;
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
   /** Returns every purchase record. Used by metrics aggregation; admin-gated. */
   listAll(): Promise<PurchaseInfo[]>;
@@ -199,12 +220,28 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     }
     this.byTransactionId.set(purchase.transactionId, purchase);
     const list = this.byUserId.get(purchase.userId) ?? [];
-    list.push(purchase);
+    // Insert so the list stays most-recent-first by purchasedAt, matching what
+    // Postgres (`ORDER BY purchased_at DESC`) and Redis (`zrevrange`) return.
+    // This used to push to the end, so the in-memory store — the one behind
+    // `onesub dev` and most tests — handed back the opposite order from the
+    // stores used in production, and `/onesub/purchase/status` changed order
+    // between dev and prod for the same data.
+    const at = Date.parse(purchase.purchasedAt);
+    const idx = list.findIndex((p) => Date.parse(p.purchasedAt) < at);
+    if (idx === -1) list.push(purchase);
+    else list.splice(idx, 0, purchase);
     this.byUserId.set(purchase.userId, list);
   }
 
   async getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]> {
-    return this.byUserId.get(userId) ?? [];
+    return [...(this.byUserId.get(userId) ?? [])];
+  }
+
+  async getPurchasesForProduct(userId: string, productId: string): Promise<PurchaseInfo[]> {
+    // No secondary index here — this store is for development and tests, where
+    // the row count is small. It exists so all three built-ins agree on the
+    // interface and on ordering.
+    return (this.byUserId.get(userId) ?? []).filter((p) => p.productId === productId);
   }
 
   async getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null> {

@@ -36,6 +36,26 @@ const purchaseStatusQuerySchema = z.object({
   productId: z.string().min(1).max(256).optional(),
 });
 
+/**
+ * Purchases for one user + product, most-recent-first.
+ *
+ * Uses the store's index-backed `getPurchasesForProduct` when it has one, and
+ * otherwise reads the user's full history and filters here. The fallback is what
+ * this code always did; it stays for custom `PurchaseStore` implementations,
+ * which cannot be required to grow a method without breaking.
+ */
+async function purchasesForProduct(
+  purchaseStore: PurchaseStore,
+  userId: string,
+  productId: string,
+): Promise<PurchaseInfo[]> {
+  if (purchaseStore.getPurchasesForProduct) {
+    return purchaseStore.getPurchasesForProduct(userId, productId);
+  }
+  const all = await purchaseStore.getPurchasesByUserId(userId);
+  return all.filter((p) => p.productId === productId);
+}
+
 export function createPurchaseRouter(
   config: OneSubServerConfig,
   purchaseStore: PurchaseStore
@@ -94,9 +114,10 @@ export function createPurchaseRouter(
       // purchase recorded under this userId (same idempotent-restore semantics
       // as the transactionId-match path below).
       if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-        const owned = (await purchaseStore.getPurchasesByUserId(userId)).find(
-          (p) => p.productId === productId,
-        );
+        // Scoped to this product rather than reading the user's whole purchase
+        // history — a consumable-heavy account otherwise paid for every one of
+        // its rows on each lifetime-product purchase.
+        const owned = (await purchasesForProduct(purchaseStore, userId, productId))[0];
         if (owned) {
           const response: ValidatePurchaseResponse = {
             valid: true,
@@ -279,11 +300,13 @@ export function createPurchaseRouter(
     const { userId, productId } = query;
 
     try {
-      let purchases = await purchaseStore.getPurchasesByUserId(userId);
-
-      if (productId !== undefined) {
-        purchases = purchases.filter((p) => p.productId === productId);
-      }
+      // With a productId, push the filter into the store instead of reading
+      // every row and discarding most of them. Without one, the route's contract
+      // is the user's full history, so a full read is what it asks for.
+      const purchases =
+        productId !== undefined
+          ? await purchasesForProduct(purchaseStore, userId, productId)
+          : await purchaseStore.getPurchasesByUserId(userId);
 
       const response: PurchaseStatusResponse = { purchases };
       res.status(200).json(response);

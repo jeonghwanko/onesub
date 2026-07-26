@@ -72,7 +72,8 @@ createOneSubMiddleware(config)
       ├── POST /onesub/purchase/validate  → zod → provider.validate → purchaseStore.save
       │                                     (Google consumable: consumeGoogleProductReceipt fire-and-forget)
       │                                     (Google non-consumable: acknowledgeGoogleProduct fire-and-forget)
-      ├── GET  /onesub/purchase/status    → purchaseStore.getPurchasesByUserId → { purchases }
+      ├── GET  /onesub/purchase/status    → getPurchasesForProduct (with ?productId)
+      │                                     else getPurchasesByUserId → { purchases }
       │
       │── Entitlements (only if config.entitlements is set):
       ├── GET  /onesub/entitlement        → evaluate one configured entitlement
@@ -139,6 +140,7 @@ interface SubscriptionStore {
 interface PurchaseStore {
   savePurchase(purchase: PurchaseInfo): Promise<void>;
   getPurchasesByUserId(userId: string): Promise<PurchaseInfo[]>;
+  getPurchasesForProduct?(userId: string, productId: string): Promise<PurchaseInfo[]>; // 0.21.0+, optional
   getPurchaseByTransactionId(txId: string): Promise<PurchaseInfo | null>;
   listAll(): Promise<PurchaseInfo[]>;
   hasPurchased(userId: string, productId: string): Promise<boolean>;
@@ -147,6 +149,19 @@ interface PurchaseStore {
   deletePurchaseByTransactionId(transactionId: string): Promise<boolean>;             // 0.8.0+
 }
 ```
+
+Both read methods return **most-recent-first** by `purchasedAt`. All three built-in
+stores agree on that; a custom store should too, since `/onesub/purchase/status`
+surfaces the order directly.
+
+`getPurchasesForProduct` is optional. Non-consumable validation and
+`/onesub/purchase/status?productId=` use it when present and otherwise read the
+full history and filter in process — correct either way, but the unscoped read
+transfers every row a user owns, so an account with a long consumable history paid
+for all of them on each lifetime-product purchase. The built-in stores serve it
+from an index (`WHERE user_id = $1 AND product_id = $2` in Postgres, the
+`user_product` set in Redis). It is optional so that custom `PurchaseStore`
+implementations written before it existed keep compiling.
 
 `deletePurchaseByTransactionId` is the precise single-row removal used by IAP refund paths (Apple `REFUND`/`REVOKE` for `Consumable`/`Non-Consumable`, Google `voidedPurchaseNotification` `productType=2`). Distinct from `deletePurchases(userId, productId)` which wipes all rows for that pair — using the userId/productId variant on a refund would also remove sibling consumable purchases the user still owns.
 

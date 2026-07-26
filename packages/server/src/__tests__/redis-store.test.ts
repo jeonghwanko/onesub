@@ -199,6 +199,43 @@ describe('RedisPurchaseStore', () => {
     expect(await store.hasPurchased('alice', 'other_product')).toBe(false);
   });
 
+  it('getPurchasesForProduct reads only the requested product', async () => {
+    await store.savePurchase(basePurchase);
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-2', productId: 'coins_100', type: 'consumable' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-3', productId: 'coins_100', type: 'consumable' });
+    // Another user holding the same product must not leak in.
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-4', userId: 'bob', productId: 'coins_100', type: 'consumable' });
+
+    const rows = await store.getPurchasesForProduct('alice', 'coins_100');
+    expect(rows).toHaveLength(2);
+    expect(rows.every((p) => p.userId === 'alice' && p.productId === 'coins_100')).toBe(true);
+    expect(await store.getPurchasesForProduct('alice', 'nothing')).toEqual([]);
+    expect(await store.getPurchasesForProduct('nobody', 'coins_100')).toEqual([]);
+  });
+
+  it('getPurchasesForProduct returns most-recent-first', async () => {
+    // The user_product index is an unordered SET, unlike the per-user sorted
+    // set, so the ordering contract depends on an explicit sort.
+    await store.savePurchase({ ...basePurchase, transactionId: 'mid', productId: 'coins_100', purchasedAt: '2026-04-10T00:00:00.000Z' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'newest', productId: 'coins_100', purchasedAt: '2026-08-01T00:00:00.000Z' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'oldest', productId: 'coins_100', purchasedAt: '2026-01-01T00:00:00.000Z' });
+
+    const rows = await store.getPurchasesForProduct('alice', 'coins_100');
+    expect(rows.map((p) => p.transactionId)).toEqual(['newest', 'mid', 'oldest']);
+  });
+
+  it('getPurchasesForProduct reflects deletions and reassignment', async () => {
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-1', productId: 'coins_100' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-2', productId: 'coins_100' });
+
+    await store.deletePurchaseByTransactionId('p-1');
+    expect(await store.getPurchasesForProduct('alice', 'coins_100')).toHaveLength(1);
+
+    await store.reassignPurchase('p-2', 'bob');
+    expect(await store.getPurchasesForProduct('alice', 'coins_100')).toEqual([]);
+    expect(await store.getPurchasesForProduct('bob', 'coins_100')).toHaveLength(1);
+  });
+
   it('reassignPurchase moves ownership without losing the row', async () => {
     await store.savePurchase(basePurchase);
     expect(await store.reassignPurchase('p-1', 'bob')).toBe(true);
