@@ -137,9 +137,25 @@ describe('server error codes', () => {
   });
 
   // ── /onesub/webhook/google ───────────────────────────────────
+  // Needs its own app: the shared config above has no `google` block on purpose
+  // (the GOOGLE_CONFIG_MISSING case depends on it), and the route is only mounted
+  // for deployments that serve Google Play.
   describe('POST /onesub/webhook/google', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let googleApp: any;
+
+    beforeEach(() => {
+      googleApp = express();
+      googleApp.use(createOneSubMiddleware({
+        database: { url: '' },
+        google: { packageName: 'com.test.google' },
+        store: new InMemorySubscriptionStore(),
+        purchaseStore: new InMemoryPurchaseStore(),
+      }));
+    });
+
     it('missing message.data → errorCode: MISSING_MESSAGE_DATA', async () => {
-      const res = await request(app).post('/onesub/webhook/google').send({});
+      const res = await request(googleApp).post('/onesub/webhook/google').send({});
       expect(res.status).toBe(400);
       expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA);
     });

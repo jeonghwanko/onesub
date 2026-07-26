@@ -96,6 +96,20 @@ const GOOGLE_FAILURE_MESSAGES: Record<GoogleWebhookWork['kind'], { logPrefix: st
 };
 
 /**
+ * Whether this config serves Google Play at all — top-level `google`, or any
+ * entry in `apps[]` with a `google` block.
+ *
+ * Single source of truth for two decisions that have to agree: whether
+ * `createWebhookRouter` mounts `POST /onesub/webhook/google`, and whether
+ * `warnIfGoogleWebhookOpen` has anything to warn about. If they disagreed, a
+ * deployment would either be warned about a route it does not expose, or expose
+ * one nothing warned about.
+ */
+export function servesGoogle(config: OneSubServerConfig): boolean {
+  return getAppRegistry(config).apps.some((app) => !!app.google);
+}
+
+/**
  * Startup check for the two conditions that leave `POST /onesub/webhook/google`
  * open. Called once from `createOneSubMiddleware`; warns rather than throws
  * because rejecting would break deployments that front the route with their own
@@ -114,13 +128,15 @@ const GOOGLE_FAILURE_MESSAGES: Record<GoogleWebhookWork['kind'], { logPrefix: st
  */
 export function warnIfGoogleWebhookOpen(config: OneSubServerConfig): void {
   if (process.env['NODE_ENV'] !== 'production') return;
+  // Nothing to warn about when the route is not mounted at all.
+  if (!servesGoogle(config)) return;
 
   const apps = getAppRegistry(config).apps;
   const googleApps = apps.map((a) => a.google).filter((g): g is NonNullable<typeof g> => !!g);
 
   // Authentication is skipped entirely when no app declares a pushAudience —
   // see handleGoogleWebhook, which only verifies when it has one to verify.
-  if (googleApps.length > 0 && !googleApps.some((g) => g.pushAudience)) {
+  if (!googleApps.some((g) => g.pushAudience)) {
     log.warn(
       '[onesub] SECURITY: POST /onesub/webhook/google accepts unauthenticated requests — ' +
         'no configured app sets google.pushAudience, so the Pub/Sub OIDC token is never verified. ' +
@@ -134,9 +150,8 @@ export function warnIfGoogleWebhookOpen(config: OneSubServerConfig): void {
   if (!apps.some((a) => a.google?.packageName)) {
     log.warn(
       '[onesub] POST /onesub/webhook/google is in open mode — no configured app declares ' +
-        'google.packageName, so notifications for ANY package are accepted. The route is mounted ' +
-        'whether or not Google is configured; set google.packageName, or block the path at your ' +
-        'proxy if this deployment does not serve Google Play.',
+        'google.packageName, so notifications for ANY package are accepted. ' +
+        'Set google.packageName on each app you serve.',
     );
   }
 }

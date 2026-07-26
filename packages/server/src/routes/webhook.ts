@@ -7,7 +7,7 @@ import type { WebhookEventStore } from '../webhook-events.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { handleAppleWebhook, processAppleNotification } from './webhook-apple.js';
 import type { AppleWebhookWork } from './webhook-apple.js';
-import { handleGoogleWebhook, processGoogleNotification } from './webhook-google.js';
+import { handleGoogleWebhook, processGoogleNotification, servesGoogle } from './webhook-google.js';
 import type { GoogleWebhookWork } from './webhook-google.js';
 
 /**
@@ -50,9 +50,23 @@ export function createWebhookRouter(
     handleAppleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue),
   );
 
-  router.post(ROUTES.WEBHOOK_GOOGLE, (req: Request, res: Response) =>
-    handleGoogleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue),
-  );
+  // Google's route is mounted only for deployments that actually serve Google
+  // Play. Unlike Apple's, it does not authenticate unconditionally — the Pub/Sub
+  // token is verified only when an app declares a `pushAudience` — and its
+  // voided-purchase branch needs no Google credentials to run: it cancels a
+  // subscription by `purchaseToken` or deletes a purchase row by `orderId`
+  // straight from the payload. An Apple-only deployment therefore exposed an
+  // unauthenticated endpoint that could revoke entitlement, for no benefit,
+  // since it has no Google purchases to receive notifications about.
+  //
+  // Apple's route stays unconditional: it verifies the `signedPayload` JWS
+  // against the bundled Apple roots on every request regardless of config, so it
+  // is not open in the same way.
+  if (servesGoogle(config)) {
+    router.post(ROUTES.WEBHOOK_GOOGLE, (req: Request, res: Response) =>
+      handleGoogleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue),
+    );
+  }
 
   return router;
 }
