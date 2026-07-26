@@ -79,6 +79,13 @@ authentication middleware.
 3. **Mock/degraded verification modes**: `apple.mockMode`, `google.mockMode`, and
    `skipJwsVerification` are for local testing only. Mock provider modes are rejected when
    `NODE_ENV=production`; do not rely on environment guards as a substitute for production config review
+4. **No rate limiting**: the only built-in request bound is the 50 kb JSON body cap. The
+   unauthenticated validation routes are the most expensive ones — JWS verification, and on the Google
+   path an outbound store API call — so request volume must be limited by the host, at the proxy or in
+   Express. Webhook routes are the exception and should not be volume-limited: shedding them can
+   permanently lose a state transition once Apple/Google exhaust their retries. Their correct control is
+   caller authentication, which for Google means configuring `pushAudience` — without it the Google
+   webhook skips authentication entirely. See *Request Limits* in [DEPLOYMENT.md](./DEPLOYMENT.md)
 
 ## Reporting Vulnerabilities
 
