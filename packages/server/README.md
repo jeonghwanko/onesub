@@ -323,7 +323,9 @@ Canonical Postgres DDL shipped at [`sql/schema.sql`](./sql/schema.sql). Apply wi
 ## Security
 
 - Apple JWS signature verified end-to-end against **Apple Root CA G3** (as of `0.6.0`)
-- Google RTDN: `Authorization: Bearer` JWT verified against Google JWKS when `pushAudience` is configured
+- Google RTDN: `Authorization: Bearer` JWT verified against Google JWKS when `pushAudience` is
+  configured. Without it the request cannot be attributed to Google and is refused with 401 under
+  `NODE_ENV=production`, unless `google.allowUnauthenticatedWebhook` opts in
 - `transactionId` ownership enforced — same receipt can't be reused across users (`0.5.0+`)
 - zod input validation + 50 KB body cap
 - Full write-up: [`docs/SECURITY.md`](../../docs/SECURITY.md)

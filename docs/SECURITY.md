@@ -37,14 +37,23 @@
 - **Apple**: Only JWS-signed `signedPayload` accepted. The embedded `x5c` certificate chain is
   validated to the pinned Apple Root CA G3, then the leaf key verifies the payload signature
 - **Google**: When `pushAudience` is configured, `Authorization: Bearer` JWT is verified against
-  Google JWKS with audience claim check. **When no configured app sets it, the verification step is
-  skipped and the route accepts any well-formed notification body**. The subscription paths re-fetch
-  state from Google before writing, so a forged notification cannot fabricate an entitlement; the
-  voided-purchase path acts on the payload alone, so a caller who knows a `purchaseToken` or `orderId`
-  can cancel a subscription or delete a one-time purchase row. Configure `pushAudience` and
-  `pushServiceAccountEmail`. As of `@onesub/server@0.21.2` the server warns at startup when this
-  applies and `NODE_ENV=production`; as of `0.22.0` the route is mounted only when the config serves
-  Google Play at all, so an Apple-only deployment no longer exposes it
+  Google JWKS with audience claim check. **When no configured app sets it, an unattributable request
+  is refused with 401 under `NODE_ENV=production`** (`@onesub/server@0.27.0`), unless
+  `google.allowUnauthenticatedWebhook` is set — which is only correct when something in front of the
+  server already authenticates the request. Outside production the route still accepts
+  unauthenticated requests, matching how the mockMode guard and sandbox-receipt rejection are gated.
+
+  Why refusing rather than masking the ids. The exposure was never forged entitlement — the
+  subscription paths re-fetch state from Google before writing — but *revocation*: the voided-purchase
+  path acts on the payload alone, so a caller who knew a `purchaseToken` or `orderId` could cancel a
+  subscription or delete a one-time purchase row. Those ids cannot be protected by treating them as
+  secrets. For a Google subscription the purchase token **is** the record's `originalTransactionId`,
+  deliberately, because RTDNs and `linkedPurchaseToken` chains carry nothing else — so it is in the
+  database, in every notification payload, and in the logs that investigate it. Refusing requests that
+  cannot be attributed to Google removes the capability instead of hiding its key.
+
+  Earlier steps on the same path: `0.21.2` added the startup warning, and `0.22.0` mounts the route
+  only when the config serves Google Play at all, so an Apple-only deployment does not expose it
 
 ### Validate / Status Endpoints
 - Currently open by design (consumer adds their own auth middleware)
@@ -93,7 +102,8 @@ authentication middleware.
    Express. Webhook routes are the exception and should not be volume-limited: shedding them can
    permanently lose a state transition once Apple/Google exhaust their retries. Their correct control is
    caller authentication, which for Google means configuring `pushAudience` — without it the Google
-   webhook skips authentication entirely. See *Request Limits* in [DEPLOYMENT.md](./DEPLOYMENT.md)
+   webhook has no way to attribute a request and refuses it in production. See *Request Limits* in
+   [DEPLOYMENT.md](./DEPLOYMENT.md)
 
 ## Reporting Vulnerabilities
 

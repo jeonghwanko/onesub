@@ -4,6 +4,68 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.26.x → 0.27.0
+
+### Breaking: the Google RTDN webhook refuses unauthenticated requests in production
+
+**Who is affected.** A production deployment (`NODE_ENV=production`) where no configured
+app sets `google.pushAudience`. `POST /onesub/webhook/google` used to accept those
+requests; it now answers **401**. Nothing changes outside production, and nothing
+changes if you already set `pushAudience`.
+
+**Fix, in order of preference:**
+
+```ts
+// 1. Configure Pub/Sub push authentication — the intended setup.
+google: {
+  packageName: 'com.example.app',
+  pushAudience: 'https://your-server.example.com/onesub/webhook/google',
+  pushServiceAccountEmail: 'push@your-project.iam.gserviceaccount.com',
+}
+
+// 2. Or state that something in front of the server already authenticates the
+//    request — Cloud Run with IAM, a VPC-internal ingress, mTLS at a proxy.
+google: { packageName: 'com.example.app', allowUnauthenticatedWebhook: true }
+```
+
+Option 2 is not a way to postpone option 1. With neither, an RTDN is accepted from
+anyone who can reach the endpoint.
+
+**Why this, and not masking the ids in logs.** The exposure was never forged
+entitlement — the subscription paths re-fetch state from Google before writing — but
+*revocation*: the voided-purchase path acts on the payload alone, so a caller who knew
+a `purchaseToken` or `orderId` could cancel a subscription or delete a one-time
+purchase row.
+
+The obvious-looking fix is to stop putting those ids in logs. It does not work. For a
+Google subscription the purchase token **is** the record's `originalTransactionId` —
+deliberately, because RTDNs and `linkedPurchaseToken` chains carry nothing else — so it
+is in the database, in every notification payload, and in the webhook lines where it is
+the subject of the investigation. Redacting it from logs would have left the capability
+intact while implying it was protected. Refusing requests that cannot be attributed to
+Google removes the capability.
+
+**The startup warning changed accordingly.** Where it used to say the endpoint
+"accepts unauthenticated requests", it now either says the endpoint *will reject every
+request with 401* (no `pushAudience`, no opt-in) or that it *runs unauthenticated by
+explicit opt-in*. If you alert on that text, update the pattern.
+
+### Log values are bounded and Play URLs are scrubbed
+
+Two smaller changes, no configuration:
+
+- **Each field value is cut at 512 characters**, with `…+N more` saying how much was
+  dropped. This bites on upstream error bodies: `fetchSubscriptionPurchaseV2`
+  interpolates the whole Play error body into its `Error` message, so `err.msg` was as
+  unbounded as `responseBody`.
+- **A purchase token echoed in a Play API URL is replaced** with
+  `/tokens/[redacted]`. A Play error body can quote the request URL, which would put
+  the token on the acknowledge, consume and validation-failure lines — the ones that
+  deliberately log `productId` and `httpStatus` and no token. A `purchaseToken` field
+  is *not* masked, for the reason above.
+
+---
+
 ## `@onesub/server` 0.25.x → 0.26.0
 
 ### The remaining log lines carry `key=value` fields
