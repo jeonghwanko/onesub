@@ -56,7 +56,7 @@
   "license": "MIT",
   "dependencies": {
     "@onesub/shared": "0.16.0",
-    "jose": "^6.2.3",
+    "jose": "^6.2.5",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
