@@ -339,7 +339,15 @@ describe('validateGoogleProductReceipt', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null for consumable when consumptionState is 1 (already consumed)', async () => {
+  // onesub consumes a consumable as soon as it validates it, so a consumed token
+  // is what every *legitimate* second look at an already-recorded purchase looks
+  // like — a restore, a re-surfaced pending order, a retry after a dropped
+  // response. Returning null here made the route answer all of those with an
+  // authoritative "receipt rejected", which the client treats as final: it stops
+  // retrying and never confirms, losing a purchase onesub had already recorded.
+  // The provider now reports the fact; only the route can tell replay from
+  // restore, because only the route can look for the recorded purchase.
+  it('reports an already-consumed consumable instead of rejecting it', async () => {
     mockGoogleFetch({
       purchaseState: 0,
       consumptionState: 1,
@@ -348,6 +356,42 @@ describe('validateGoogleProductReceipt', () => {
     });
     const result = await validateGoogleProductReceipt(
       'token_consumed',
+      'credits_100',
+      makeGoogleConfig(),
+      'consumable',
+    );
+    expect(result).not.toBeNull();
+    expect(result?.transactionId).toBe('GPA.already_consumed');
+    expect(result?.alreadyConsumed).toBe(true);
+  });
+
+  it('does not flag a fresh consumable as already consumed', async () => {
+    mockGoogleFetch({
+      purchaseState: 0,
+      consumptionState: 0,
+      purchaseTimeMillis: String(Date.now()),
+      orderId: 'GPA.fresh',
+    });
+    const result = await validateGoogleProductReceipt(
+      'token_fresh',
+      'credits_100',
+      makeGoogleConfig(),
+      'consumable',
+    );
+    expect(result?.alreadyConsumed).toBe(false);
+  });
+
+  // purchaseState and receipt age are still hard failures — only the
+  // consumption check moved to the route.
+  it('still rejects a canceled purchase even though consumption no longer blocks', async () => {
+    mockGoogleFetch({
+      purchaseState: 1,
+      consumptionState: 1,
+      purchaseTimeMillis: String(Date.now()),
+      orderId: 'GPA.canceled_consumed',
+    });
+    const result = await validateGoogleProductReceipt(
+      'token_canceled_consumed',
       'credits_100',
       makeGoogleConfig(),
       'consumable',
