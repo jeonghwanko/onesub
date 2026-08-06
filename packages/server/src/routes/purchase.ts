@@ -130,6 +130,9 @@ export function createPurchaseRouter(
       // appAccountToken / Google obfuscatedExternalAccountId). Null when the
       // client didn't set one (legacy purchases / apps not yet on the bound SDK).
       let boundAccountId: string | null = null;
+      // Google says this token was already consumed. Only meaningful once we know
+      // whether we have a record of it — see the replay guard before the INSERT.
+      let alreadyConsumed = false;
 
       if (platform === 'apple') {
         if (!appConfig.apple) {
@@ -157,6 +160,7 @@ export function createPurchaseRouter(
           transactionId = result.transactionId;
           purchasedAt = result.purchasedAt;
           boundAccountId = result.obfuscatedExternalAccountId ?? null;
+          alreadyConsumed = result.alreadyConsumed === true;
         }
       }
 
@@ -231,6 +235,22 @@ export function createPurchaseRouter(
           action,
         };
         res.status(200).json(response);
+        return;
+      }
+
+      // Past the restore path above, so this token has no recorded purchase. A
+      // consumable that Google reports as already consumed and that we have no
+      // record of was consumed by something that is not us — that is the actual
+      // replay signal, and the only case that still deserves a hard rejection.
+      // (Before, *every* consumed token landed here as a 422, including the
+      // restores handled above.)
+      if (alreadyConsumed) {
+        log.warn('[onesub/purchase] consumed token with no recorded purchase — possible replay attack', {
+          transactionId,
+          productId,
+          userId,
+        });
+        sendError(res, 422, ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED, 'Receipt validation failed', NO_PURCHASE);
         return;
       }
 

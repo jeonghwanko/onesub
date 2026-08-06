@@ -245,7 +245,10 @@ describe('google: rejections carry productId, and never the purchaseToken', () =
     ]);
   });
 
-  it('a replayed consumable is attributable to an order', async () => {
+  // The replay warning moved to routes/purchase.ts, which is the only place that
+  // can tell a replay from a legitimate restore of a purchase we already have on
+  // record. The provider no longer decides, so it no longer warns.
+  it('does not call an already-consumed consumable a replay on its own', async () => {
     mockPlayFetch({
       purchaseState: 0,
       consumptionState: 1,
@@ -254,11 +257,15 @@ describe('google: rejections carry productId, and never the purchaseToken', () =
     });
     const lines = capture();
 
-    await validateGoogleProductReceipt('token_abc', 'coins_50', googleConfig('replay'), 'consumable');
+    const result = await validateGoogleProductReceipt(
+      'token_abc',
+      'coins_50',
+      googleConfig('replay'),
+      'consumable',
+    );
 
-    expect(lines).toEqual([
-      '[onesub/google] Consumable already consumed — possible replay attack productId=coins_50 orderId=GPA.1234',
-    ]);
+    expect(result?.alreadyConsumed).toBe(true);
+    expect(lines).toEqual([]);
   });
 
   it('does not log the purchaseToken, which can cancel a subscription', async () => {

@@ -615,6 +615,18 @@ export interface GoogleProductResult {
    * (backward-compatible).
    */
   obfuscatedExternalAccountId?: string;
+  /**
+   * Google reports this token as already consumed. That is *not* by itself a
+   * replay: onesub consumes a consumable as soon as it validates it, so every
+   * legitimate re-validation of a purchase we already recorded — an in-session
+   * restore, a pending order the client re-surfaces, a retry after a dropped
+   * response — arrives with this set.
+   *
+   * The caller decides: consumed **and** already in the purchase store is an
+   * idempotent restore; consumed with **no** record is a token something else
+   * consumed, which is the actual replay signal.
+   */
+  alreadyConsumed?: boolean;
 }
 
 /**
@@ -667,15 +679,20 @@ export async function validateGoogleProductReceipt(
     return null;
   }
 
-  // For consumables: consumptionState 1 means already consumed by a previous request.
-  // This is the primary replay-attack signal for consumables on Android.
-  if (type === 'consumable' && purchase.consumptionState === 1) {
-    log.warn('[onesub/google] Consumable already consumed — possible replay attack', {
-      productId,
-      orderId: purchase.orderId,
-    });
-    return null;
-  }
+  // For consumables, consumptionState 1 means the token has already been consumed.
+  //
+  // This used to return null, which the route turned into an authoritative 422
+  // "receipt validation failed". That made the idempotent-restore path below
+  // unreachable for Android consumables: onesub consumes a token the moment it
+  // validates it, so any *legitimate* second look at a purchase we already
+  // recorded — a restore, a re-surfaced pending order, a retry after a dropped
+  // response — was answered as a rejected receipt. The client reads an
+  // authoritative rejection as final, stops retrying, and never confirms the
+  // order, so a purchase onesub itself had recorded was lost to the player.
+  //
+  // Report it instead and let the route decide, because only the route can tell
+  // the two cases apart by looking for the recorded purchase.
+  const alreadyConsumed = type === 'consumable' && purchase.consumptionState === 1;
 
   // Reject receipts older than the configured window (see
   // productReceiptMaxAgeHours — raise it for migrations / e2e).
@@ -704,6 +721,7 @@ export async function validateGoogleProductReceipt(
       ? new Date(parseInt(purchase.purchaseTimeMillis, 10)).toISOString()
       : new Date().toISOString(),
     obfuscatedExternalAccountId: purchase.obfuscatedExternalAccountId,
+    alreadyConsumed,
   };
 }
 
