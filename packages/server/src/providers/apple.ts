@@ -397,8 +397,18 @@ export async function validateAppleConsumableReceipt(
   }
 
   // Must be a one-time purchase type (not a subscription)
+  //
+  // productId and bundleId are what make this line actionable. Without them the
+  // warning says only that *someone* sent a subscription to the product endpoint:
+  // in 2026-07 eleven of these landed over four days on a host serving several
+  // apps, and the logs could not attribute a single one — not to an app, let
+  // alone to a product — so nobody could tell whose purchase had just failed.
   if (tx.type !== 'Consumable' && tx.type !== 'Non-Consumable') {
-    log.warn('[onesub/apple] Invalid purchase type for product validation', { type: tx.type });
+    log.warn('[onesub/apple] Invalid purchase type for product validation', {
+      type: tx.type,
+      productId: tx.productId ?? expectedProductId,
+      bundleId: tx.bundleId,
+    });
     return null;
   }
 
