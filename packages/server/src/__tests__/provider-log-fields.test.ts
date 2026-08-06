@@ -128,6 +128,40 @@ describe('apple: rejections carry the identifier an operator would filter on', (
     ]);
   });
 
+  // A subscription sent to the product endpoint is a client-side routing bug, and
+  // the operator's first question is always "which app, which product". Logging
+  // only the type answered neither: eleven of these landed over four days on a
+  // multi-app host and not one could be attributed.
+  it('a subscription sent to the product endpoint names the product and the app', async () => {
+    const lines = capture();
+
+    await validateAppleConsumableReceipt(
+      makeJws(applePayload({ type: 'Auto-Renewable Subscription', productId: 'premium.monthly' })),
+      APPLE_CONFIG,
+    );
+
+    // The type is quoted because it contains a space — that is the formatter
+    // keeping the field boundary unambiguous, not an artifact.
+    expect(lines).toEqual([
+      '[onesub/apple] Invalid purchase type for product validation ' +
+        'type="Auto-Renewable Subscription" productId=premium.monthly bundleId=com.example.app',
+    ]);
+  });
+
+  // The receipt is the authority on which product it is, but a receipt that omits
+  // productId must still be attributable — fall back to what the caller asked for.
+  it('falls back to the requested product when the receipt omits one', async () => {
+    const lines = capture();
+
+    await validateAppleConsumableReceipt(
+      makeJws(applePayload({ type: 'Auto-Renewable Subscription', productId: undefined })),
+      APPLE_CONFIG,
+      'premium.monthly',
+    );
+
+    expect(lines[0]).toContain('productId=premium.monthly');
+  });
+
   it('a revoked purchase is attributable', async () => {
     // Without productId/transactionId this line said only "Purchase was
     // revoked/refunded" — true, and useless: an operator could not tell whose.
