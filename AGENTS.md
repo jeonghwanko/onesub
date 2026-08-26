@@ -37,6 +37,7 @@ copy Pro sources into this repository. See `docs/UNITY-PRO.md` for the compatibi
 | `bench` | k6 status/webhook load tests, run by the scheduled `bench` workflow |
 | `scripts` | Dependency-free repository checks such as `validate-docs.mjs` and `validate-package-contents.mjs` |
 | `docs` | Architecture, security, deployment, migration, receipt-error, and Unity boundary documentation |
+| `site` | Source of the static landing page at `onesub.pryzm.gg`. One self-contained `index.html`, no build step. Deliberately not an npm workspace. **This repository does not deploy it** — the page is copied into `findthem/apps/web/onesub/` and shipped by that repository's CI to a shared EC2/nginx host; see `site/README.md` |
 
 The two Unity packages are UPM packages, not npm workspaces. `validate-unity-packages.ps1` lives at
 the repository root, not under `scripts`.
