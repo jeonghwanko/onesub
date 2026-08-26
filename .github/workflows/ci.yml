@@ -182,7 +182,8 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-          registry-url: 'https://registry.npmjs.org'
+          # Keep setup-node from creating token-based .npmrc auth; npm's default
+          # registry plus id-token permission activates trusted OIDC publishing.
 
       - name: Install dependencies
         run: corepack npm ci
