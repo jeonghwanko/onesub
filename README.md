@@ -20,6 +20,10 @@
   Open source. Self-hosted. Zero revenue share.
 </p>
 
+<p align="center">
+  <a href="https://onesub.pryzm.gg"><strong>onesub.pryzm.gg</strong></a>
+</p>
+
 ---
 
 ## The Problem

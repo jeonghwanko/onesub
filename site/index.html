@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>onesub — self-hosted IAP backend for Apple &amp; Google</title>
+<meta name="description" content="Open-source Express middleware that validates Apple StoreKit 2 and Google Play receipts, handles store webhooks, and tracks subscription lifecycle and entitlements. Self-hosted, MIT, zero revenue share." />
+<link rel="canonical" href="https://onesub.pryzm.gg/" />
+<meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://onesub.pryzm.gg/" />
+<meta property="og:title" content="onesub — self-hosted IAP backend for Apple &amp; Google" />
+<meta property="og:description" content="react-native-iap handles the purchase. onesub handles everything after — validation, webhooks, subscription lifecycle, entitlements. On your server, in your database." />
+<meta property="og:image" content="https://onesub.pryzm.gg/og.png" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="onesub — self-hosted IAP backend for Apple &amp; Google" />
+<meta name="twitter:description" content="react-native-iap handles the purchase. onesub handles everything after. MIT, self-hosted, zero revenue share." />
+<meta name="twitter:image" content="https://onesub.pryzm.gg/og.png" />
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d10'/%3E%3Ctext x='16' y='23' font-family='ui-monospace,monospace' font-size='19' font-weight='700' fill='%235eead4' text-anchor='middle'%3E1%3C/text%3E%3C/svg%3E" />
+
+<script>
+  // Set language before first paint so the hidden half never flashes.
+  (function () {
+    var lang = null;
+    try { lang = localStorage.getItem('onesub-lang'); } catch (e) { /* private mode */ }
+    if (lang !== 'ko' && lang !== 'en') {
+      lang = (navigator.language || 'en').toLowerCase().indexOf('ko') === 0 ? 'ko' : 'en';
+    }
+    var el = document.documentElement;
+    el.setAttribute('data-lang', lang);
+    el.setAttribute('lang', lang);
+  })();
+</script>
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-alt: #f6f8fa;
+    --surface: #ffffff;
+    --border: #d8dee4;
+    --border-soft: #e7ecf0;
+    --text: #1c2128;
+    --text-muted: #5b6673;
+    --accent: #0d9488;
+    --accent-soft: #e6fffa;
+    --code-bg: #f6f8fa;
+    --code-comment: #6a737d;
+    --code-string: #0a7c6b;
+    --code-keyword: #8250df;
+    --ok: #1a7f37;
+    --no: #b35900;
+    --shadow: 0 1px 2px rgba(27, 33, 40, .06), 0 8px 24px rgba(27, 33, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d10;
+      --bg-alt: #10141a;
+      --surface: #14181d;
+      --border: #262d36;
+      --border-soft: #1c222a;
+      --text: #e6edf3;
+      --text-muted: #8d97a5;
+      --accent: #5eead4;
+      --accent-soft: #0f2b28;
+      --code-bg: #10141a;
+      --code-comment: #6e7a8a;
+      --code-string: #7dd3c0;
+      --code-keyword: #c4b5fd;
+      --ok: #56d364;
+      --no: #e3a343;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  code, pre, .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+
+  /* ── bilingual: both languages live in the DOM, CSS hides one ───────── */
+  html[data-lang="en"] body [lang="ko"] { display: none !important; }
+  html[data-lang="ko"] body [lang="en"] { display: none !important; }
+  /* Korean has no inter-word breaking rules by default — without this the
+     browser breaks mid-word ("전부는" → "전부" / "는"), which reads as a typo. */
+  html[data-lang="ko"] body { word-break: keep-all; }
+  html[data-lang="ko"] pre { word-break: normal; }
+
+  .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* ── nav ────────────────────────────────────────────────────────────── */
+  .nav {
+    position: sticky; top: 0; z-index: 20;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: saturate(180%) blur(12px);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .nav-in { display: flex; align-items: center; gap: 20px; height: 58px; }
+  .brand { font-weight: 700; font-size: 17px; letter-spacing: -.02em; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .brand span { color: var(--accent); }
+  .nav-links { margin-left: auto; display: flex; align-items: center; gap: 20px; }
+  .nav-links a { color: var(--text-muted); font-size: 14px; font-weight: 500; }
+  .nav-links a:hover { color: var(--text); text-decoration: none; }
+  .lang-toggle {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 7px;
+    overflow: hidden; background: var(--surface);
+  }
+  .lang-toggle button {
+    appearance: none; border: 0; background: transparent; cursor: pointer;
+    color: var(--text-muted); font: 600 12px/1 inherit; font-family: inherit;
+    padding: 7px 10px; letter-spacing: .04em;
+  }
+  .lang-toggle button[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+  @media (max-width: 640px) { .nav-links a.hide-sm { display: none; } }
+
+  /* ── sections ───────────────────────────────────────────────────────── */
+  section { padding: 76px 0; border-top: 1px solid var(--border-soft); }
+  section.alt { background: var(--bg-alt); }
+  h2 { font-size: clamp(24px, 4vw, 31px); line-height: 1.25; letter-spacing: -.025em; margin: 0 0 10px; }
+  .lede { color: var(--text-muted); margin: 0 0 34px; max-width: 62ch; font-size: 16.5px; }
+
+  /* ── hero ───────────────────────────────────────────────────────────── */
+  .hero { padding: 84px 0 76px; border-top: 0; }
+  .eyebrow {
+    display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase;
+    margin-bottom: 22px;
+  }
+  .eyebrow b { color: var(--accent); font-weight: 600; }
+  .eyebrow i { font-style: normal; opacity: .4; }
+  h1 {
+    font-size: clamp(31px, 6vw, 52px); line-height: 1.12; letter-spacing: -.035em;
+    margin: 0 0 20px; font-weight: 700; max-width: 17ch;
+  }
+  h1 .dim { color: var(--text-muted); font-weight: 700; }
+  .hero p.sub { font-size: 17.5px; color: var(--text-muted); max-width: 60ch; margin: 0 0 32px; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .install {
+    display: inline-flex; align-items: center; gap: 12px;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 9px; padding: 11px 12px 11px 16px; font-size: 14.5px;
+  }
+  .install .prompt { color: var(--text-muted); user-select: none; }
+  .install code { color: var(--text); }
+  .copy {
+    appearance: none; cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-muted); border-radius: 6px;
+    padding: 4px 9px; font: 600 12px/1.4 inherit; font-family: inherit;
+  }
+  .copy:hover { color: var(--text); border-color: var(--text-muted); }
+  .copy[data-done="1"] { color: var(--accent); border-color: var(--accent); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border); border-radius: 9px;
+    padding: 12px 18px; font-size: 14.5px; font-weight: 600;
+    color: var(--text); background: var(--surface);
+  }
+  .btn:hover { text-decoration: none; border-color: var(--text-muted); }
+  .btn svg { width: 16px; height: 16px; fill: currentColor; }
+
+  /* ── generic blocks ─────────────────────────────────────────────────── */
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 24px;
+  }
+  ul.checks { list-style: none; padding: 0; margin: 0 0 28px; display: grid; gap: 11px; }
+  @media (min-width: 760px) { ul.checks { grid-template-columns: 1fr 1fr; gap: 11px 32px; } }
+  ul.checks li { position: relative; padding-left: 26px; color: var(--text); }
+  ul.checks li::before {
+    content: ""; position: absolute; left: 4px; top: .62em;
+    width: 7px; height: 7px; border-radius: 2px; background: var(--accent); opacity: .75;
+  }
+
+  .verdict { font-size: 18px; margin: 0 0 18px; }
+  .verdict b { font-weight: 700; }
+
+  /* ── code ───────────────────────────────────────────────────────────── */
+  pre {
+    margin: 0; background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 11px; padding: 18px 20px; overflow-x: auto;
+    font-size: 13.5px; line-height: 1.72; color: var(--text);
+    -webkit-overflow-scrolling: touch;
+  }
+  pre.solo { border-radius: 11px; }
+  .c { color: var(--code-comment); font-style: italic; }
+  .s { color: var(--code-string); }
+  .k { color: var(--code-keyword); }
+
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .tabs button {
+    appearance: none; cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-muted);
+    border-radius: 8px; padding: 8px 14px; font: 600 13.5px/1.3 inherit; font-family: inherit;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .panel[hidden] { display: none; }
+  .panel .note { color: var(--text-muted); font-size: 14px; margin: 12px 0 0; }
+
+  /* ── diagram ────────────────────────────────────────────────────────── */
+  .flow { display: grid; gap: 14px; }
+  .node {
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--surface); padding: 16px 18px;
+  }
+  .node.you { border-color: var(--accent); background: var(--accent-soft); }
+  .node h3 {
+    margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--text-muted); font-weight: 700;
+  }
+  .node.you h3 { color: var(--accent); }
+  .node p { margin: 0; font-size: 14.5px; color: var(--text-muted); }
+  .node .mono { color: var(--text); font-size: 13.5px; }
+  .row2 { display: grid; gap: 14px; }
+  @media (min-width: 760px) { .row2 { grid-template-columns: 1fr 1fr; } }
+  .arrow {
+    text-align: center; color: var(--text-muted); font-size: 12.5px;
+    letter-spacing: .04em; display: flex; align-items: center; gap: 10px; justify-content: center;
+  }
+  .arrow::before, .arrow::after {
+    content: ""; height: 1px; background: var(--border); flex: 0 1 90px;
+  }
+  .callout {
+    margin-top: 22px; border-left: 3px solid var(--accent);
+    padding: 2px 0 2px 16px; color: var(--text-muted); font-size: 14.5px;
+  }
+  .callout b { color: var(--text); }
+
+  /* ── tables ─────────────────────────────────────────────────────────── */
+  .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--border); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14.5px; }
+  th, td { text-align: left; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+  thead th {
+    font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-muted); font-weight: 700; background: var(--bg-alt);
+    border-bottom: 1px solid var(--border);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td .mono { font-size: 13px; }
+  .yes { color: var(--ok); font-weight: 700; }
+  .nope { color: var(--no); font-weight: 700; }
+  td strong { color: var(--text); }
+
+  /* ── feature grid ───────────────────────────────────────────────────── */
+  .grid3 { display: grid; gap: 14px; }
+  @media (min-width: 700px) { .grid3 { grid-template-columns: 1fr 1fr; } }
+  @media (min-width: 980px) { .grid3 { grid-template-columns: repeat(3, 1fr); } }
+  .grid3 .card h3 { margin: 0 0 7px; font-size: 15px; letter-spacing: -.01em; }
+  .grid3 .card p { margin: 0; font-size: 14px; color: var(--text-muted); }
+  .grid3 .card code { font-size: 12.5px; color: var(--text); }
+
+  /* ── footer ─────────────────────────────────────────────────────────── */
+  footer { border-top: 1px solid var(--border-soft); padding: 46px 0 60px; color: var(--text-muted); font-size: 14px; }
+  .foot-cols { display: grid; gap: 26px; margin-bottom: 30px; }
+  @media (min-width: 700px) { .foot-cols { grid-template-columns: 2fr 1fr 1fr; } }
+  .foot-cols h4 { margin: 0 0 10px; font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--text); }
+  .foot-cols ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+  .foot-cols ul a { color: var(--text-muted); }
+  .foot-cols ul a:hover { color: var(--accent); }
+  .foot-bottom { border-top: 1px solid var(--border-soft); padding-top: 20px; display: flex; flex-wrap: wrap; gap: 10px 22px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .badges img { height: 20px; width: auto; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="/">one<span>sub</span></a>
+    <div class="nav-links">
+      <a href="#how" class="hide-sm"><span lang="en">How it works</span><span lang="ko">동작 방식</span></a>
+      <a href="#lifecycle" class="hide-sm"><span lang="en">Lifecycle</span><span lang="ko">라이프사이클</span></a>
+      <a href="#packages" class="hide-sm"><span lang="en">Packages</span><span lang="ko">패키지</span></a>
+      <a href="https://github.com/jeonghwanko/onesub">GitHub</a>
+      <div class="lang-toggle" role="group" aria-label="Language">
+        <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-set-lang="ko" aria-pressed="false">한국어</button>
+      </div>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">
+      <b>MIT</b> <i>/</i> <span lang="en">self-hosted</span><span lang="ko">셀프 호스팅</span>
+      <i>/</i> <span lang="en">0% revenue share</span><span lang="ko">수수료 0%</span>
+      <i>/</i> Apple <i>+</i> Google
+    </p>
+
+    <h1 lang="en"><span class="dim">react-native-iap handles the purchase.</span> onesub handles everything after.</h1>
+    <h1 lang="ko"><span class="dim">결제까지는 react-native-iap.</span> 그 다음 전부는 onesub.</h1>
+
+    <p class="sub" lang="en">
+      Receipt validation, store webhooks, subscription lifecycle, and entitlements — as one
+      Express middleware running on <strong>your</strong> server, against <strong>your</strong> database.
+      A React Native SDK ships with it; Unity, Flutter, and plain HTTP clients work just as well.
+    </p>
+    <p class="sub" lang="ko">
+      영수증 검증, 스토어 웹훅, 구독 라이프사이클, entitlement — <strong>당신의</strong> 서버에서
+      <strong>당신의</strong> DB에 대고 도는 Express 미들웨어 하나로 끝난다.
+      React Native SDK가 함께 오지만 Unity·Flutter·순수 HTTP 클라이언트로도 똑같이 쓴다.
+    </p>
+
+    <div class="cta">
+      <div class="install">
+        <span class="prompt mono">$</span>
+        <code id="install-cmd">npm i @onesub/server</code>
+        <button class="copy" type="button" id="copy-btn" data-copy="npm i @onesub/server">
+          <span lang="en">Copy</span><span lang="ko">복사</span>
+        </button>
+      </div>
+      <a class="btn" href="https://github.com/jeonghwanko/onesub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="btn" href="https://github.com/jeonghwanko/onesub/blob/master/docs/README.md">
+        <span lang="en">Docs</span><span lang="ko">문서</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<!-- ── the problem ───────────────────────────────────────────────────── -->
+<section class="alt" id="problem">
+  <div class="wrap">
+    <h2 lang="en">The part react-native-iap doesn't do</h2>
+    <h2 lang="ko">react-native-iap이 해주지 않는 부분</h2>
+    <p class="lede" lang="en">
+      The client library opens the store sheet and hands you a receipt. Everything that makes a
+      subscription actually work is server-side — and none of it ships in the box.
+    </p>
+    <p class="lede" lang="ko">
+      클라이언트 라이브러리는 스토어 결제창을 띄우고 영수증을 넘겨줄 뿐이다.
+      구독을 실제로 굴러가게 만드는 건 전부 서버 쪽 일이고, 그건 아무도 안 준다.
+    </p>
+
+    <ul class="checks" lang="en">
+      <li>Verify Apple StoreKit 2 receipts — JWS signature validation</li>
+      <li>Verify Google Play receipts — Play Developer API v3</li>
+      <li>Handle webhooks: renewals, cancellations, refunds</li>
+      <li>Track subscription state in a database</li>
+      <li>Track one-time purchases — consumables and non-consumables</li>
+      <li>Expose “is this user subscribed?” and “what did this user buy?”</li>
+    </ul>
+    <ul class="checks" lang="ko">
+      <li>Apple StoreKit 2 영수증 검증 — JWS 서명 검증</li>
+      <li>Google Play 영수증 검증 — Play Developer API v3</li>
+      <li>웹훅 처리: 갱신, 취소, 환불</li>
+      <li>구독 상태를 DB에 추적</li>
+      <li>일회성 구매 추적 — 소모성 · 비소모성</li>
+      <li>“이 유저 구독 중인가?” / “이 유저가 뭘 샀나?” 엔드포인트</li>
+    </ul>
+
+    <p class="verdict" lang="en"><b>That's 2–3 weeks of work.</b> Or one line:</p>
+    <p class="verdict" lang="ko"><b>2~3주짜리 작업이다.</b> 아니면 한 줄:</p>
+
+    <pre class="solo"><code>app.<span class="k">use</span>(<span class="k">createOneSubMiddleware</span>(config));</code></pre>
+  </div>
+</section>
+
+<!-- ── how it works ──────────────────────────────────────────────────── -->
+<section id="how">
+  <div class="wrap">
+    <h2 lang="en">How it works</h2>
+    <h2 lang="ko">동작 방식</h2>
+    <p class="lede" lang="en">
+      onesub is not a service you sign up for. It is middleware you mount inside the backend you
+      already run. Receipts and webhooks land on your host; nothing routes through us.
+    </p>
+    <p class="lede" lang="ko">
+      onesub은 가입해서 쓰는 서비스가 아니다. 이미 운영 중인 당신의 백엔드에 얹는 미들웨어다.
+      영수증도 웹훅도 당신의 호스트로 들어온다. 우리 쪽을 경유하는 건 아무것도 없다.
+    </p>
+
+    <div class="flow">
+      <div class="row2">
+        <div class="node">
+          <h3 lang="en">Your app</h3><h3 lang="ko">당신의 앱</h3>
+          <p class="mono">react-native-iap · Unity IAP · StoreKit · any client</p>
+        </div>
+        <div class="node">
+          <h3>Apple · Google</h3>
+          <p class="mono">StoreKit 2 · Play Billing</p>
+        </div>
+      </div>
+
+      <p class="arrow">
+        <span lang="en">receipt / purchaseToken &nbsp;↓&nbsp; server notifications ↓</span>
+        <span lang="ko">영수증 / purchaseToken &nbsp;↓&nbsp; 서버 알림 ↓</span>
+      </p>
+
+      <div class="node you">
+        <h3 lang="en">Your backend — your server, your database</h3>
+        <h3 lang="ko">당신의 백엔드 — 당신의 서버, 당신의 DB</h3>
+        <p class="mono">app.use(createOneSubMiddleware(config))</p>
+        <p style="margin-top:8px" lang="en">
+          POST /onesub/validate · GET /onesub/status · POST /onesub/webhook/apple ·
+          POST /onesub/webhook/google · GET /onesub/entitlements
+        </p>
+        <p style="margin-top:8px" lang="ko">
+          POST /onesub/validate · GET /onesub/status · POST /onesub/webhook/apple ·
+          POST /onesub/webhook/google · GET /onesub/entitlements
+        </p>
+      </div>
+
+      <p class="arrow">
+        <span lang="en">↓ &nbsp; subscriptions · purchases · entitlements</span>
+        <span lang="ko">↓ &nbsp; 구독 · 구매 · entitlement</span>
+      </p>
+
+      <div class="node">
+        <h3 lang="en">Your PostgreSQL / Redis / in-memory</h3>
+        <h3 lang="ko">당신의 PostgreSQL / Redis / 인메모리</h3>
+        <p lang="en">Pluggable <code class="mono">SubscriptionStore</code> and <code class="mono">PurchaseStore</code> — or bring your own.</p>
+        <p lang="ko">교체 가능한 <code class="mono">SubscriptionStore</code> · <code class="mono">PurchaseStore</code> — 직접 구현해 꽂아도 된다.</p>
+      </div>
+    </div>
+
+    <p class="callout" lang="en">
+      <b>Webhooks are the fast path, not the only path.</b> Apple's notifications are reliable but
+      not guaranteed, so <code class="mono">/onesub/status</code> can fall back to a direct App Store
+      Server API fetch; Google falls back to <code class="mono">subscriptionsv2.get</code>. A dropped
+      notification does not leave a user's state drifting.
+    </p>
+    <p class="callout" lang="ko">
+      <b>웹훅은 빠른 경로일 뿐, 유일한 경로가 아니다.</b> Apple 알림은 안정적이지만 보장되진 않는다.
+      그래서 <code class="mono">/onesub/status</code>는 App Store Server API 직접 조회로 폴백하고,
+      Google은 <code class="mono">subscriptionsv2.get</code>로 폴백한다. 알림 하나 놓쳤다고
+      유저 상태가 어긋난 채 남지 않는다.
+    </p>
+  </div>
+</section>
+
+<!-- ── code ──────────────────────────────────────────────────────────── -->
+<section class="alt" id="code">
+  <div class="wrap">
+    <h2 lang="en">The whole integration</h2>
+    <h2 lang="ko">통합의 전부</h2>
+    <p class="lede" lang="en">
+      Mount the middleware on the server. Ask one endpoint from the client. The React Native SDK is
+      optional sugar on top of that same endpoint.
+    </p>
+    <p class="lede" lang="ko">
+      서버에 미들웨어를 얹는다. 클라이언트에선 엔드포인트 하나를 부른다.
+      React Native SDK는 그 위에 얹는 선택 사항일 뿐이다.
+    </p>
+
+    <div class="tabs" role="tablist" aria-label="Integration examples">
+      <button type="button" role="tab" id="tab-server" aria-controls="panel-server" aria-selected="true">
+        <span lang="en">Server</span><span lang="ko">서버</span>
+      </button>
+      <button type="button" role="tab" id="tab-http" aria-controls="panel-http" aria-selected="false">
+        <span lang="en">Any client (HTTP)</span><span lang="ko">모든 클라이언트 (HTTP)</span>
+      </button>
+      <button type="button" role="tab" id="tab-sdk" aria-controls="panel-sdk" aria-selected="false">
+        <span lang="en">React Native SDK (optional)</span><span lang="ko">React Native SDK (선택)</span>
+      </button>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-server" aria-labelledby="tab-server">
+<pre><code><span class="k">import</span> { createOneSubMiddleware, PostgresSubscriptionStore, PostgresPurchaseStore } <span class="k">from</span> <span class="s">'@onesub/server'</span>;
+
+app.<span class="k">use</span>(<span class="k">createOneSubMiddleware</span>({
+  apple: {
+    bundleId: <span class="s">'com.yourapp.id'</span>,
+    sharedSecret: process.env.APPLE_SHARED_SECRET,
+  },
+  google: {
+    packageName: <span class="s">'com.yourapp.id'</span>,
+    serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY,
+  },
+  database: { url: process.env.DATABASE_URL },
+  store: <span class="k">new</span> PostgresSubscriptionStore(process.env.DATABASE_URL),
+  purchaseStore: <span class="k">new</span> PostgresPurchaseStore(process.env.DATABASE_URL),
+}));</code></pre>
+      <p class="note" lang="en">
+        Routes mount themselves. The canonical Postgres schema ships with the package at
+        <code class="mono">sql/schema.sql</code>, or <code class="mono">store.initSchema()</code> applies it on startup.
+      </p>
+      <p class="note" lang="ko">
+        라우트는 알아서 마운트된다. Postgres 스키마는 패키지에 <code class="mono">sql/schema.sql</code>로
+        동봉되어 있고, <code class="mono">store.initSchema()</code>가 부팅 시 대신 적용해주기도 한다.
+      </p>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" hidden>
+<pre><code><span class="k">const</span> res = <span class="k">await</span> fetch(<span class="s">'https://api.yourapp.com/onesub/status?userId=user123'</span>);
+<span class="k">const</span> { active } = <span class="k">await</span> res.json();
+<span class="c">// active: true → subscribed, false → not subscribed</span></code></pre>
+      <p class="note" lang="en">
+        No SDK required. This is the same endpoint the React Native SDK, the Unity package, and a
+        Flutter app all call.
+      </p>
+      <p class="note" lang="ko">
+        SDK 없이도 된다. React Native SDK도, Unity 패키지도, Flutter 앱도 결국 이 엔드포인트를 부른다.
+      </p>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-sdk" aria-labelledby="tab-sdk" hidden>
+<pre><code><span class="k">const</span> { isActive, subscribe, purchaseProduct, hasEntitlement } = <span class="k">useOneSub</span>();
+
+<span class="c">// Subscription — the product id comes from the Provider config,</span>
+<span class="c">// so subscribe() takes no argument.</span>
+<span class="k">await</span> subscribe();
+
+<span class="c">// One-time products take an explicit id and type.</span>
+<span class="k">await</span> purchaseProduct(<span class="s">'credits_100'</span>, <span class="s">'consumable'</span>);
+<span class="k">await</span> purchaseProduct(<span class="s">'premium_unlock'</span>, <span class="s">'non_consumable'</span>);
+
+<span class="c">// Entitlements are prefetched into a map — this read is synchronous.</span>
+<span class="k">if</span> (hasEntitlement(<span class="s">'premium'</span>)) { <span class="c">/* unlock the feature */</span> }</code></pre>
+      <p class="note" lang="en">
+        <code class="mono">null</code> and a thrown <code class="mono">OneSubError</code> mean different
+        things: <code class="mono">null</code> is “nothing happened and that's normal” (user cancelled,
+        or nothing to restore); a throw is a failure or a refusal. Only one IAP operation runs at a
+        time — the hook exposes <code class="mono">isBusy</code>.
+      </p>
+      <p class="note" lang="ko">
+        <code class="mono">null</code>과 <code class="mono">OneSubError</code> throw는 다른 뜻이다.
+        <code class="mono">null</code>은 “아무 일도 안 일어났고 그게 정상”(유저 취소, 복원할 게 없음),
+        throw는 실패 또는 거부다. IAP 작업은 한 번에 하나만 돈다 — 훅이
+        <code class="mono">isBusy</code>를 내준다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── lifecycle ─────────────────────────────────────────────────────── -->
+<section id="lifecycle">
+  <div class="wrap">
+    <h2 lang="en">Lifecycle states, classified — not inferred</h2>
+    <h2 lang="ko">라이프사이클 상태 — 추론이 아니라 분류</h2>
+    <p class="lede" lang="en">
+      Most homegrown backends guess state from <code class="mono">expiryTime</code> and
+      <code class="mono">cancelReason</code>. onesub reads Apple's notification subtype and Google's
+      <code class="mono">subscriptionState</code> enum directly, so “your card failed but you still
+      have access” stays a different message from “your subscription is on hold.”
+    </p>
+    <p class="lede" lang="ko">
+      직접 만든 백엔드 대부분은 <code class="mono">expiryTime</code>과
+      <code class="mono">cancelReason</code>으로 상태를 추측한다. onesub은 Apple 알림의 subtype과
+      Google의 <code class="mono">subscriptionState</code> enum을 직접 읽는다. 그래야
+      “카드 결제는 실패했지만 아직 쓸 수 있음”과 “구독 정지됨”이 서로 다른 메시지로 남는다.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th><span lang="en">State</span><span lang="ko">상태</span></th>
+            <th>active</th>
+            <th><span lang="en">When</span><span lang="ko">언제</span></th>
+            <th><span lang="en">UX hint</span><span lang="ko">UX 힌트</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code class="mono">active</code></td><td class="yes">✅</td>
+            <td><span lang="en">paid period</span><span lang="ko">정상 결제 기간</span></td>
+            <td><span lang="en">normal</span><span lang="ko">평소대로</span></td>
+          </tr>
+          <tr>
+            <td><code class="mono">grace_period</code></td><td class="yes">✅</td>
+            <td><span lang="en">payment failed, store still grants access</span><span lang="ko">결제 실패했지만 스토어가 아직 접근 허용</span></td>
+            <td><span lang="en">“Check your payment method — you still have access”</span><span lang="ko">결제 정보 확인 필요 (계속 사용 가능)</span></td>
+          </tr>
+          <tr>
+            <td><code class="mono">on_hold</code></td><td class="nope">❌</td>
+            <td><span lang="en">grace ended, billing retry continues</span><span lang="ko">유예 종료, 결제 재시도 중</span></td>
+            <td><span lang="en">“Update your payment method”</span><span lang="ko">결제 정보를 업데이트하세요</span></td>
+          </tr>
+          <tr>
+            <td><code class="mono">paused</code></td><td class="nope">❌</td>
+            <td><span lang="en">user-voluntary pause (Google only)</span><span lang="ko">유저가 자발적으로 일시정지 (Google만)</span></td>
+            <td><span lang="en">“Resumes on {autoResumeTime}”</span><span lang="ko">재개 예정: {autoResumeTime}</span></td>
+          </tr>
+          <tr>
+            <td><code class="mono">expired</code></td><td class="nope">❌</td>
+            <td><span lang="en">natural end without renewal</span><span lang="ko">갱신 없이 자연 만료</span></td>
+            <td><span lang="en">re-purchase</span><span lang="ko">재구매</span></td>
+          </tr>
+          <tr>
+            <td><code class="mono">canceled</code></td><td class="nope">❌</td>
+            <td><span lang="en">refunded or revoked</span><span lang="ko">환불 또는 회수</span></td>
+            <td><span lang="en">re-purchase / restore</span><span lang="ko">재구매 / 복원</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="callout" lang="en">
+      <code class="mono">active</code> is computed as
+      <code class="mono">(active || grace_period) &amp;&amp; expiresAt &gt; now</code>. The
+      <code class="mono">expiresAt</code> check is a backstop for a missed <code class="mono">EXPIRED</code>
+      webhook and for the <code class="mono">'until_expiry'</code> refund policy.
+    </p>
+    <p class="callout" lang="ko">
+      <code class="mono">active</code>는
+      <code class="mono">(active || grace_period) &amp;&amp; expiresAt &gt; now</code>로 계산된다.
+      <code class="mono">expiresAt</code> 검사는 <code class="mono">EXPIRED</code> 웹훅을 놓쳤을 때와
+      <code class="mono">'until_expiry'</code> 환불 정책을 위한 안전망이다.
+    </p>
+  </div>
+</section>
+
+<!-- ── under the hood ────────────────────────────────────────────────── -->
+<section class="alt" id="internals">
+  <div class="wrap">
+    <h2 lang="en">What's under the hood</h2>
+    <h2 lang="ko">내부에서 벌어지는 일</h2>
+    <p class="lede" lang="en">
+      The edge cases that cost weeks the first time you meet them, already handled.
+    </p>
+    <p class="lede" lang="ko">
+      처음 부딪히면 몇 주를 잡아먹는 엣지 케이스들, 이미 처리되어 있다.
+    </p>
+
+    <div class="grid3">
+      <div class="card">
+        <h3 lang="en">Full Apple JWS chain</h3><h3 lang="ko">Apple JWS 전체 체인</h3>
+        <p lang="en">StoreKit 2 JWS verified against Apple Root CA G3 through the whole <code>x5c</code> chain — not a decoded payload you hope is real.</p>
+        <p lang="ko">StoreKit 2 JWS를 <code>x5c</code> 체인 전체를 따라 Apple Root CA G3까지 검증한다. payload만 디코딩하고 믿는 방식이 아니다.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Google Play v3, not v1</h3><h3 lang="ko">Google Play v3, v1 아님</h3>
+        <p lang="en"><code>purchases.subscriptionsv2.get</code> returns a <code>subscriptionState</code> enum that maps straight onto lifecycle states.</p>
+        <p lang="ko"><code>purchases.subscriptionsv2.get</code>가 돌려주는 <code>subscriptionState</code> enum이 라이프사이클 상태로 그대로 매핑된다.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">The 3-day refund trap</h3><h3 lang="ko">3일 환불 함정</h3>
+        <p lang="en">Google auto-refunds anything you don't <code>acknowledgePurchase</code> within 3 days. onesub calls it automatically — for subscriptions and one-time IAP both.</p>
+        <p lang="ko">Google은 3일 안에 <code>acknowledgePurchase</code>를 안 하면 자동 환불한다. onesub은 구독·일회성 IAP 양쪽 모두 자동으로 호출한다.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Refund policy you choose</h3><h3 lang="ko">환불 정책 선택</h3>
+        <p lang="en"><code>'immediate'</code> flips status to canceled at once; <code>'until_expiry'</code> keeps entitlement to the original expiry date.</p>
+        <p lang="ko"><code>'immediate'</code>는 즉시 canceled로 뒤집고, <code>'until_expiry'</code>는 원래 만료일까지 권한을 유지한다.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Entitlements over product ids</h3><h3 lang="ko">상품 ID 위의 entitlement</h3>
+        <p lang="en">Map <code>premium</code> to any set of subscription and non-consumable products. Consumables are excluded by design — they grant a resource, not an ongoing right.</p>
+        <p lang="ko"><code>premium</code> 하나에 구독·비소모성 상품 여러 개를 묶는다. 소모성은 의도적으로 제외된다 — 지속되는 권리가 아니라 일회성 자원이니까.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Built to scale out</h3><h3 lang="ko">스케일 아웃 대비</h3>
+        <p lang="en">Redis-backed cache and idempotency, optional BullMQ webhook queue with dead-letter replay, OpenTelemetry spans, generated OpenAPI doc.</p>
+        <p lang="ko">Redis 캐시·멱등성, 선택적 BullMQ 웹훅 큐와 dead-letter 재처리, OpenTelemetry 스팬, 자동 생성 OpenAPI 문서.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Multi-app on one server</h3><h3 lang="ko">한 서버에 여러 앱</h3>
+        <p lang="en">Isolate credentials for several Apple bundle ids and Google package names. An unknown <code>appId</code> never falls back to another app's keys.</p>
+        <p lang="ko">여러 Apple 번들 ID·Google 패키지명의 자격증명을 격리한다. 모르는 <code>appId</code>가 다른 앱 키로 폴백하는 일은 없다.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Apple promotional offers</h3><h3 lang="ko">Apple 프로모션 오퍼</h3>
+        <p lang="en">Server-side signing of promotional offer payloads, plus Family Sharing ownership mapping and the <code>CONSUMPTION_REQUEST</code> response hook.</p>
+        <p lang="ko">프로모션 오퍼 페이로드 서버 서명, 가족 공유 소유권 매핑, <code>CONSUMPTION_REQUEST</code> 응답 훅까지.</p>
+      </div>
+      <div class="card">
+        <h3 lang="en">Mock mode for agents</h3><h3 lang="ko">에이전트용 목 모드</h3>
+        <p lang="en"><code>npx @onesub/cli dev</code> runs a fully mocked server. Receipt prefixes like <code>MOCK_EXPIRED</code> drive deterministic scenarios with no store credentials.</p>
+        <p lang="ko"><code>npx @onesub/cli dev</code>로 완전히 목킹된 서버가 뜬다. <code>MOCK_EXPIRED</code> 같은 영수증 프리픽스로 스토어 자격증명 없이 시나리오를 재현한다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── vs revenuecat ─────────────────────────────────────────────────── -->
+<section id="vs">
+  <div class="wrap">
+    <h2 lang="en">vs RevenueCat</h2>
+    <h2 lang="ko">RevenueCat과 비교</h2>
+    <p class="lede" lang="en">
+      RevenueCat is good software. These are the two axes where a self-hosted answer wins:
+      you own the surface, and you own the data.
+    </p>
+    <p class="lede" lang="ko">
+      RevenueCat은 좋은 제품이다. 셀프 호스팅이 이기는 축은 두 개다 —
+      인프라를 소유한다는 것, 그리고 데이터를 소유한다는 것.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th></th><th>RevenueCat</th><th>onesub</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span lang="en">Receipt validation</span><span lang="ko">영수증 검증</span></td>
+            <td><span lang="en">Their servers</span><span lang="ko">그쪽 서버</span></td>
+            <td><strong><span lang="en">Your server</span><span lang="ko">당신의 서버</span></strong></td>
+          </tr>
+          <tr>
+            <td><span lang="en">Revenue share</span><span lang="ko">수수료</span></td>
+            <td><span lang="en">1% after $2.5K</span><span lang="ko">$2.5K 이후 1%</span></td>
+            <td><strong><span lang="en">0% forever</span><span lang="ko">영구 0%</span></strong></td>
+          </tr>
+          <tr>
+            <td><span lang="en">Data ownership</span><span lang="ko">데이터 소유</span></td>
+            <td><span lang="en">Their database</span><span lang="ko">그쪽 DB</span></td>
+            <td><strong><span lang="en">Your database</span><span lang="ko">당신의 DB</span></strong></td>
+          </tr>
+          <tr>
+            <td><span lang="en">Vendor lock-in</span><span lang="ko">벤더 종속</span></td>
+            <td><span lang="en">Yes</span><span lang="ko">있음</span></td>
+            <td><strong><span lang="en">No — MIT open source</span><span lang="ko">없음 — MIT 오픈소스</span></strong></td>
+          </tr>
+          <tr>
+            <td><span lang="en">Dashboard</span><span lang="ko">대시보드</span></td>
+            <td><span lang="en">Hosted</span><span lang="ko">호스팅형</span></td>
+            <td><strong><span lang="en">Self-hosted, Docker</span><span lang="ko">셀프 호스팅, Docker</span></strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="callout" lang="en">
+      <b>onesub is not a full RevenueCat replacement.</b> RevenueCat provides hosted infrastructure,
+      experiments, and deeper revenue analytics. onesub provides a self-hosted operational dashboard
+      and core lifecycle metrics for developers who want to own their subscription infrastructure.
+      Already on RevenueCat? There is a
+      <a href="https://github.com/jeonghwanko/onesub/blob/master/docs/MIGRATE-FROM-REVENUECAT.md">step-by-step migration guide</a>
+      covering client code, historical data, webhook switchover, and rollback.
+    </p>
+    <p class="callout" lang="ko">
+      <b>onesub은 RevenueCat의 완전한 대체재가 아니다.</b> RevenueCat은 호스팅 인프라, 실험(A/B),
+      더 깊은 매출 분석을 제공한다. onesub이 주는 건 셀프 호스팅 운영 대시보드와 핵심 라이프사이클
+      지표 — 구독 인프라를 직접 소유하고 싶은 개발자를 위한 것이다.
+      이미 RevenueCat을 쓰고 있다면 클라이언트 코드, 과거 데이터, 웹훅 전환, 롤백까지 다루는
+      <a href="https://github.com/jeonghwanko/onesub/blob/master/docs/MIGRATE-FROM-REVENUECAT.md">단계별 마이그레이션 가이드</a>가 있다.
+    </p>
+  </div>
+</section>
+
+<!-- ── packages ──────────────────────────────────────────────────────── -->
+<section class="alt" id="packages">
+  <div class="wrap">
+    <h2 lang="en">Packages</h2>
+    <h2 lang="ko">패키지</h2>
+    <p class="lede" lang="en">
+      Take the server alone, or the whole toolkit. Everything except the dashboard image is on npm.
+    </p>
+    <p class="lede" lang="ko">
+      서버만 가져다 써도 되고, 전체 툴킷을 써도 된다. 대시보드 이미지를 뺀 나머지는 전부 npm에 있다.
+    </p>
+
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th><span lang="en">Package</span><span lang="ko">패키지</span></th>
+            <th><span lang="en">What</span><span lang="ko">역할</span></th>
+            <th><span lang="en">Install</span><span lang="ko">설치</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <a href="https://www.npmjs.com/package/@onesub/server">@onesub/server</a>
+              <div class="badges"><img src="https://img.shields.io/npm/v/@onesub/server.svg?color=0d9488&label=" alt="latest version on npm" loading="lazy" height="20" /></div>
+            </td>
+            <td><span lang="en">Express middleware — receipt validation + webhooks</span><span lang="ko">Express 미들웨어 — 영수증 검증 + 웹훅</span></td>
+            <td><code class="mono">npm i @onesub/server</code></td>
+          </tr>
+          <tr>
+            <td>
+              <a href="https://www.npmjs.com/package/@jeonghwanko/onesub-sdk">@jeonghwanko/onesub-sdk</a>
+              <div class="badges"><img src="https://img.shields.io/npm/v/@jeonghwanko/onesub-sdk.svg?color=0d9488&label=" alt="latest version on npm" loading="lazy" height="20" /></div>
+            </td>
+            <td><span lang="en">React Native SDK — <code class="mono">useOneSub()</code> + <code class="mono">&lt;Paywall /&gt;</code></span><span lang="ko">React Native SDK — <code class="mono">useOneSub()</code> + <code class="mono">&lt;Paywall /&gt;</code></span></td>
+            <td><code class="mono">npm i @jeonghwanko/onesub-sdk</code></td>
+          </tr>
+          <tr>
+            <td>
+              <a href="https://www.npmjs.com/package/@onesub/mcp-server">@onesub/mcp-server</a>
+              <div class="badges"><img src="https://img.shields.io/npm/v/@onesub/mcp-server.svg?color=0d9488&label=" alt="latest version on npm" loading="lazy" height="20" /></div>
+            </td>
+            <td><span lang="en">MCP tools — AI sets up products and paywalls</span><span lang="ko">MCP 도구 — AI가 상품·페이월을 세팅</span></td>
+            <td><code class="mono">npx @onesub/mcp-server</code></td>
+          </tr>
+          <tr>
+            <td>
+              <a href="https://www.npmjs.com/package/@onesub/providers">@onesub/providers</a>
+              <div class="badges"><img src="https://img.shields.io/npm/v/@onesub/providers.svg?color=0d9488&label=" alt="latest version on npm" loading="lazy" height="20" /></div>
+            </td>
+            <td><span lang="en">App Store Connect + Google Play API wrappers, standalone</span><span lang="ko">App Store Connect + Google Play API 래퍼, 단독 사용 가능</span></td>
+            <td><code class="mono">npm i @onesub/providers</code></td>
+          </tr>
+          <tr>
+            <td>
+              <a href="https://www.npmjs.com/package/@onesub/cli">@onesub/cli</a>
+              <div class="badges"><img src="https://img.shields.io/npm/v/@onesub/cli.svg?color=0d9488&label=" alt="latest version on npm" loading="lazy" height="20" /></div>
+            </td>
+            <td><span lang="en">Scaffolds a starter server; <code class="mono">dev</code> runs a fully mocked one</span><span lang="ko">스타터 서버 스캐폴딩; <code class="mono">dev</code>는 완전 목킹 서버 실행</span></td>
+            <td><code class="mono">npx @onesub/cli init</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/jeonghwanko/onesub/pkgs/container/onesub-dashboard">onesub-dashboard</a></td>
+            <td><span lang="en">Self-hosted operations dashboard</span><span lang="ko">셀프 호스팅 운영 대시보드</span></td>
+            <td><code class="mono">docker run ghcr.io/jeonghwanko/onesub-dashboard</code></td>
+          </tr>
+          <tr>
+            <td><a href="https://github.com/jeonghwanko/onesub/tree/master/packages/unity">com.onesub.unity</a></td>
+            <td><span lang="en">Unity purchasing, restore, localized price, server validation</span><span lang="ko">Unity 구매·복원·현지화 가격·서버 검증</span></td>
+            <td><span lang="en">UPM Git URL</span><span lang="ko">UPM Git URL</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── closing ───────────────────────────────────────────────────────── -->
+<section id="start">
+  <div class="wrap" style="text-align:center">
+    <h2 lang="en" style="max-width:20ch;margin-inline:auto">Own your subscription infrastructure</h2>
+    <h2 lang="ko" style="max-width:20ch;margin-inline:auto">구독 인프라를 직접 소유하기</h2>
+    <p class="lede" style="margin-inline:auto" lang="en">
+      MIT licensed. No account, no dashboard signup, no revenue share. Clone it, read it, change it.
+    </p>
+    <p class="lede" style="margin-inline:auto" lang="ko">
+      MIT 라이선스. 계정도, 대시보드 가입도, 수수료도 없다. 클론하고, 읽고, 고쳐 쓰면 된다.
+    </p>
+    <div class="cta" style="justify-content:center">
+      <div class="install">
+        <span class="prompt mono">$</span>
+        <code>npx @onesub/cli init</code>
+        <button class="copy" type="button" data-copy="npx @onesub/cli init">
+          <span lang="en">Copy</span><span lang="ko">복사</span>
+        </button>
+      </div>
+      <a class="btn" href="https://github.com/jeonghwanko/onesub">
+        <span lang="en">Read the source</span><span lang="ko">소스 보기</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-cols">
+      <div>
+        <a class="brand" href="/">one<span>sub</span></a>
+        <p style="margin:8px 0 0;max-width:34ch" lang="en">
+          Self-hosted in-app purchase backend and client toolkit for Apple and Google. MIT licensed.
+        </p>
+        <p style="margin:8px 0 0;max-width:34ch" lang="ko">
+          Apple·Google용 셀프 호스팅 인앱결제 백엔드와 클라이언트 툴킷. MIT 라이선스.
+        </p>
+      </div>
+      <div>
+        <h4><span lang="en">Docs</span><span lang="ko">문서</span></h4>
+        <ul>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/CONFIGURATION.md">Configuration</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/DEPLOYMENT.md">Deployment</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/SECURITY.md">Security</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/RECEIPT-ERRORS.md">Receipt errors</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/UNITY-INTEGRATION.md">Unity</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4><span lang="en">Project</span><span lang="ko">프로젝트</span></h4>
+        <ul>
+          <li><a href="https://github.com/jeonghwanko/onesub">GitHub</a></li>
+          <li><a href="https://www.npmjs.com/package/@onesub/server">npm</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/docs/blog/why-i-built-onesub.md">Why I built it</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/CONTRIBUTING.md">Contributing</a></li>
+          <li><a href="https://github.com/jeonghwanko/onesub/blob/master/LICENSE">MIT License</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© onesub contributors</span>
+      <span><span lang="en">Not affiliated with Apple, Google, or RevenueCat.</span><span lang="ko">Apple·Google·RevenueCat과 무관합니다.</span></span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+
+    // ── language toggle ────────────────────────────────────────────────
+    var langButtons = document.querySelectorAll('[data-set-lang]');
+    function applyLang(lang) {
+      root.setAttribute('data-lang', lang);
+      root.setAttribute('lang', lang);
+      for (var i = 0; i < langButtons.length; i++) {
+        langButtons[i].setAttribute('aria-pressed', String(langButtons[i].dataset.setLang === lang));
+      }
+      try { localStorage.setItem('onesub-lang', lang); } catch (e) { /* private mode */ }
+    }
+    applyLang(root.getAttribute('data-lang') || 'en');
+    for (var i = 0; i < langButtons.length; i++) {
+      langButtons[i].addEventListener('click', function () { applyLang(this.dataset.setLang); });
+    }
+
+    // ── copy buttons ───────────────────────────────────────────────────
+    document.querySelectorAll('.copy').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var text = btn.dataset.copy || '';
+        var done = function () {
+          btn.dataset.done = '1';
+          setTimeout(function () { delete btn.dataset.done; }, 1400);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { /* denied */ });
+        }
+      });
+    });
+
+    // ── code tabs ──────────────────────────────────────────────────────
+    var tabs = Array.prototype.slice.call(document.querySelectorAll('[role="tab"]'));
+    function selectTab(tab) {
+      tabs.forEach(function (t) {
+        var selected = t === tab;
+        t.setAttribute('aria-selected', String(selected));
+        t.tabIndex = selected ? 0 : -1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !selected;
+      });
+    }
+    tabs.forEach(function (tab, index) {
+      tab.tabIndex = index === 0 ? 0 : -1;
+      tab.addEventListener('click', function () { selectTab(tab); });
+      tab.addEventListener('keydown', function (e) {
+        var delta = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!delta) return;
+        e.preventDefault();
+        var next = tabs[(index + delta + tabs.length) % tabs.length];
+        selectTab(next);
+        next.focus();
+      });
+    });
+  })();
+</script>
+</body>
+</html>
