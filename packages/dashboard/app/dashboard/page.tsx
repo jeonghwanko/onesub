@@ -63,29 +63,23 @@ export default async function DashboardOverview() {
   const to = new Date();
   const from = new Date(to.getTime() - (GROWTH_WINDOW_DAYS - 1) * 86_400_000);
 
-  let metrics;
-  let started;
-  let expired;
-  let purchasesStarted;
-  try {
-    [metrics, started, expired, purchasesStarted] = await Promise.all([
+  const [metrics, started, expired, purchasesStarted] = await Promise.all([
       client.getActiveMetrics(),
       client.getStartedMetrics(from, to, { groupBy: 'day' }),
       client.getExpiredMetrics(from, to, { groupBy: 'day' }),
       client.getPurchasesStartedMetrics(from, to, { groupBy: 'day' }),
-    ]);
-  } catch (err) {
+    ]).catch(async (err: unknown) => {
     // 401 from the upstream server means the cookie is stale — clear it and
     // bounce to login. (Edge middleware can't probe the upstream itself, so
     // this server-side guard backs it up.)
     if (err instanceof OneSubFetchError && err.status === 401) {
-      const { clearAdminSecret } = await import('../../lib/auth');
-      await clearAdminSecret();
+      const { clearAdminSession } = await import('../../lib/auth');
+      await clearAdminSession();
       const { redirect } = await import('next/navigation');
       redirect('/login');
     }
     throw err;
-  }
+  });
 
   return (
     <div className="space-y-8">

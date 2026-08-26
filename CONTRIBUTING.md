@@ -7,22 +7,25 @@ Thanks for your interest. onesub is MIT-licensed and community contributions are
 ```bash
 git clone https://github.com/jeonghwanko/onesub.git
 cd onesub
-npm ci                # reproducible. Use `npm install` only when changing dependencies —
+corepack npm ci       # uses package.json's pinned npm; use `corepack npm install` only when changing dependencies —
                       # it rewrites package-lock.json and produces a spurious diff
 npm run build         # shared → providers → server → sdk → mcp-server → cli
 npm test              # vitest
 npm run type-check
+npm run lint          # dashboard Biome lint
+npm run audit:prod    # shipped dependency closures; host-owned peers stay outside the runtime gate
+npm run package:check # dry-pack public workspaces; reject tests, credentials, and missing entry points
 npm run docs:check    # links, workspace/tool/CLI coverage, and server route parity vs the OpenAPI spec
 ```
 
-Node 20+ is required (uses `node:crypto.X509Certificate`). CI runs Node 22.
+Node 20.17+ is required (uses `node:crypto.X509Certificate` and the pinned npm 11 toolchain). CI runs Node 22.
 
 Two things to know before your first edit:
 
-- **`@onesub/shared` is consumed as compiled output.** After editing `packages/shared/src`, run
-  `npm run build -w @onesub/shared` or every dependent build, test, and type-check keeps reading the
-  old `dist`. `tsc` usually complains, but `npm test` does not type-check — there a missing value
-  export is just `undefined` at runtime, so a green test run proves nothing.
+- **`@onesub/shared` is consumed as compiled output by builds and type-checks.** After editing
+  `packages/shared/src`, run `npm run build -w @onesub/shared` before either. Vitest aliases shared
+  to its source so tests cannot silently read a stale value export, but published declarations still
+  come from `dist`.
 - **Never run `npm run version-packages` or `npm run release` locally.** They belong to the Release
   workflow and rewrite every version field and changelog.
 
@@ -77,6 +80,7 @@ For dashboard changes, also run:
 
 ```bash
 npm run build -w @onesub/shared
+npm run lint -w @onesub/dashboard
 npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
 ```
@@ -109,25 +113,30 @@ not to npm.
 
 ## PR checklist
 
-CI gates on `npm ci` → `npm run build` → `npm test` → `pwsh ./validate-unity-packages.ps1` →
-`npm run size -w @onesub/server`, plus a separate job that type-checks and builds the dashboard. Run
-what your change touched — [`AGENTS.md`](AGENTS.md) has the table — and at minimum:
+CI gates on a package-manager-pinned install → `npm run audit:prod` → `npm run build` →
+`npm run package:check` → `npm test` →
+`pwsh ./validate-unity-packages.ps1` → `npm run size -w @onesub/server`, plus a separate job that
+lints, type-checks, and builds the dashboard and its Docker image, an SDK peer-version matrix, docs
+validation, and CodeQL. Run what your change touched — [`AGENTS.md`](AGENTS.md) has the table — and
+at minimum:
 
 - [ ] `npm run build` succeeds
 - [ ] `npm test` passes
+- [ ] `npm run audit:prod` has no high-severity shipped dependency findings
+- [ ] `npm run package:check` passes for public package archives
 - [ ] `npm run type-check` clean (not a CI gate, but the build only catches what it compiles)
 - [ ] `npm run size -w @onesub/server` within budget, when `packages/server` changed
 - [ ] `pwsh ./validate-unity-packages.ps1` passes, when either Unity package changed
-- [ ] Dashboard type-check + build pass, when `packages/dashboard` or `packages/shared` changed
+- [ ] Dashboard lint + type-check + build pass, when `packages/dashboard` or `packages/shared` changed
 - [ ] `npm run docs:check` succeeds when documentation or documented surfaces changed
 - [ ] Added a changeset for changes to published packages
 - [ ] Updated `docs/MIGRATION.md` for breaking changes
 - [ ] Updated the owning document for changed APIs, configuration, or package boundaries
-- [ ] No new `any` or `// @ts-ignore` without a comment explaining why (reviewer-enforced; there is
-      no ESLint config in this repository)
+- [ ] No new `any` or `// @ts-ignore` without a comment explaining why (dashboard lint is automated;
+      other packages remain reviewer-enforced)
 
-A Markdown-only PR skips the build and test job (`ci.yml` sets `paths-ignore: '**/*.md'`). Its gates
-are the `docs` workflow and CodeQL, which has no path filter and runs on every PR.
+Markdown-only PRs run the same unified CI workflow, including docs validation and CodeQL; the
+release job waits for every validation job before it can publish.
 
 AI-assisted PRs are welcome under the same bar: point the agent at [`AGENTS.md`](AGENTS.md), and
 state in the PR description which checks were actually run and which were skipped. An unrun check

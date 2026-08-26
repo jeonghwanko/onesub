@@ -35,7 +35,7 @@ copy Pro sources into this repository. See `docs/UNITY-PRO.md` for the compatibi
 | `packages/unity-platform-services` | Optional Unity sharing, review, leaderboard, and authentication helpers; not part of purchasing Core |
 | `examples` | Runnable server and Expo examples. Not npm workspaces, but inside this checkout they still resolve `@onesub/server` through the root `node_modules` symlink to `packages/server` — so they do exercise your local build. The version pin in their own `package.json` only applies to a standalone copy |
 | `bench` | k6 status/webhook load tests, run by the scheduled `bench` workflow |
-| `scripts` | `validate-docs.mjs`, which backs `npm run docs:check` |
+| `scripts` | Dependency-free repository checks such as `validate-docs.mjs` and `validate-package-contents.mjs` |
 | `docs` | Architecture, security, deployment, migration, receipt-error, and Unity boundary documentation |
 
 The two Unity packages are UPM packages, not npm workspaces. `validate-unity-packages.ps1` lives at
@@ -96,7 +96,7 @@ contract changes still follow the Contract Change Checklist.
 Run commands from the repository root unless a package README says otherwise.
 
 ```bash
-npm ci                 # reproducible install. Never run bare `npm install` unless you are
+corepack npm ci        # reproducible pinned install. Never run bare `npm install` unless you are
                        # deliberately changing dependencies — it rewrites package-lock.json
 npm run build          # shared -> providers -> server -> sdk -> mcp-server -> cli
 npm run type-check     # all TypeScript workspaces, including dashboard
@@ -108,6 +108,7 @@ change, also run:
 
 ```bash
 npm run build -w @onesub/shared
+npm run lint -w @onesub/dashboard
 npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
 ```
@@ -131,17 +132,16 @@ For `shared`, `server`, and `cli`, type-check with `npx tsc --noEmit -p packages
 
 Read this before your first edit. These traps fire on ordinary tasks and two of them fail silently.
 
-**`@onesub/shared` is consumed as compiled output, not as source.** Dependents resolve
-`@onesub/shared` to `packages/shared/dist`, which is gitignored, is not rebuilt automatically, and
-has no Vitest alias or tsconfig path mapping. After any edit under `packages/shared/src` you must run
-`npm run build -w @onesub/shared` before `npm test`, `npm run type-check`, or any dependent build
-observes it.
+**`@onesub/shared` is consumed as compiled output by builds and type-checks.** Dependents resolve
+`@onesub/shared` to the gitignored `packages/shared/dist`, which is not rebuilt automatically and
+has no tsconfig path mapping. After any edit under `packages/shared/src`, run
+`npm run build -w @onesub/shared` before a dependent build or type-check.
 
-The stale `dist` is stale in its `.d.ts` too, so `tsc` usually catches it loudly. The dangerous case
-is **`npm test`**: Vitest transpiles without type-checking, so a new value export that is missing
-from the stale `dist` is simply `undefined` at runtime — a comparison quietly never matches and no
-error is thrown. A green `npm test` on a shared change you did not rebuild proves nothing. To recover
-from a confusing state, delete `packages/*/dist` and re-run `npm run build`.
+Vitest is the deliberate exception: `vitest.config.ts` aliases `@onesub/shared` to
+`packages/shared/src/index.ts`, so tests exercise current source instead of a stale `dist`. Keep the
+alias; it prevents a missing value export from becoming `undefined` during transpile-only tests. A
+full build is still required before completion because published output and declarations come from
+`dist`. To recover from a confusing generated state, run `npm run clean` and then `npm run build`.
 
 **Two tests enforce contract parity mechanically, and both are easy to trip.**
 
@@ -164,9 +164,9 @@ except `validate-unity-packages.ps1` (which needs `pwsh`) is cross-platform; the
 way. Command blocks in this guide and in `docs/` are written for bash. In
 PowerShell, translate them: `rm -rf` is not available, `\` line continuations must become backticks,
 POSIX inline env prefixes (`FOO=bar npm run dev`) must become `$env:FOO = 'bar'; npm run dev`, and
-`curl -d '{...}'` needs `Invoke-RestMethod` or `curl.exe`. The root `clean` script
-(`rm -rf packages/*/dist`) is POSIX-only; delete the `dist` folders directly instead. On a
-POSIX host the reverse applies: `pwsh ./validate-unity-packages.ps1` only runs if PowerShell is
+`curl -d '{...}'` needs `Invoke-RestMethod` or `curl.exe`. The root `clean` script is a
+cross-platform Node script; do not replace it with shell-specific deletion. On a POSIX host the
+reverse applies: `pwsh ./validate-unity-packages.ps1` only runs if PowerShell is
 installed — if it is not, say so in your report rather than skipping the check silently.
 
 **`npm run size -w @onesub/server` measures `dist/`, so it needs a build first.** It gates the
@@ -205,9 +205,9 @@ and let CI apply them.
 - The React Native SDK has exactly one purchase adapter: `react-native-iap`, `require`d at module
   scope inside a `try/catch` in `packages/sdk/src/OneSubProvider.tsx`. When it is absent the provider
   still imports and renders, and the purchase paths throw a clear error instead.
-  `expo-in-app-purchases` is listed alongside it in `peerDependenciesMeta` as optional, but has **no
-  adapter behind it** — do not treat it as a code path to preserve, and do not "restore" it without
-  an explicit product decision. Keep the structured `OneSubError` behavior working.
+  `expo-in-app-purchases` has **no adapter** and is intentionally not declared as a peer dependency;
+  do not "restore" it without an explicit product decision. Keep the structured `OneSubError`
+  behavior working.
 - The SDK's `null` return and its thrown `OneSubError` mean different things, and the difference is
   load-bearing for host apps. `null` means "no purchase happened and that is normal" — user
   cancelled, or `restoreProduct` found nothing in the store's purchase history. A thrown
@@ -280,11 +280,24 @@ resolves to the *published* package, so a change under test appears to have no e
 
 Reconstructing this from the workflows is slow, so it is stated once here. `.github/workflows/ci.yml`:
 
-1. `npm ci`
-2. `npm run build`  (this is the real type-error gate; CI never runs root `npm run type-check`)
-3. `npm test`, with `DATABASE_URL` pointing at a `postgres:17-alpine` service container
-4. `pwsh ./validate-unity-packages.ps1`
-5. `npm run size -w @onesub/server`
+1. `corepack npm ci`
+2. `npm run audit:prod`
+3. `npm run build`  (this is the real type-error gate; CI never runs root `npm run type-check`)
+4. `npm run package:check` (dry-packs every public workspace and verifies archive hygiene and entry points)
+5. `npm test`, with `DATABASE_URL` pointing at a `postgres:17-alpine` service container
+6. `pwsh ./validate-unity-packages.ps1`
+7. `npm run size -w @onesub/server`
+
+`audit:prod` discovers root workspaces dynamically. It audits the Node services, CLI, MCP server,
+and dashboard directly, then audits an isolated manifest containing the React Native SDK's shipped
+dependency closure. Host-owned peers are not treated as OneSub runtime dependencies, but adding a
+direct SDK dependency cannot silently escape the gate. Use `npm run audit:all` to inspect the
+peer/development tree separately.
+
+The root `.npmrc` uses `legacy-peer-deps=true` only to stop npm from installing a mobile host's
+React Native toolchain into this server-oriented monorepo. It is not included in published package
+archives: consumers still see React Native as a required SDK peer. Do not make that peer optional to
+silence repository install or audit output; the isolated SDK peer job owns compatibility checks.
 
 **The Postgres store tests only run in CI unless you give them a database.**
 `packages/server/src/__tests__/postgres-store.test.ts` skips itself when
@@ -308,24 +321,18 @@ compares the embedded DDL to `sql/schema.sql` as text and proves nothing about
 whether either works. Any change under `packages/server/src/stores/postgres.ts`
 wants a run against a real database before it is trusted.
 
-Plus a **separate `dashboard` job** — `npm run build -w @onesub/shared` → `type-check` → `build` for
-`@onesub/dashboard`. CI can therefore be red for a dashboard break while the entire root build is
-green. Plus `codeql.yml` (`security-extended`, can fail a PR) and a path-filtered `docs.yml` running
-`npm run docs:check`.
+Plus separate jobs in the same unfiltered workflow: dashboard lint/type-check/build, a clean
+dashboard Docker image build, SDK compilation and tests against both ends of the supported
+react-native-iap v15 line, `docs:check`, and CodeQL `security-extended`. CI can therefore be red for
+one of these while the root build is green. The release job depends on every validation job,
+including matrix entries, before publishing on master.
 
-`ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs **no build and no tests** — its
-gates are `docs.yml` and CodeQL, which has no path filter and runs on every PR.
-
-`docs.yml` is path-filtered to Markdown plus `package.json`, `scripts/validate-docs.mjs`,
-`packages/cli/src/index.ts`, and `packages/mcp-server/src/index.ts`. It does **not** fire on other
-source changes, so renaming a file that documentation references can ship green. Run
-`npm run docs:check` yourself when you rename or move anything the docs cite.
-
-The remaining workflows never gate a PR, so do not wait on them or try to trigger them:
+The remaining workflows never gate a PR, so do not wait on them or try to trigger them. Release is
+not a separate workflow: the `release` job in `ci.yml` runs only after every validation job succeeds
+on a push to `master`, then opens/updates the Changesets version PR or publishes a merged version PR.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `publish.yml` (`Release`) | push to `master` | Runs Changesets: opens/updates the "Version Packages" PR, publishes on merge |
 | `docker-dashboard.yml` | push to `master` touching `packages/dashboard/**`, `packages/shared/**`, the root `package.json` / `package-lock.json`, or `tsconfig.base.json` (also manual) | Builds and publishes the dashboard Docker image |
 | `e2e.yml` | manual dispatch only | Real Apple/Google sandbox round-trips; needs shared secrets, so it cannot run on a PR |
 | `bench.yml` | weekly schedule (also manual) | k6 status/webhook load tests from `bench/` |
@@ -350,7 +357,7 @@ If a change needs real sandbox coverage, say so in the PR description and ask a 
    | A route or the OpenAPI spec | the above plus `npm test -- packages/server/src/__tests__/openapi.test.ts` |
    | A store or SQL schema | the above plus `npm test -- packages/server/src/__tests__/schema.test.ts` |
    | `stores/postgres.ts` or `sql/schema.sql` | the above plus `postgres-store.test.ts` **with a real `DATABASE_URL`** — it skips silently without one |
-   | `packages/dashboard` | the three dashboard commands under Commands |
+   | `packages/dashboard` | the four dashboard commands under Commands |
    | `packages/unity*` | `pwsh ./validate-unity-packages.ps1` |
    | Any `.md` | `npm run docs:check` |
    | Anything cross-package | the full CI gate set above |
@@ -361,7 +368,7 @@ If a change needs real sandbox coverage, say so in the PR description and ask a 
 8. Breaking changes also require `docs/MIGRATION.md`. Docs, tests, CI, `examples/*`, and
    `packages/dashboard` changes need no changeset — the dashboard is private and ships as a Docker
    image published by `docker-dashboard.yml`, which also republishes on any `packages/shared`,
-   root-manifest, or `tsconfig.base.json` change. The image builds with `npm ci` against the root
+   root-manifest, or `tsconfig.base.json` change. The image builds with pinned npm against the root
    lockfile, so a dependency bump touching nothing under `packages/` still changes what ships; keep
    that workflow's `paths` filter in sync with what `packages/dashboard/Dockerfile` copies.
 
@@ -434,6 +441,4 @@ is documented, and that the route list in `packages/server/README.md` matches th
 `openapi.test.ts` in turn holds to the actually mounted routers. It cannot catch a wrong version
 number or a stale prose claim. Verify those against the source.
 
-When adding a check there, also add its inputs to the `paths` filter in `.github/workflows/docs.yml`,
-or the check will not run on the change that breaks it. Keep the script dependency-free: that workflow
-has no `npm ci` step.
+Keep the docs script dependency-free: its CI job deliberately has no dependency-install step.

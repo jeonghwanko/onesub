@@ -278,7 +278,8 @@ docker run -p 4101:4101 \
   ghcr.io/jeonghwanko/onesub-dashboard:latest
 ```
 
-It stores the entered `adminSecret` in an HTTP-only cookie and makes server-side requests to the
+It stores the entered `adminSecret` inside an authenticated-encryption envelope in an HTTP-only
+cookie and makes server-side requests to the
 OneSub server. Serve it over HTTPS with `NODE_ENV=production` so the cookie receives the Secure flag.
 The dashboard is single-operator by design; restrict network access accordingly.
 

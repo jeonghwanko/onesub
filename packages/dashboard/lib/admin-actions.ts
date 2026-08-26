@@ -10,9 +10,9 @@
  */
 
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 import type { Platform, PurchaseType } from '@onesub/shared';
-import { clearAdminSecret, requireClient } from './auth';
+import { writeAdminAudit, type AdminAuditEvent } from './audit';
+import { clearAdminSession, requireSession } from './auth';
 import { OneSubFetchError } from './onesub-client';
 
 export interface ActionResult {
@@ -21,14 +21,26 @@ export interface ActionResult {
   error?: string;
 }
 
-async function withClient<T>(fn: (client: Awaited<ReturnType<typeof requireClient>>) => Promise<T>): Promise<T> {
-  const client = await requireClient();
+async function withClient<T>(
+  action: AdminAuditEvent['action'],
+  target: string,
+  fn: (client: Awaited<ReturnType<typeof requireSession>>['client']) => Promise<T>,
+): Promise<T> {
+  const { client, sessionId } = await requireSession();
   try {
-    return await fn(client);
+    const result = await fn(client);
+    writeAdminAudit({ action, target, sessionId, outcome: 'success' });
+    return result;
   } catch (err) {
+    writeAdminAudit({
+      action,
+      target,
+      sessionId,
+      outcome: 'failure',
+      ...(err instanceof OneSubFetchError ? { status: err.status } : {}),
+    });
     if (err instanceof OneSubFetchError && err.status === 401) {
-      await clearAdminSecret();
-      redirect('/login');
+      await clearAdminSession();
     }
     throw err;
   }
@@ -61,7 +73,7 @@ export async function grantPurchaseAction(_prev: ActionResult | null, formData: 
   const type: PurchaseType = typeRaw === 'consumable' ? 'consumable' : 'non_consumable';
 
   try {
-    await withClient((client) =>
+    await withClient('grant_purchase', `${userId}:${productId}`, (client) =>
       client.grantPurchase({
         userId,
         productId,
@@ -91,7 +103,9 @@ export async function transferPurchaseAction(_prev: ActionResult | null, formDat
   if (newUserId === fromUserId) return { ok: false, error: '같은 userId로의 transfer는 의미 없습니다' };
 
   try {
-    await withClient((client) => client.transferPurchase(transactionId, newUserId));
+    await withClient('transfer_purchase', transactionId, (client) =>
+      client.transferPurchase(transactionId, newUserId),
+    );
   } catch (err) {
     if (err instanceof OneSubFetchError && err.status === 404) {
       return { ok: false, error: 'TRANSACTION_NOT_FOUND — 해당 transactionId가 존재하지 않습니다' };
@@ -118,7 +132,9 @@ export async function deletePurchasesAction(_prev: ActionResult | null, formData
   if (!userId || !productId) return { ok: false, error: 'userId / productId 누락' };
 
   try {
-    await withClient((client) => client.deletePurchases(userId, productId));
+    await withClient('delete_purchases', `${userId}:${productId}`, (client) =>
+      client.deletePurchases(userId, productId),
+    );
   } catch (err) {
     return { ok: false, error: (err as Error).message ?? 'delete failed' };
   }

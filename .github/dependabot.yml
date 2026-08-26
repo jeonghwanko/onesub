@@ -26,7 +26,6 @@ updates:
       # handling (see closed PR #8). Revisit after 6.x matures.
       - dependency-name: typescript
         update-types: [version-update:semver-major]
-
   # GitHub Actions workflow pins — weekly.
   - package-ecosystem: github-actions
     directory: /

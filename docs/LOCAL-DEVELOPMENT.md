@@ -6,7 +6,7 @@ rules and package ownership, read [`../AGENTS.md`](../AGENTS.md) first.
 ## Prerequisites
 
 - Node.js 20 or newer. CI uses Node.js 22, so Node 22 is the closest local match.
-- npm with lockfile support (`npm ci`).
+- Corepack and npm with lockfile support (`corepack npm ci`).
 - Git.
 - Docker, only for the PostgreSQL example or dashboard image.
 - PowerShell 7 (`pwsh`), only for the Unity package-boundary validator.
@@ -20,7 +20,7 @@ Never commit `.env` files. The repository ignores `.env` and `.env.*` while reta
 ```bash
 git clone https://github.com/jeonghwanko/onesub.git
 cd onesub
-npm ci
+corepack npm ci
 npm run build
 npm test
 npm run type-check
@@ -87,7 +87,7 @@ The example can use in-memory, PostgreSQL, or Redis-backed components depending 
 ```bash
 cd examples/server
 cp .env.example .env
-npm install
+corepack npm install
 npm start
 ```
 

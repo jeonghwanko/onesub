@@ -1,62 +1,65 @@
-/**
- * Cookie-based admin auth.
- *
- * The HTTP-only cookie stores the onesub adminSecret directly. Acceptable for
- * a v0.1 single-operator dashboard since:
- *   - cookies are HttpOnly + Secure (in production), so XSS / JS access blocked
- *   - server actions are CSRF-protected by Next.js
- *   - the cookie content equals the env var the server already trusts
- *
- * Phase 3 will introduce a token-exchange layer (cookie holds an opaque session
- * id; secret stays env-only) when multi-operator + audit log land.
- */
-
+import { randomBytes } from 'node:crypto';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { createClient, OneSubFetchError, type OneSubClient } from './onesub-client';
-
-export const COOKIE_NAME = 'onesub_admin';
-export const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 8;  // 8h — operator session
+import { COOKIE_MAX_AGE_SECONDS, COOKIE_NAME } from './session-constants';
+import { openAdminSession, sealAdminSession, type AdminSession } from './session';
 
 const SERVER_URL_ENV = 'ONESUB_SERVER_URL';
+const SESSION_SECRET_ENV = 'ONESUB_SESSION_SECRET';
+const developmentSessionSecret = randomBytes(32).toString('base64url');
+
+function getSessionKeyMaterial(): string {
+  const configured = process.env[SESSION_SECRET_ENV];
+  if (configured) {
+    if (configured.length < 32) {
+      throw new Error(
+        `[onesub-dashboard] ${SESSION_SECRET_ENV} must be at least 32 characters.`,
+      );
+    }
+    return configured;
+  }
+  if (process.env.NODE_ENV !== 'production') return developmentSessionSecret;
+  throw new Error(
+    `[onesub-dashboard] ${SESSION_SECRET_ENV} must be set in production.`,
+  );
+}
 
 export function getServerUrl(): string {
   const url = process.env[SERVER_URL_ENV];
   if (!url) {
     throw new Error(
       `[onesub-dashboard] ${SERVER_URL_ENV} is not set. ` +
-        `Point it at your @onesub/server instance, e.g. http://localhost:4100`,
+        'Point it at your @onesub/server instance, e.g. http://localhost:4100',
     );
   }
   return url;
 }
 
-export async function readAdminSecret(): Promise<string | null> {
+export async function readAdminSession(): Promise<AdminSession | null> {
   const store = await cookies();
-  return store.get(COOKIE_NAME)?.value ?? null;
+  const token = store.get(COOKIE_NAME)?.value;
+  return token ? openAdminSession(token, getSessionKeyMaterial()) : null;
 }
 
-export async function writeAdminSecret(secret: string): Promise<void> {
+export async function writeAdminSession(adminSecret: string): Promise<string> {
   const store = await cookies();
-  store.set(COOKIE_NAME, secret, {
+  const { token, sessionId } = sealAdminSession(adminSecret, getSessionKeyMaterial());
+  store.set(COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     maxAge: COOKIE_MAX_AGE_SECONDS,
     path: '/',
   });
+  return sessionId;
 }
 
-export async function clearAdminSecret(): Promise<void> {
+export async function clearAdminSession(): Promise<void> {
   const store = await cookies();
   store.delete(COOKIE_NAME);
 }
 
-/**
- * Probe the onesub server with the candidate secret. Used by the login server
- * action — successful 200 means the secret is valid. We use the cheapest
- * admin endpoint (`/metrics/active`) so even an empty deployment responds fast.
- */
 export async function verifyAdminSecret(secret: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
     const client = createClient(getServerUrl(), secret);
@@ -69,19 +72,20 @@ export async function verifyAdminSecret(secret: string): Promise<{ ok: true } | 
     if (err instanceof OneSubFetchError && err.status === 404) {
       return { ok: false, reason: 'metrics endpoint not mounted — server adminSecret may be unset' };
     }
-    if (err instanceof Error) {
-      return { ok: false, reason: err.message };
-    }
+    if (err instanceof Error) return { ok: false, reason: err.message };
     return { ok: false, reason: 'unknown error' };
   }
 }
 
-/**
- * Server-component helper: ensure the request is authenticated and return a
- * configured client. Redirects to /login when the cookie is missing.
- */
+export async function requireSession(): Promise<{ client: OneSubClient; sessionId: string }> {
+  const session = await readAdminSession();
+  if (!session) redirect('/login');
+  return {
+    client: createClient(getServerUrl(), session.adminSecret),
+    sessionId: session.sessionId,
+  };
+}
+
 export async function requireClient(): Promise<OneSubClient> {
-  const secret = await readAdminSecret();
-  if (!secret) redirect('/login');
-  return createClient(getServerUrl(), secret);
+  return (await requireSession()).client;
 }

@@ -2,9 +2,9 @@
  * Server-side fetch helpers for the onesub server's admin metrics API.
  *
  * Always called from server components / server actions / route handlers — the
- * admin secret never leaves the server. The dashboard's HTTP-only cookie
- * stores the secret directly (acceptable for v0.1; a token-exchange layer is
- * Phase 3 work).
+ * admin secret never leaves the server. The dashboard's HTTP-only cookie is
+ * an authenticated-encryption envelope; only server-side auth code can recover
+ * the upstream credential.
  */
 
 import type {

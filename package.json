@@ -13,11 +13,16 @@
     "packages/shared"
   ],
   "scripts": {
+    "preinstall": "node scripts/check-toolchain.mjs",
     "build": "npm run build -w @onesub/shared && npm run build -w @onesub/providers && npm run build -w @onesub/server && npm run build -w @jeonghwanko/onesub-sdk && npm run build -w @onesub/mcp-server && npm run build -w @onesub/cli",
     "dev:server": "npm run dev -w @onesub/server",
+    "lint": "npm run lint -w @onesub/dashboard",
     "type-check": "tsc --noEmit -p packages/shared && tsc --noEmit -p packages/providers && tsc --noEmit -p packages/server && tsc --noEmit -p packages/sdk && tsc --noEmit -p packages/mcp-server && tsc --noEmit -p packages/cli && npm run type-check -w @onesub/dashboard",
-    "clean": "rm -rf packages/*/dist",
+    "clean": "node scripts/clean.mjs",
     "test": "vitest run",
+    "audit:all": "npm audit --audit-level=high",
+    "audit:prod": "node scripts/audit-production.mjs",
+    "package:check": "node scripts/validate-package-contents.mjs",
     "docs:check": "node scripts/validate-docs.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
@@ -29,8 +34,12 @@
     "supertest": "^7.2.2",
     "vitest": "^4.1.10"
   },
+  "overrides": {
+    "esbuild": "0.27.2"
+  },
   "license": "MIT",
   "engines": {
-    "node": ">=20"
-  }
+    "node": ">=20.17.0"
+  },
+  "packageManager": "npm@11.6.2"
 }

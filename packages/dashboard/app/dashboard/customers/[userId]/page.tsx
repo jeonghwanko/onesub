@@ -6,7 +6,7 @@ import type {
   PurchaseInfo,
   SubscriptionInfo,
 } from '@onesub/shared';
-import { requireClient, clearAdminSecret } from '../../../../lib/auth';
+import { requireClient, clearAdminSession } from '../../../../lib/auth';
 import { OneSubFetchError } from '../../../../lib/onesub-client';
 import { GrantForm } from './_components/grant-form';
 import { PurchaseActions } from './_components/purchase-actions';
@@ -53,7 +53,7 @@ export default async function CustomerDetailPage({ params }: PageProps) {
     profile = await client.getCustomer(userId);
   } catch (err) {
     if (err instanceof OneSubFetchError && err.status === 401) {
-      await clearAdminSecret();
+      await clearAdminSession();
       redirect('/login');
     }
     throw err;

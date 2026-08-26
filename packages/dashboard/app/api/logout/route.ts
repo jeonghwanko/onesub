@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { clearAdminSecret } from '../../../lib/auth';
+import { clearAdminSession } from '../../../lib/auth';
 
 /**
  * Sign out — clear the cookie + bounce to /login. Uses the incoming request
@@ -7,7 +7,7 @@ import { clearAdminSecret } from '../../../lib/auth';
  * without hardcoding the dashboard's public hostname.
  */
 export async function POST(req: NextRequest): Promise<NextResponse> {
-  await clearAdminSecret();
+  await clearAdminSession();
   const url = req.nextUrl.clone();
   url.pathname = '/login';
   return NextResponse.redirect(url);

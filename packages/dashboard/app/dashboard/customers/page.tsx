@@ -32,7 +32,7 @@ export default async function CustomersPage({ searchParams }: PageProps) {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Look up a user's full state — subscriptions, purchases, and entitlements — in one view.
+          Look up a user&apos;s full state — subscriptions, purchases, and entitlements — in one view.
         </p>
       </div>
 
@@ -44,7 +44,6 @@ export default async function CustomersPage({ searchParams }: PageProps) {
             name="userId"
             defaultValue={userId ?? ''}
             autoComplete="off"
-            autoFocus
             placeholder="device id / user id"
             className="mt-1 block w-80 rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs shadow-sm focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
           />

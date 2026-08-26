@@ -76,7 +76,6 @@ function TransferDialog({
             type="text"
             name="newUserId"
             required
-            autoFocus
             autoComplete="off"
             className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 font-mono text-xs shadow-sm focus:border-brand-600 focus:outline-none focus:ring-1 focus:ring-brand-600"
           />
@@ -131,15 +130,18 @@ function DeleteDialog({ purchase, onClose }: { purchase: PurchaseInfo; onClose: 
 
 function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
-    <div
-      // Click-outside to close — onClose is the user's intent. The inner panel
-      // stops propagation so clicking inside doesn't dismiss.
-      onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">
+      <button
+        type="button"
+        aria-label="Close dialog"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default"
+      />
       <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Purchase action"
+        className="relative w-full max-w-md rounded-lg border border-slate-200 bg-white p-5 shadow-xl"
       >
         {children}
       </div>

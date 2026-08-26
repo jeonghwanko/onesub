@@ -1,0 +1,14 @@
+.git
+.github
+.changeset
+.claude
+node_modules
+**/node_modules
+**/dist
+**/.next
+**/*.tsbuildinfo
+.env
+.env.*
+!.env.example
+*.log
+coverage

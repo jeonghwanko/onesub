@@ -13,12 +13,16 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "!dist/__tests__",
+    "!src/__tests__",
+    "!src/types/react-native-fallback.d.ts"
   ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "type-check:peer": "tsc --noEmit -p tsconfig.peer.json"
   },
   "keywords": [
     "react-native",
@@ -42,16 +46,12 @@
     "@onesub/shared": "0.16.0"
   },
   "peerDependencies": {
-    "expo-in-app-purchases": ">=14.0.0",
     "react": ">=18.0.0",
     "react-native": ">=0.73.0",
-    "react-native-iap": ">=15.0.0"
+    "react-native-iap": ">=15.0.0 <16.0.0"
   },
   "peerDependenciesMeta": {
     "react-native-iap": {
-      "optional": true
-    },
-    "expo-in-app-purchases": {
       "optional": true
     }
   },

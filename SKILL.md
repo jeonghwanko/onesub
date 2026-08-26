@@ -130,7 +130,7 @@ when another IAP operation is still running, and `NON_CONSUMABLE_ALREADY_OWNED` 
 the device already owns that SKU (recover with `restoreProduct`). `subscribe()` / `restore()` return
 `void` and no-op while busy. Always branch on both outcomes.
 
-Peer dep: **`react-native-iap` v15+** (event-based purchase flow). Google Play subscription offer
+Peer dep: **`react-native-iap` v15.x** (event-based purchase flow). Google Play subscription offer
 tokens are read from the fetched product and forwarded automatically — no client wiring needed, but
 the subscription must have an active base-plan offer in Play Console.
 

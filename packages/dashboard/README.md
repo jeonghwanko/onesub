@@ -7,6 +7,7 @@ Self-hosted operations dashboard for [`@onesub/server`](https://www.npmjs.com/pa
 ```bash
 docker run -p 4101:4101 \
   -e ONESUB_SERVER_URL=http://your-onesub-server:4100 \
+  -e ONESUB_SESSION_SECRET='replace-with-at-least-32-random-characters' \
   ghcr.io/jeonghwanko/onesub-dashboard:latest
 ```
 
@@ -17,14 +18,17 @@ Open <http://localhost:4101> and paste your server's `adminSecret` on the login 
 ```bash
 # from the monorepo root
 docker build -f packages/dashboard/Dockerfile -t onesub-dashboard .
-docker run -p 4101:4101 -e ONESUB_SERVER_URL=http://host.docker.internal:4100 onesub-dashboard
+docker run -p 4101:4101 \
+  -e ONESUB_SERVER_URL=http://host.docker.internal:4100 \
+  -e ONESUB_SESSION_SECRET='replace-with-at-least-32-random-characters' \
+  onesub-dashboard
 ```
 
 ## Local development
 
 ```bash
 # from the monorepo root
-npm ci
+corepack npm ci
 npm run build -w @onesub/shared
 
 cd packages/dashboard
@@ -35,20 +39,30 @@ The dev server listens on port 4101 and proxies admin/metrics calls to `ONESUB_S
 
 For a `.env.local`-style setup, drop `ONESUB_SERVER_URL=http://localhost:4100` into `packages/dashboard/.env.local` (the file is gitignored) and just run `npm run dev -w @onesub/dashboard` from the monorepo root.
 
+Before submitting dashboard changes, run its lint, type-check, focused tests, and production build:
+
+```bash
+npm run lint -w @onesub/dashboard
+npm run type-check -w @onesub/dashboard
+npm test -- packages/dashboard/src/__tests__
+npm run build -w @onesub/dashboard
+```
+
 ## Configuration
 
 | Env var | Required | Notes |
 |---|---|---|
 | `ONESUB_SERVER_URL` | yes | Base URL of your `@onesub/server` mount (e.g. `http://localhost:4100`, or `https://api.example.com/api` when onesub is mounted under a path prefix) |
+| `ONESUB_SESSION_SECRET` | production | At least 32 random characters used to encrypt and authenticate 8-hour operator sessions. Keep it stable across dashboard replicas and rotations; changing it signs everyone out. Development uses an ephemeral process-local key when unset. |
 | `NODE_ENV=production` | recommended | Enables `Secure` cookie flag — required when serving over HTTPS |
 
-The dashboard does **not** persist anything itself — every page render fetches fresh state from the onesub server. The browser cookie holds your `adminSecret` (HTTP-only, 8h sliding window); no other state is kept.
+The dashboard does **not** persist anything itself — every page render fetches fresh state from the onesub server. The browser holds an HTTP-only, authenticated-encryption session envelope for up to 8 hours; the `adminSecret` is never stored as plaintext in the cookie.
 
 ## Auth model
 
 - The dashboard reuses your server's `adminSecret`. If the server doesn't have one set, mount it first (`createOneSubMiddleware({ ..., adminSecret: process.env.ADMIN_SECRET })`) — every dashboard page depends on the admin scope being mounted.
-- After successful login, the secret is stored as an `HttpOnly` cookie on the dashboard's domain. It never travels to the browser; only server components and server actions read it.
-- Single-operator by design — a token-exchange layer (cookie holds an opaque session id, secret stays env-only) is on the roadmap when multi-operator + audit log land.
+- After successful login, the dashboard encrypts the secret with AES-256-GCM and stores only that tamper-evident envelope in a `Secure`/`HttpOnly` cookie. Decryption happens only in server-side auth code.
+- This remains a single shared-credential operator model. Every grant, transfer, and delete emits a secret-free JSON audit record (`onesub.dashboard.admin_action`) containing the session id, target, outcome, timestamp, and upstream status on failure. Route application logs to durable storage if audit retention is required.
 
 ## Pages
 
@@ -71,7 +85,7 @@ Available on the customer detail page:
 | **Transfer purchase** | Reassign a `transactionId`'s owner to a new userId. For legitimate device migration / account merge. | `POST /onesub/purchase/admin/transfer` |
 | **Delete purchases** | Drop every purchase row matching `userId + productId`. Used to let a user re-test a non-consumable flow. | `DELETE /onesub/purchase/admin/:userId/:productId` |
 
-All three are server actions that revalidate the customer detail page after success. Subscriptions cannot be granted directly from the dashboard — receipt validation is the source of truth for subs.
+All three are server actions that revalidate the customer detail page after success and emit a structured audit event. Subscriptions cannot be granted directly from the dashboard — receipt validation is the source of truth for subs.
 
 ## Mounting onesub behind a path prefix
 
@@ -79,8 +93,7 @@ If your host app mounts onesub under a sub-path (e.g. `app.use('/api', createRou
 
 ## Roadmap
 
-- Audit log of admin write actions (who / when / what)
-- Token-exchange auth for multi-operator setups
+- Per-operator identity and role-based access (the current audit session id identifies a session, not a person)
 - Subscription manual grant (paired with a `subscriptionStore.save` admin endpoint)
 - Mobile-friendly layout polish
 

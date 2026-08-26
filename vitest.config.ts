@@ -23,6 +23,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Unbounded fork startup can starve the jsdom SDK worker on Windows and
+    // produce a false 60s "worker failed to respond" error before tests run.
+    maxWorkers: 4,
     include: ['packages/*/src/**/__tests__/**/*.test.ts'],
   },
 });
