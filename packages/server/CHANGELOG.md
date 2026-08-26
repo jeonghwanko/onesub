@@ -1,5 +1,11 @@
 # @onesub/server
 
+## 0.27.4
+
+### Patch Changes
+
+- 2132927: Update jose to 6.2.10 for hardened JWT and JWE validation
+
 ## 0.27.3
 
 ### Patch Changes
