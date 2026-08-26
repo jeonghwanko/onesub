@@ -44,9 +44,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          # Trusted publishing requires the npm 11 line bundled with Node 24;
-          # Changesets invokes npm publish directly rather than through Corepack.
-          node-version: 24
+          node-version: 22
           cache: 'npm'
       - name: Install dependencies
         run: corepack npm ci
@@ -182,7 +180,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # Trusted publishing requires the npm 11 line bundled with Node 24;
+          # Changesets invokes npm publish directly rather than through Corepack.
+          node-version: 24
           cache: 'npm'
           # Keep setup-node from creating token-based .npmrc auth; npm's default
           # registry plus id-token permission activates trusted OIDC publishing.
