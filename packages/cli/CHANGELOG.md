@@ -1,5 +1,20 @@
 # @onesub/cli
 
+## 0.1.46
+
+### Patch Changes
+
+- cc69411: Tighten MCP provider compatibility. For the SDK, remove the unused Expo peer,
+  compile against the real react-native-iap declarations in an isolated peer
+  matrix, stop materializing host-owned React Native tooling during repository
+  installs, and state the tested v15 peer range explicitly because v16 has a
+  different requestPurchase contract. Keep test-only sources and compiled tests
+  out of every published npm package archive, and add a release-artifact gate so
+  test files, credential-like files, or missing declared entry points fail CI.
+- Updated dependencies [cc69411]
+  - @onesub/shared@0.16.1
+  - @onesub/server@0.27.3
+
 ## 0.1.45
 
 ### Patch Changes
