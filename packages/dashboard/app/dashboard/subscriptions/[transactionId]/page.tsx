@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import type { SubscriptionInfo } from '@onesub/shared';
-import { requireClient, clearAdminSecret } from '../../../../lib/auth';
+import { requireClient, clearAdminSession } from '../../../../lib/auth';
 import { OneSubFetchError } from '../../../../lib/onesub-client';
 
 export const dynamic = 'force-dynamic';
@@ -48,7 +48,7 @@ export default async function SubscriptionDetailPage({ params }: PageProps) {
     sub = await client.getSubscription(transactionId);
   } catch (err) {
     if (err instanceof OneSubFetchError && err.status === 401) {
-      await clearAdminSecret();
+      await clearAdminSession();
       redirect('/login');
     }
     if (err instanceof OneSubFetchError && err.status === 404) {

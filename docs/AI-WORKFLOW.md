@@ -31,7 +31,7 @@ npm run build && node packages/cli/dist/index.js dev --port 4100
 
 ## First Prompt After Cloning
 
-Run `npm ci`, open the repository in Codex or Claude, and start with a read-only orientation:
+Run `corepack npm ci`, open the repository in Codex or Claude, and start with a read-only orientation:
 
 ```text
 Read AGENTS.md and docs/README.md first. Inspect package.json, the CI workflow, and the package
@@ -49,7 +49,7 @@ first edit:
 | Concern | What to check |
 |---|---|
 | Instructions loaded | Codex reads `AGENTS.md` directly; Claude Code reads `CLAUDE.md`, which imports it. If the agent has not read the *Build Model and Traps* section, tell it to. |
-| Network | `npm ci` needs registry access. In a sandboxed or offline session, install once up front — a mid-task install failure looks like a broken build. |
+| Network | `corepack npm ci` needs registry access. In a sandboxed or offline session, install once up front — a mid-task install failure looks like a broken build. |
 | Approvals | Builds, tests, and `docs:check` are safe to run unattended. Git writes, package publishing, and any store-product write are not; require explicit approval for those. |
 | Shell | Command blocks here are bash. On Windows, translate them as described in `AGENTS.md`. `pwsh ./validate-unity-packages.ps1` needs PowerShell — if it is unavailable, the agent must report the skip. |
 | Working tree | Run `git status` first. The tree frequently carries unrelated in-progress work that must survive the task. |

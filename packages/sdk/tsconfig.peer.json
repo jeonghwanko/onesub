@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "react-native": ["./peer-tests/node_modules/react-native"],
+      "react-native-iap": ["./peer-tests/node_modules/react-native-iap"]
+    }
+  },
+  "include": ["src", "type-tests"],
+  "exclude": ["dist", "src/types/react-native-fallback.d.ts"]
+}

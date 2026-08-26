@@ -325,7 +325,7 @@ const restored = await restoreProduct('premium_unlock', 'non_consumable');
 
 **Mock mode** — set `config.mockMode: true` to return synthetic success from `subscribe` / `restore` / `purchaseProduct` / `restoreProduct` without calling `react-native-iap` or the onesub server. Useful for running UI flows in Expo Go / the simulator. Never enable in production.
 
-**Peer dependency:** SDK requires `react-native-iap` **v15+** (event-based purchase flow).
+**Peer dependency:** SDK requires `react-native-iap` **v15.x** (event-based purchase flow). v16 uses a different request contract and is not currently supported.
 
 The SDK is optional. You can use `@onesub/server` with any client — React Native, Flutter, or plain HTTP calls.
 
@@ -487,7 +487,7 @@ run it for you on startup.
 
 ```bash
 git clone https://github.com/jeonghwanko/onesub.git
-cd onesub && npm ci && npm run build && npm test
+cd onesub && corepack npm ci && npm run build && npm test
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow, [docs/README.md](docs/README.md)

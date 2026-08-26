@@ -3,12 +3,14 @@ name: CI
 on:
   push:
     branches: [master]
-    paths-ignore:
-      - '**/*.md'
   pull_request:
     branches: [master]
-    paths-ignore:
-      - '**/*.md'
+  schedule:
+    # Weekly full CodeQL scan also catches newly disclosed query patterns.
+    - cron: '23 7 * * 1'
+
+permissions:
+  contents: read
 
 jobs:
   ci:
@@ -45,18 +47,22 @@ jobs:
           node-version: 22
           cache: 'npm'
       - name: Install dependencies
-        run: npm ci
+        run: corepack npm ci
+      - name: Audit production dependencies
+        run: corepack npm run audit:prod
       - name: Build
-        run: npm run build  # tsc per-workspace — fails on type errors
+        run: corepack npm run build  # tsc per-workspace — fails on type errors
+      - name: Validate package archives
+        run: corepack npm run package:check
       - name: Test
-        run: npm test
+        run: corepack npm test
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/onesub_test
       - name: Validate Unity UPM boundaries
         shell: pwsh
         run: ./validate-unity-packages.ps1
       - name: Bundle size check
-        run: npm run size -w @onesub/server
+        run: corepack npm run size -w @onesub/server
 
   # The root build script skips the dashboard (Next.js), so without this job a
   # dashboard-breaking PR stays green and only fails after merge, in the
@@ -70,10 +76,126 @@ jobs:
           node-version: 22
           cache: 'npm'
       - name: Install dependencies
-        run: npm ci
+        run: corepack npm ci
       - name: Build shared (dashboard dependency)
-        run: npm run build -w @onesub/shared
+        run: corepack npm run build -w @onesub/shared
+      - name: Lint dashboard
+        run: corepack npm run lint -w @onesub/dashboard
       - name: Type-check dashboard
-        run: npm run type-check -w @onesub/dashboard
+        run: corepack npm run type-check -w @onesub/dashboard
       - name: Build dashboard
-        run: npm run build -w @onesub/dashboard
+        run: corepack npm run build -w @onesub/dashboard
+
+  docker-dashboard:
+    name: Docker dashboard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build dashboard image
+        run: docker build -f packages/dashboard/Dockerfile -t onesub-dashboard:ci .
+
+  sdk-peer:
+    name: SDK peer (${{ matrix.react-native-iap }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Compile against real package types at both ends of the supported v15
+        # line. v16 changed requestPurchase's platform request shape.
+        react-native-iap: ['15.0.0', '15.6.2']
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+      - name: Install dependencies
+        run: corepack npm ci
+      - name: Select react-native-iap peer version
+        run: corepack npm install --prefix packages/sdk/peer-tests --ignore-scripts --no-audit --no-fund --no-save --no-package-lock react@18.2.0 react-native@0.73.0 react-native-iap@${{ matrix.react-native-iap }}
+      - name: Build shared types
+        run: corepack npm run build -w @onesub/shared
+      - name: Type-check SDK against peer
+        run: corepack npm run type-check:peer -w @jeonghwanko/onesub-sdk
+      - name: Test SDK
+        # Loading the React Native 0.73 type/runtime tree in every fork can hit
+        # Vitest's worker startup timeout on small runners. Two workers keeps
+        # this compatibility job deterministic without reducing test coverage.
+        run: corepack npm test -- packages/sdk/src/__tests__ --maxWorkers=2
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # validate-docs.mjs deliberately has no third-party imports.
+      - name: Validate documentation
+        run: node scripts/validate-docs.mjs
+
+  codeql:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+          build-mode: none
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: '/language:${{ matrix.language }}'
+
+  # Publishing is part of this workflow so it cannot race the Postgres,
+  # Unity, bundle-size, audit, or dashboard gates above. A pull request only
+  # runs the validation jobs; a successful push to master may create/update
+  # the Changesets version PR or publish versions from a merged one.
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [ci, dashboard, docker-dashboard, sdk-peer, docs, codeql]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: corepack npm ci
+
+      - name: Create release PR or publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: corepack npm run version-packages
+          publish: corepack npm run release
+          commit: 'chore(release): version packages'
+          title: 'chore(release): version packages'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

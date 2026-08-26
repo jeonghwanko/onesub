@@ -71,7 +71,7 @@ interface FieldProps {
 }
 function Field({ label, name, placeholder, required, children }: FieldProps) {
   return (
-    <label className="block text-xs font-medium text-slate-600">
+    <label htmlFor={name} className="block text-xs font-medium text-slate-600">
       <span>{label}</span>
       {children ?? (
         <input

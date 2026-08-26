@@ -182,11 +182,16 @@ try {
 
 ## Requirements
 
-- `react-native-iap` **v15+** (event-based purchase flow)
+- `react-native-iap` **v15.x** (event-based purchase flow; v16 changed the request contract)
 - React Native 0.73+ and React 18+
 - `@onesub/server` running somewhere reachable
 
 The authoritative floors are the `peerDependencies` in this package's `package.json`.
+React Native is a required host peer and react-native-iap is an optional host peer so
+OneSub can still report a clear runtime error when the IAP adapter is absent. A mobile
+host must install both packages to make purchases; OneSub does not bundle either one.
+The OneSub monorepo suppresses peer auto-installation only in its root `.npmrc` and
+validates the real native types in an isolated CI matrix.
 
 ## Links
 

@@ -33,19 +33,20 @@ import {
 import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
 import { createSdkLogger } from './logger.js';
 import { buildRequestPurchaseArgs } from './iapRequest.js';
+import type { ReactNativeIapAdapter } from './iapAdapter.js';
 
 // ---------------------------------------------------------------------------
 // IAP import — react-native-iap is an optional peer dependency.
-// Compatible with react-native-iap v15+ (unified purchaseToken, fetchProducts,
+// Compatible with react-native-iap v15.x (unified purchaseToken, fetchProducts,
 // platform-scoped requestPurchase).
 // ---------------------------------------------------------------------------
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let RNIap: any = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  RNIap = require('react-native-iap');
-} catch {
-  // react-native-iap not installed — subscribe() will throw a clear error
+let RNIap: ReactNativeIapAdapter | null = null;
+if (process.env.NODE_ENV !== 'test') {
+  try {
+    RNIap = require('react-native-iap') as ReactNativeIapAdapter;
+  } catch {
+    // react-native-iap not installed — subscribe() will throw a clear error
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +341,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         releaseDrain(mockMode ? 'mockMode' : 'no-rn-iap');
         return;
       }
+      const iap = RNIap;
 
       // Keep callback identity stable across the pre-init registration and
       // post-init retry. RN-IAP v15 fans out through a Set, so the retry does
@@ -372,8 +374,8 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       };
 
       function attachListeners(): void {
-        listenerSubs.push(RNIap.purchaseUpdatedListener(onPurchaseUpdated));
-        listenerSubs.push(RNIap.purchaseErrorListener(onPurchaseError));
+        listenerSubs.push(iap.purchaseUpdatedListener(onPurchaseUpdated));
+        listenerSubs.push(iap.purchaseErrorListener(onPurchaseError));
       }
 
       try {
@@ -381,7 +383,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
           attachListeners,
           async () => {
             logger.trace('initConnection start');
-            const connected = await RNIap.initConnection();
+            const connected = await iap.initConnection();
             logger.trace('initConnection ok', { connected });
             return connected;
           },
@@ -391,7 +393,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       } catch (err) {
         logger.warn('initConnection failed', err);
         removeListeners();
-        try { await RNIap.endConnection?.(); } catch { /* ignore */ }
+        try { await iap.endConnection?.(); } catch { /* ignore */ }
         releaseDrain('init-failed');
         return;
       }
@@ -508,7 +510,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
 
       // v15: fetchProducts replaces getSubscriptions
       const fetchStartedAt = Date.now();
-      const subs = await RNIap.fetchProducts({ skus: [productId], type: 'subs' });
+      const subs = (await RNIap.fetchProducts({ skus: [productId], type: 'subs' })) ?? [];
       logger.trace('subscription products fetched', {
         durationMs: Date.now() - fetchStartedAt,
         totalMs: Date.now() - startedAt,
@@ -665,7 +667,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         // Same drain-window gate as subscribe() — see there for rationale.
         await awaitDrainComplete();
 
-        const products = await RNIap.fetchProducts({ skus: [productId], type: 'in-app' });
+        const products = (await RNIap.fetchProducts({ skus: [productId], type: 'in-app' })) ?? [];
         if (!products || !products.length) {
           throw new OneSubError(ONESUB_ERROR_CODE.PRODUCT_NOT_FOUND, `[onesub] Product not found in store: ${productId}`);
         }

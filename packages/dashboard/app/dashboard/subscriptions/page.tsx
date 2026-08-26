@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import type { ListSubscriptionsQuery, SubscriptionInfo } from '@onesub/shared';
-import { requireClient, clearAdminSecret } from '../../../lib/auth';
+import { requireClient, clearAdminSession } from '../../../lib/auth';
 import { OneSubFetchError } from '../../../lib/onesub-client';
 
 export const dynamic = 'force-dynamic';
@@ -66,16 +66,13 @@ export default async function SubscriptionsPage({ searchParams }: PageProps) {
   const query = parseQuery(raw);
 
   const client = await requireClient();
-  let result;
-  try {
-    result = await client.listSubscriptions(query);
-  } catch (err) {
+  const result = await client.listSubscriptions(query).catch(async (err: unknown) => {
     if (err instanceof OneSubFetchError && err.status === 401) {
-      await clearAdminSecret();
+      await clearAdminSession();
       redirect('/login');
     }
     throw err;
-  }
+  });
 
   const offset = query.offset ?? 0;
   const limit = query.limit ?? PAGE_SIZE;

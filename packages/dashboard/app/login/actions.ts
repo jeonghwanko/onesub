@@ -1,7 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
-import { verifyAdminSecret, writeAdminSecret } from '../../lib/auth';
+import { verifyAdminSecret, writeAdminSession } from '../../lib/auth';
 
 export interface LoginState {
   error: string | null;
@@ -18,6 +18,6 @@ export async function login(_prev: LoginState, formData: FormData): Promise<Logi
     return { error: result.reason };
   }
 
-  await writeAdminSecret(secret);
+  await writeAdminSession(secret);
   redirect('/dashboard');
 }

@@ -9,11 +9,10 @@
  * verified only by reading them — and the referential-stability work in 0.10.4
  * shipped that way too.
  *
- * `react-native-iap` is deliberately NOT installed here, which is a supported
- * configuration rather than a gap: the provider must still import, render, and
- * report a clear error from the purchase paths. It also keeps `react-native`
- * itself out of the picture, since `getCurrentPlatform()` is only reached once an
- * IAP adapter exists.
+ * `react-native-iap` is deliberately not part of the root development install.
+ * CI installs each supported peer version in isolation for the type contract;
+ * this suite verifies the equally supported missing-peer path without loading
+ * a native module in the Node test worker.
  *
  * Written with `createElement` rather than JSX so the file is a `.test.ts` and is
  * picked up by the repository's existing Vitest include pattern.

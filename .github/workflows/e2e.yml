@@ -15,6 +15,9 @@ on:
         required: true
         default: 'true'
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
@@ -25,15 +28,15 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-      - run: npm ci
-      - run: npm run build
+      - run: corepack npm ci
+      - run: corepack npm run build
 
       # Apple sandbox round-trip — signs a JWS with the configured
       # ASC-issued key and posts it to /onesub/validate, asserting the
       # response carries the expected subscription state.
       - name: Apple sandbox JWS round-trip
         if: ${{ github.event.inputs.apple == 'true' }}
-        run: npm run test:e2e:apple -w @onesub/server
+        run: corepack npm run test:e2e:apple -w @onesub/server
         env:
           APPLE_BUNDLE_ID: ${{ secrets.APPLE_E2E_BUNDLE_ID }}
           APPLE_KEY_ID: ${{ secrets.APPLE_E2E_KEY_ID }}
@@ -46,7 +49,7 @@ jobs:
       # signed JWT in Authorization to exercise verifyGooglePushToken.
       - name: Google sandbox notification round-trip
         if: ${{ github.event.inputs.google == 'true' }}
-        run: npm run test:e2e:google -w @onesub/server
+        run: corepack npm run test:e2e:google -w @onesub/server
         env:
           GOOGLE_PACKAGE_NAME: ${{ secrets.GOOGLE_E2E_PACKAGE_NAME }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_E2E_SERVICE_ACCOUNT_KEY }}

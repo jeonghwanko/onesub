@@ -9,7 +9,8 @@
   },
   "files": [
     "dist",
-    "templates"
+    "templates",
+    "!dist/__tests__"
   ],
   "scripts": {
     "build": "tsc",

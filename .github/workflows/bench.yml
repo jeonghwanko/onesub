@@ -6,6 +6,9 @@ on:
     # Tuesday 03:00 UTC — keep weekly results for regression spotting.
     - cron: '0 3 * * 2'
 
+permissions:
+  contents: read
+
 jobs:
   k6:
     runs-on: ubuntu-latest
@@ -15,8 +18,8 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
-      - run: npm ci
-      - run: npm run build
+      - run: corepack npm ci
+      - run: corepack npm run build
 
       # examples/* is not a root workspace (workspaces = packages/*), so `npm ci`
       # never installs the example server's own deps. @onesub/server (the bench
@@ -26,7 +29,7 @@ jobs:
       # WITHOUT touching package.json/lockfile, so @onesub/server still resolves
       # to the local workspace build being benchmarked. express/ioredis already hoisted.
       - name: Install example-only runtime deps (not in workspace tree)
-        run: npm install --no-save --no-package-lock dotenv@^16.4.0 bullmq@^5.0.0 pg@^8.13.0
+        run: corepack npm install --no-save --no-package-lock dotenv@^16.4.0 bullmq@^5.0.0 pg@^8.13.0
 
       - name: Boot example server (in-memory)
         run: |

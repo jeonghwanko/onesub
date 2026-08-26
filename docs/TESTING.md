@@ -112,21 +112,22 @@ npm run build
 npm run type-check
 ```
 
-After editing `packages/shared/src`, rebuild it before anything downstream is meaningful — dependents
-read `packages/shared/dist`, which is gitignored and never rebuilt automatically:
+After editing `packages/shared/src`, rebuild it before a dependent build or type-check — those
+commands read `packages/shared/dist`, which is gitignored and never rebuilt automatically:
 
 ```bash
 npm run build -w @onesub/shared
 ```
 
-`tsc` usually catches a stale `dist` loudly, because the stale `.d.ts` ships with it. `npm test` does
-not — Vitest transpiles without type-checking, so a value export missing from the stale `dist` is
-simply `undefined` at runtime. A green test run on an unbuilt shared change proves nothing.
+`tsc` usually catches a stale `dist` loudly because the stale `.d.ts` ships with it. Vitest instead
+aliases `@onesub/shared` to `packages/shared/src/index.ts`, so tests exercise current source. Keep
+the alias and still run the shared build before completion so emitted declarations are verified.
 
 The root build excludes the dashboard, so dashboard changes also require:
 
 ```bash
 npm run build -w @onesub/shared
+npm run lint -w @onesub/dashboard
 npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
 ```
@@ -274,18 +275,20 @@ npm run docs:check
 This validates local Markdown links and referenced file paths, trailing whitespace, npm workspace
 coverage in `AGENTS.md`, MCP tool documentation, CLI command documentation, and the route list in
 `packages/server/README.md` against `packages/server/src/openapi.ts` — which `openapi.test.ts` in turn
-holds to the actually mounted routers. It requires no network access and no `npm ci`.
+holds to the actually mounted routers. It requires no network access and no dependency install.
 
-If you add a check, add its inputs to the `paths` filter in `.github/workflows/docs.yml` too, or it
-will not run on the change that breaks it.
+Documentation validation is a job in the unfiltered `.github/workflows/ci.yml`, so every pull
+request runs it regardless of which input changed.
 
 ## CI-Parity Checklist
 
 For a cross-package change, the practical local equivalent of CI is:
 
 ```bash
-npm ci
+corepack npm ci
+npm run audit:prod
 npm run build
+npm run package:check
 npm test
 npm run type-check
 pwsh ./validate-unity-packages.ps1
@@ -293,11 +296,19 @@ npm run size -w @onesub/server
 
 # the dashboard is a separate CI job — it can be red while the root build is green
 npm run build -w @onesub/shared
+npm run lint -w @onesub/dashboard
 npm run type-check -w @onesub/dashboard
 npm run build -w @onesub/dashboard
 
 npm run docs:check
 ```
+
+`audit:prod` discovers the workspaces from the root manifest instead of maintaining an exclusion
+list. It audits the ordinary shipped workspaces directly, then constructs an isolated manifest for
+the React Native SDK's shipped dependency closure. Host-owned peers stay outside that runtime gate,
+while any future direct SDK dependency is included automatically. Run `npm run audit:all` when
+reviewing peer or development-tool updates; those findings still need triage but do not necessarily
+describe the OneSub runtime bundle.
 
 This is a superset of CI in one way and a subset in another. It is a superset because CI never runs
 root `npm run type-check` — `build` is the type gate. It is a **subset** because CI runs `npm test`
@@ -305,14 +316,14 @@ with `DATABASE_URL` pointing at a Postgres service container, so the Postgres st
 and skip in the list above. Add a `DATABASE_URL` (see *Postgres store tests*) when your change touches
 `stores/postgres.ts` or `sql/schema.sql`.
 
-Otherwise CI's `ci.yml` job runs `npm ci` → `build` → `test` → the Unity validator → the size check.
-`docs:check` runs in its own path-filtered workflow, and CodeQL (`security-extended`) runs separately
-and can fail a PR.
+Otherwise CI's `ci.yml` job runs the pinned npm install → production audit → `build` → `test` → the Unity
+validator → the size check.
+The same workflow also runs dashboard validation, a clean dashboard Docker image build, the SDK's
+supported react-native-iap type matrix, `docs:check`, and CodeQL (`security-extended`). The release
+job depends on all of them.
 
-Use focused checks for package-local changes. Documentation-only changes normally need only
-`npm run docs:check` — `ci.yml` sets `paths-ignore: '**/*.md'`, so a Markdown-only PR runs no build
-and no tests (CodeQL still runs; it has no path filter). Real store E2E runs only when
-provider/verification behavior warrants it.
+Use focused checks for package-local changes. Real store E2E runs only when provider/verification
+behavior warrants it; the unified pull-request workflow itself is intentionally not path-filtered.
 
 ## When a Check Goes Red
 
@@ -324,8 +335,8 @@ provider/verification behavior warrants it.
 | `schema.test.ts` fails | `sql/schema.sql` and the embedded DDL constants in `stores/schema.ts` disagree |
 | `npm run size` fails with a missing file | You did not build `@onesub/server` first |
 | `npm run size` fails on the budget | Shrink the addition, or raise the ceiling in `.size-limit.cjs` with a dated justification |
-| CI red but the whole root build is green locally | The separate `dashboard` job — run the three dashboard commands |
-| `docs:check` fails after a rename | A document cites the old path; `docs.yml` is path-filtered and will not have caught it earlier |
+| CI red but the whole root build is green locally | The separate `dashboard` job — run the four dashboard commands |
+| `docs:check` fails after a rename | A document still cites the old path; update the owning document or link |
 
 ## Adding Tests
 
