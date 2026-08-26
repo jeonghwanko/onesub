@@ -24,7 +24,7 @@
     "url": "https://github.com/jeonghwanko/onesub.git",
     "directory": "packages/shared"
   },
-  "homepage": "https://github.com/jeonghwanko/onesub",
+  "homepage": "https://onesub.pryzm.gg",
   "publishConfig": {
     "access": "public"
   },

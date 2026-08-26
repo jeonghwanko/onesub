@@ -40,7 +40,7 @@
     "url": "https://github.com/jeonghwanko/onesub.git",
     "directory": "packages/sdk"
   },
-  "homepage": "https://github.com/jeonghwanko/onesub",
+  "homepage": "https://onesub.pryzm.gg",
   "license": "MIT",
   "dependencies": {
     "@onesub/shared": "0.16.1"
