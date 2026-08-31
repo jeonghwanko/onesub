@@ -39,7 +39,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@onesub/providers": "^0.4.3",
     "@onesub/shared": "0.16.2",
     "zod": "^4.4.3"
