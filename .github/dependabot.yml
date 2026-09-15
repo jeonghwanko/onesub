@@ -26,6 +26,11 @@ updates:
       # handling (see closed PR #8). Revisit after 6.x matures.
       - dependency-name: typescript
         update-types: [version-update:semver-major]
+      # ioredis-mock (the test double) only supports ioredis ^5, so an ioredis
+      # major bump breaks redis-store tests (see closed PR #187). Re-enable once
+      # ioredis-mock supports ioredis 6.
+      - dependency-name: ioredis
+        update-types: [version-update:semver-major]
   # GitHub Actions workflow pins — weekly.
   - package-ecosystem: github-actions
     directory: /
