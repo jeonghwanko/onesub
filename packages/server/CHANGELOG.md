@@ -1,5 +1,11 @@
 # @onesub/server
 
+## 0.27.6
+
+### Patch Changes
+
+- 39f21e2: Update jose to 6.2.11
+
 ## 0.27.5
 
 ### Patch Changes
