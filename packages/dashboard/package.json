@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@onesub/shared": "0.16.2",
-    "next": "^16.3.4",
+    "next": "^16.3.5",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-is": "^19.2.0",
