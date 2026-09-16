@@ -1,5 +1,11 @@
 # @onesub/mcp-server
 
+## 0.4.17
+
+### Patch Changes
+
+- a2e1a16: Update @modelcontextprotocol/sdk to ^1.30.0 and zod to ^4.6.2
+
 ## 0.4.16
 
 ### Patch Changes
