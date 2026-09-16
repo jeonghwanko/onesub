@@ -192,11 +192,12 @@ jobs:
 
       - name: Create release PR or publish
         id: changesets
-        uses: changesets/action@v1
+        uses: changesets/action@v2
         with:
-          version: corepack npm run version-packages
-          publish: corepack npm run release
-          commit: 'chore(release): version packages'
-          title: 'chore(release): version packages'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # v2 renamed these inputs (version -> version-script, etc.) and no
+          # longer reads GITHUB_TOKEN from env; the token must be an input.
+          version-script: corepack npm run version-packages
+          publish-script: corepack npm run release
+          commit-message: 'chore(release): version packages'
+          pr-title: 'chore(release): version packages'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
