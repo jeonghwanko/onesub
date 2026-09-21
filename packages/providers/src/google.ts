@@ -36,6 +36,9 @@ export type GoogleProductType = 'subscription' | 'consumable' | 'non_consumable'
 export interface CreateSubscriptionResult {
   success: boolean;
   productId?: string;
+  /** Creation can succeed while activation fails. Do not recreate the product. */
+  active?: boolean;
+  activationError?: string;
   /** Currencies from extraRegions that have no known Play region code and were not applied. */
   skippedRegions?: string[];
   error?: string;
@@ -335,11 +338,10 @@ export async function createSubscription(opts: {
         basePlanId,
         autoRenewingBasePlanType: {
           billingPeriodDuration: billingPeriod,
-          prorationMode: 'CHARGE_ON_NEXT_BILLING_DATE',
+          prorationMode: 'SUBSCRIPTION_PRORATION_MODE_CHARGE_ON_NEXT_BILLING_DATE',
           resubscribeState: 'RESUBSCRIBE_STATE_ACTIVE',
         },
         regionalConfigs: [primaryRegion, ...extraRegionalConfigs],
-        state: 'ACTIVE',
       }],
     };
 
@@ -350,14 +352,23 @@ export async function createSubscription(opts: {
     );
 
     try {
-      await playRequest<Record<string, unknown>>(
+      const activated = await playRequest<GoogleSubscriptionResource>(
         token, 'POST',
         `${ANDROID_BASE}/${pkg}/subscriptions/${encodeURIComponent(opts.productId)}/basePlans/${basePlanId}:activate`,
         {},
       );
-    } catch { /* activation is non-fatal if already active via body */ }
+      if (!activated.basePlans?.some((plan) => plan.basePlanId === basePlanId && plan.state === 'ACTIVE')) {
+        throw new Error(`Activation response did not confirm base plan '${basePlanId}' is ACTIVE. Inspect the existing product before retrying activation.`);
+      }
+    } catch (err) {
+      return {
+        success: true, productId: opts.productId, active: false,
+        activationError: err instanceof Error ? err.message : String(err),
+        ...(skippedRegions.length ? { skippedRegions } : {}),
+      };
+    }
 
-    return { success: true, productId: opts.productId, ...(skippedRegions.length ? { skippedRegions } : {}) };
+    return { success: true, productId: opts.productId, active: true, ...(skippedRegions.length ? { skippedRegions } : {}) };
   } catch (err) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

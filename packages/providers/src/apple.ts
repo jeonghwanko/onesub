@@ -364,7 +364,9 @@ async function setPrice(
         await appleRequest(creds, 'POST', '/subscriptionPrices', {
           data: {
             type: 'subscriptionPrices',
-            attributes: { preserveCurrentPrice: false, startDate: null },
+            // UPFRONT pays for subscriptionPeriod (ONE_MONTH / ONE_YEAR).
+            // MONTHLY is a 12-month commitment paid in installments, not our monthly product.
+            attributes: { preserveCurrentPrice: false, startDate: null, planType: 'UPFRONT' },
             relationships: {
               subscription: { data: { type: 'subscriptions', id: resourceId } },
               subscriptionPricePoint: { data: { type: 'subscriptionPricePoints', id: result.exact.id } },
@@ -547,15 +549,39 @@ export async function createSubscription(opts: {
       return { success: false, error: message, errorType };
     }
 
-    // 3 — primary price
+    // 3 — declare plan availability before assigning prices (ASC API 4.4+).
+    // Offer only explicitly requested territories, never future territories automatically.
+    const territories = [...new Set([opts.currency, ...(opts.extraRegions ?? []).map((r) => r.currency)]
+      .map(currencyToTerritory).filter((territory): territory is string => territory !== undefined))];
+    if (territories.length > 0) {
+      try {
+        await appleRequest(creds, 'POST', '/subscriptionPlanAvailabilities', {
+          data: {
+            type: 'subscriptionPlanAvailabilities',
+            attributes: { planType: 'UPFRONT', availableInNewTerritories: false },
+            relationships: {
+              subscription: { data: { type: 'subscriptions', id: subscriptionId } },
+              availableTerritories: { data: territories.map((id) => ({ type: 'territories', id })) },
+            },
+          },
+        });
+      } catch (err) {
+        return {
+          success: true, productId: opts.productId, internalId: subscriptionId, priceSet: false,
+          priceError: `Plan availability failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+    }
+
+    // 4 — primary price
     const { priceSet, priceNearest, priceError } = await setPrice(creds, 'subscriptions', subscriptionId, opts.currency, opts.price);
 
-    // 4 — extra regions
+    // 5 — extra regions
     const extraRegionsSet = opts.extraRegions?.length
       ? await setExtraRegionPrices(creds, 'subscriptions', subscriptionId, opts.extraRegions)
       : [];
 
-    // 5 — Korean localization for KRW
+    // 6 — Korean localization for KRW
     let localizationAdded = false;
     if (opts.currency === 'KRW') {
       try {
