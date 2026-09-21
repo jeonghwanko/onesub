@@ -1,6 +1,6 @@
 {
   "name": "@onesub/mcp-server",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "description": "MCP server for onesub — AI tools for setting up in-app subscriptions in React Native / Expo apps",
   "type": "module",
   "bin": {
@@ -40,7 +40,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "@onesub/providers": "^0.4.3",
+    "@onesub/providers": "^0.4.4",
     "@onesub/shared": "0.16.2",
     "zod": "^4.6.2"
   },
