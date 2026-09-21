@@ -259,7 +259,7 @@ function buildCreateOutput(opts: {
       lines.push('- `appleBundleId` — Your iOS bundle ID (e.g. `gg.pryzm.carrot`) for automatic lookup');
     } else if (appleResult) {
       if (appleResult.success) {
-        lines.push('', `**Status:** Success`);
+        lines.push('', `**Status:** ${appleResult.priceSet ? 'Created and priced' : 'Created, pricing incomplete'}`);
         lines.push(`**Created product ID:** \`${appleResult.productId ?? productId}\``);
         if ('internalId' in appleResult && appleResult.internalId) {
           lines.push(`**Internal ID:** \`${appleResult.internalId}\``);
@@ -352,15 +352,22 @@ function buildCreateOutput(opts: {
       lines.push('- `googleServiceAccountKey` — Contents of the service account JSON key');
     } else if (googleResult) {
       if (googleResult.success) {
-        lines.push('', `**Status:** Success`);
+        const activationConfirmed = productType !== 'subscription' || ('active' in googleResult && googleResult.active === true);
+        lines.push('', `**Status:** ${activationConfirmed ? 'Success' : 'Created, activation not confirmed'}`);
         lines.push(`**Created product ID:** \`${googleResult.productId ?? productId}\``);
+        if (productType === 'subscription' && 'active' in googleResult) {
+          lines.push(`**Base plan:** ${googleResult.active ? 'ACTIVE' : 'Activation not confirmed'}`);
+          if (googleResult.activationError) lines.push(`**Activation error:** ${googleResult.activationError}`);
+        }
         if ('skippedRegions' in googleResult && googleResult.skippedRegions && googleResult.skippedRegions.length > 0) {
           lines.push(`**Regions skipped (unsupported or duplicate currency):** ${googleResult.skippedRegions.join(', ')} — set these prices manually in Play Console.`);
         }
         lines.push('', '**Next steps:**');
         if (productType === 'subscription') {
           lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → Subscriptions.');
-          lines.push('2. Locate the subscription and **activate the base plan** (required before purchases work).');
+          lines.push(activationConfirmed
+            ? '2. Verify the active base plan and its prices before offering purchases.'
+            : '2. Inspect the existing subscription and **activate the base plan** if needed; do not repeat creation.');
           lines.push('3. Set up Real-Time Developer Notifications (RTDN) via Google Cloud Pub/Sub.');
         } else {
           lines.push('1. Open [Google Play Console](https://play.google.com/console) → your app → Monetize → In-app products.');
@@ -380,8 +387,9 @@ function buildCreateOutput(opts: {
   lines.push('', '---', '');
 
   const allSucceeded =
-    (!needsApple || (appleResult?.success === true && !appleConfigError)) &&
-    (!needsGoogle || (googleResult?.success === true && !googleConfigError));
+    (!needsApple || (appleResult?.success === true && appleResult.priceSet === true && !appleConfigError)) &&
+    (!needsGoogle || (googleResult?.success === true && !googleConfigError &&
+      (productType !== 'subscription' || ('active' in googleResult && googleResult.active === true))));
 
   const anyFailed =
     (needsApple && (!!appleConfigError || appleResult?.success === false)) ||
@@ -391,6 +399,8 @@ function buildCreateOutput(opts: {
     lines.push('**All platforms configured successfully.** Use `onesub_list_products` to verify.');
   } else if (anyFailed) {
     lines.push('**One or more platforms encountered errors.** Review the details above and retry with corrected credentials.');
+  } else {
+    lines.push('**Product created, configuration incomplete.** Repair pricing or activation on the existing product; do not repeat creation.');
   }
 
   return lines.join('\n');

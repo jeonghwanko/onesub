@@ -113,9 +113,13 @@ if (!result.success) {
 ```
 
 Apple creation creates or reuses a subscription group named from the display name, creates the
-subscription, selects the nearest exact store price point, applies extra regions, and adds Korean
+subscription, configures plan availability for the requested territories, selects an exact store price point, applies extra regions, and adds Korean
 localization for a KRW primary price. Inspect `priceSet`, `priceError`, `priceNearest`, and
 `extraRegionsSet`; `success: true` does not imply every optional regional price was applied.
+The plan type is `UPFRONT`: payment covers `ONE_MONTH` or `ONE_YEAR` as selected by `period`.
+Apple's `MONTHLY` plan type means a 12-month commitment with monthly installments, not a one-month
+subscription. Availability failures return the created IDs and `priceError`; repair the existing
+product rather than repeating creation. See [Apple's pricing workflow](https://developer.apple.com/documentation/appstoreconnectapi/configuring-subscription-prices-across-territories).
 
 ### Google
 
@@ -134,8 +138,11 @@ const result = await createGoogleSubscription({
 });
 ```
 
-Google creates an active base plan with ID `monthly` or `yearly` and an `en-US` listing. Check
-`skippedRegions` for unsupported or duplicate region mappings.
+Google creates a base plan with ID `monthly` or `yearly` and an `en-US` listing, then activates it.
+`success` reports product creation; `active: true` confirms the selected plan's activation response.
+When activation fails or its response does not confirm that plan, the result preserves `productId`
+and returns `active: false` with `activationError`. Inspect the existing plan before retrying
+activation; do not recreate it. Check `skippedRegions` for unsupported or duplicate region mappings.
 
 ## Create a One-Time Product
 

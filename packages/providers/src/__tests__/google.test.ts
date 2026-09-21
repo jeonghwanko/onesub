@@ -198,7 +198,7 @@ describe('createSubscription', () => {
   it('sends productId and regionsVersion.version as query params', async () => {
     const calls = mockFetch([
       { match: (u, m) => u.includes('/subscriptions') && m === 'POST' && !u.includes(':activate'), body: {} },
-      { match: (u) => u.includes(':activate'), body: {} },
+      { match: (u) => u.includes(':activate'), body: { basePlans: [{ basePlanId: 'monthly', state: 'ACTIVE' }] } },
     ]);
 
     const result = await createSubscription({
@@ -211,6 +211,39 @@ describe('createSubscription', () => {
     expect(create).toBeDefined();
     expect(create!.url).toContain('productId=premium');
     expect(create!.url).toContain(`regionsVersion.version=${encodeURIComponent('2022/02')}`);
+    expect(result.active).toBe(true);
+    const body = create!.body as { basePlans: Array<{ state?: string; autoRenewingBasePlanType: { prorationMode: string; billingPeriodDuration: string } }> };
+    expect(body.basePlans[0].state).toBeUndefined(); // output-only field
+    expect(body.basePlans[0].autoRenewingBasePlanType).toMatchObject({
+      prorationMode: 'SUBSCRIPTION_PRORATION_MODE_CHARGE_ON_NEXT_BILLING_DATE',
+      billingPeriodDuration: 'P1M',
+    });
+  });
+
+  it.each([403, 409])('keeps the created ID and reports activation HTTP %s instead of false success', async (status) => {
+    mockFetch([
+      { match: (u, m) => u.includes('/subscriptions?') && m === 'POST', body: { productId: 'premium' } },
+      { match: (u) => u.includes(':activate'), status, body: { error: { message: 'activation refused' } } },
+    ]);
+    const result = await createSubscription({
+      productId: 'premium', name: 'Premium', price: 4400, currency: 'KRW', period: 'monthly',
+      packageName: 'com.example', serviceAccountKey,
+    });
+    expect(result).toMatchObject({ success: true, productId: 'premium', active: false });
+    expect(result.activationError).toContain('activation refused');
+  });
+
+  it('does not claim activation when the response contains only another active plan', async () => {
+    mockFetch([
+      { match: (u) => u.includes('/subscriptions?'), body: {} },
+      { match: (u) => u.includes(':activate'), body: { basePlans: [{ basePlanId: 'yearly', state: 'ACTIVE' }] } },
+    ]);
+    const result = await createSubscription({
+      productId: 'premium', name: 'Premium', price: 4400, currency: 'KRW', period: 'monthly',
+      packageName: 'com.example', serviceAccountKey,
+    });
+    expect(result.active).toBe(false);
+    expect(result.activationError).toContain('did not confirm');
   });
 
   it('rejects an unsupported primary currency with a clear error', async () => {

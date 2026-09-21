@@ -225,6 +225,7 @@ describe('createSubscription — group handling', () => {
     const calls = mockFetch([
       { match: (u, m) => u.includes('/subscriptionGroups') && m === 'GET', body: { data: [{ id: 'g_existing', attributes: { referenceName: 'Premium Group' } }] } },
       { match: (u, m) => u.endsWith('/subscriptions') && m === 'POST', body: { data: { id: 'sub_new', attributes: { productId: 'premium', state: 'MISSING_METADATA' } } } },
+      { match: (u, m) => u.endsWith('/subscriptionPlanAvailabilities') && m === 'POST', body: { data: {} } },
       { match: (u) => u.includes('/pricePoints'), body: { data: [pricePoint('pp1', '4.99')] } },
       { match: (u, m) => u.endsWith('/subscriptionPrices') && m === 'POST', body: { data: {} } },
     ]);
@@ -240,6 +241,46 @@ describe('createSubscription — group handling', () => {
     expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/subscriptionGroups'))).toBe(false);
     const subCreate = calls.find((c) => c.method === 'POST' && c.url.endsWith('/subscriptions'));
     expect((subCreate?.body as { data: { relationships: { group: { data: { id: string } } } } }).data.relationships.group.data.id).toBe('g_existing');
+  });
+
+  it.each(['monthly', 'yearly'] as const)('sets UPFRONT availability before %s prices without a 12-month installment commitment', async (period) => {
+    const calls = mockFetch([
+      { match: (u, m) => u.includes('/subscriptionGroups') && m === 'GET', body: { data: [{ id: 'group', attributes: { referenceName: 'Premium Group' } }] } },
+      { match: (u, m) => u.endsWith('/subscriptions') && m === 'POST', body: { data: { id: 'sub1' } } },
+      { match: (u) => u.endsWith('/subscriptionPlanAvailabilities'), body: { data: {} } },
+      { match: (u) => u.includes('/pricePoints') && u.includes('KOR'), body: { data: [pricePoint('kr-price', '4400')] } },
+      { match: (u) => u.includes('/pricePoints') && u.includes('USA'), body: { data: [pricePoint('us-price', '4.99')] } },
+      { match: (u) => u.endsWith('/subscriptionPrices'), body: { data: {} } },
+      { match: (u) => u.endsWith('/subscriptionLocalizations'), body: { data: {} } },
+    ]);
+    const result = await createSubscription({
+      ...creds, appId: 'app1', productId: 'premium', name: 'Premium', price: 4400, currency: 'KRW', period,
+      extraRegions: [{ currency: 'USD', price: 499 }],
+    });
+    expect(result).toMatchObject({ success: true, priceSet: true, extraRegionsSet: ['USD'] });
+    const creation = calls.find((c) => c.url.endsWith('/subscriptions'))!;
+    expect(creation.body).toMatchObject({ data: { attributes: { subscriptionPeriod: period === 'monthly' ? 'ONE_MONTH' : 'ONE_YEAR' } } });
+    const availability = calls.find((c) => c.url.endsWith('/subscriptionPlanAvailabilities'))!;
+    expect(availability.body).toMatchObject({ data: {
+      attributes: { planType: 'UPFRONT', availableInNewTerritories: false },
+      relationships: { availableTerritories: { data: [{ type: 'territories', id: 'KOR' }, { type: 'territories', id: 'USA' }] } },
+    } });
+    const prices = calls.filter((c) => c.url.endsWith('/subscriptionPrices'));
+    expect(prices).toHaveLength(2);
+    expect(calls.indexOf(availability)).toBeLessThan(calls.indexOf(prices[0]));
+    for (const price of prices) expect(price.body).toMatchObject({ data: { attributes: { planType: 'UPFRONT' } } });
+  });
+
+  it('preserves the created product and reports availability errors without attempting pricing', async () => {
+    const calls = mockFetch([
+      { match: (u, m) => u.includes('/subscriptionGroups') && m === 'GET', body: { data: [{ id: 'group', attributes: { referenceName: 'Premium Group' } }] } },
+      { match: (u) => u.endsWith('/subscriptions'), body: { data: { id: 'sub1' } } },
+      { match: (u) => u.endsWith('/subscriptionPlanAvailabilities'), status: 409, body: { errors: [{ code: 'INVALID', detail: 'territory unavailable' }] } },
+    ]);
+    const result = await createSubscription({ ...creds, appId: 'app1', productId: 'premium', name: 'Premium', price: 4400, currency: 'KRW', period: 'monthly' });
+    expect(result).toMatchObject({ success: true, internalId: 'sub1', priceSet: false });
+    expect(result.priceError).toContain('territory unavailable');
+    expect(calls.some((c) => c.url.includes('/pricePoints') || c.method === 'DELETE')).toBe(false);
   });
 
   it('rolls back a freshly created group when the subscription create fails', async () => {
