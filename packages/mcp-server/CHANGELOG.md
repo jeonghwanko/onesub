@@ -1,5 +1,19 @@
 # @onesub/mcp-server
 
+## 0.5.0
+
+### Minor Changes
+
+- d3da1dc: `onesub_manage_product` deletes only with `confirm: true`. Failed tool calls return `isError: true`. The store-writing tools carry MCP `destructiveHint` / `openWorldHint` annotations. `price` must be a positive integer in the smallest unit. `onesub_setup` / `onesub_add_paywall` generate code for the current SDK package name (`@jeonghwanko/onesub-sdk`), pass the required `userId` prop, and give the server a durable Postgres store.
+
+### Patch Changes
+
+- Updated dependencies [d3da1dc]
+- Updated dependencies [d3da1dc]
+- Updated dependencies [d3da1dc]
+  - @onesub/providers@0.5.0
+  - @onesub/shared@0.17.0
+
 ## 0.4.18
 
 ### Patch Changes
