@@ -4,7 +4,6 @@
 ---
 
 Answer failures with the status that says whose fault it is, and close two production gaps. See docs/MIGRATION.md (0.27.x → 0.28.0).
-
 - `mockMode` / `skipJwsVerification` are refused at startup under `NODE_ENV=production`, on the top-level config and on every `apps[]` entry. Before, a per-app `mockMode` bypassed the guard.
 - A Google Play outage (5xx, 429, timeout, refused credentials) is `503 PROVIDER_UNAVAILABLE` (new error code) instead of `422 RECEIPT_VALIDATION_FAILED`. The exported `validateGoogleReceipt` still returns `null` in that case (unchanged contract); `ProviderUnavailableError` is exported for hosts that want the distinction.
 - Re-posting an Apple transaction signed before a refund no longer re-activates the canceled subscription.
