@@ -104,7 +104,12 @@ export function createValidateRouter(
 
       const signedAt = sub.signedAt;
       delete sub.signedAt;
-      const existing = await store.getByTransactionId(sub.originalTransactionId);
+      // A failed lookup only skips the guards below; the receipt is still
+      // validated and saved, as in 0.27, rather than failing the purchase.
+      const existing = await store.getByTransactionId(sub.originalTransactionId).catch((err: unknown) => {
+        log.warn('[onesub/validate] store lookup failed — saving without the ordering guard', { userId, err });
+        return null;
+      });
       if (existing && platform === 'apple' && keepsStoredAppleState(existing, sub, userId, signedAt)) {
         log.info('[onesub/validate] older receipt — keeping stored status', {
           originalTransactionId: sub.originalTransactionId,
@@ -170,7 +175,8 @@ export function createValidateRouter(
  * - A refund. A transaction signed before the refund was recorded still
  *   decodes as active; re-posting it must not undo the refund. One signed
  *   after it without a revocation means the refund was reversed — apply it.
- *   Records written before `stateAsOf` existed cannot tell, and keep the refund.
+ *   Records written before `stateAsOf` existed cannot tell, and keep the refund
+ *   for the same product (another product in the group is a new purchase).
  * - A billing grace period still running, for the same user. The transaction
  *   alone reads as expired; Apple says to keep providing service. Never kept
  *   for another user, so a stored entitlement is never handed to a new account.
@@ -183,12 +189,17 @@ function keepsStoredAppleState(
 ): boolean {
   if (Date.parse(incoming.expiresAt) > Date.parse(existing.expiresAt)) return false;
   if (existing.status === SUBSCRIPTION_STATUS.CANCELED && incoming.status !== SUBSCRIPTION_STATUS.CANCELED) {
-    return !signedAt || !existing.stateAsOf || Date.parse(signedAt) <= Date.parse(existing.stateAsOf);
+    if (signedAt && existing.stateAsOf) return Date.parse(signedAt) <= Date.parse(existing.stateAsOf);
+    // No times to compare (a record from before 0.28, or a mock receipt). A
+    // different product in the group is a new purchase, never a replay.
+    return incoming.productId === existing.productId;
   }
   return (
     existing.userId === userId &&
     existing.status === SUBSCRIPTION_STATUS.GRACE_PERIOD &&
     isSubscriptionEntitled(existing) &&
+    // An expired view only — a revoked transaction (refund) always applies.
+    incoming.status !== SUBSCRIPTION_STATUS.CANCELED &&
     !isSubscriptionEntitled(incoming)
   );
 }

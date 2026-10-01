@@ -5,6 +5,7 @@ import { ROUTES, ONESUB_ERROR_CODE, isSubscriptionEntitled } from '@onesub/share
 import type { SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError } from '../errors.js';
+import { withoutReplaced } from '../lifecycle.js';
 
 const NO_SUB = { active: false, subscription: null } as const;
 
@@ -45,7 +46,7 @@ export function createStatusRouter(store: SubscriptionStore): Router {
       // recent one. The `active` rule (entitled status AND unexpired) lives in
       // isSubscriptionEntitled — see packages/shared/README.md.
       const now = Date.now();
-      const entitled = subs.find((s) => isSubscriptionEntitled(s, now));
+      const entitled = withoutReplaced(subs).find((s) => isSubscriptionEntitled(s, now));
       const sub = entitled ?? subs[0]!;
       const active = entitled !== undefined;
       const response: StatusResponse = { active, subscription: sub };

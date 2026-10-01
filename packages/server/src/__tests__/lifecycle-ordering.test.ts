@@ -451,6 +451,104 @@ describe('Google refunds and outages', () => {
   });
 });
 
+describe('third review: money-path regressions', () => {
+  it('a replaced Google token does not keep access when its replacement was refunded', async () => {
+    const { app, store } = buildApp();
+    await store.save(stored({ originalTransactionId: 'tokA', platform: 'google', expiresAt: new Date(Date.now() + 300 * DAY).toISOString() }));
+    await store.save(stored({ originalTransactionId: 'tokB', platform: 'google', linkedPurchaseToken: 'tokA', status: SUBSCRIPTION_STATUS.CANCELED }));
+    const res = await request(app).get(ROUTES.STATUS).query({ userId: 'u1' });
+    expect(res.body.active).toBe(false);
+  });
+
+  it('a new purchase of another product in a group refunded before 0.28 is applied, not kept canceled', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    // 0.27-era refund of a yearly plan: no stateAsOf, expiry far out.
+    await store.save(stored({ originalTransactionId: 'grp', productId: 'pro_yearly', status: SUBSCRIPTION_STATUS.CANCELED, expiresAt: new Date(t + 300 * DAY).toISOString() }));
+    const monthly = makeJws({
+      bundleId: 'com.example.app', type: 'Auto-Renewable Subscription', productId: 'pro_monthly', transactionId: 'new-monthly',
+      originalTransactionId: 'grp', purchaseDate: t, expiresDate: t + 30 * DAY, signedDate: t, environment: 'Production',
+    });
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: monthly, userId: 'u1', productId: 'pro_monthly' });
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+  });
+
+  it('a refund recorded through /validate alone (no Apple webhooks) is not undone by re-posting the pre-refund copy', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    const expires = t + 20 * DAY;
+    const base = { bundleId: 'com.example.app', type: 'Auto-Renewable Subscription', productId: 'pro_monthly', transactionId: 'r1', originalTransactionId: 'nr', purchaseDate: t - 10 * DAY, expiresDate: expires, environment: 'Production' };
+    const preRefund = makeJws({ ...base, signedDate: t - 5 * DAY });
+    const revoked = makeJws({ ...base, signedDate: t - DAY, revocationDate: t - 2 * DAY });
+    await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: preRefund, userId: 'u1', productId: 'pro_monthly' });
+    await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: revoked, userId: 'u1', productId: 'pro_monthly' });
+    expect((await store.getByTransactionId('nr'))?.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
+    const replay = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: preRefund, userId: 'u1', productId: 'pro_monthly' });
+    expect(replay.body.subscription.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
+  });
+
+  it('a receipt with a future purchaseDate cannot make the next real notification look stale', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    const future = makeJws({
+      bundleId: 'com.example.app', type: 'Auto-Renewable Subscription', productId: 'pro_monthly', transactionId: 'f1',
+      originalTransactionId: 'fut', purchaseDate: t + 8 * 60_000, expiresDate: t + 30 * DAY, signedDate: t, environment: 'Production',
+    });
+    await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: future, userId: 'u1', productId: 'pro_monthly' });
+    expect(Date.parse((await store.getByTransactionId('fut'))!.stateAsOf!)).toBeLessThanOrEqual(Date.now());
+    await request(app).post(ROUTES.WEBHOOK_APPLE).send(appleNotification({ type: 'REFUND', orig: 'fut', expiresDate: t + 30 * DAY, signedDate: Date.now() }));
+    expect((await store.getByTransactionId('fut'))?.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
+  });
+
+  it('a refunded (revoked) receipt cancels a subscription in its grace period', async () => {
+    const { app, store } = buildApp();
+    await store.save(stored({ originalTransactionId: 'gr' }));
+    const t = Date.now();
+    await request(app).post(ROUTES.WEBHOOK_APPLE).send(appleNotification({
+      type: 'DID_FAIL_TO_RENEW', subtype: 'GRACE_PERIOD', orig: 'gr', expiresDate: t - DAY, signedDate: t - 60_000,
+      renewal: { gracePeriodExpiresDate: t + 6 * DAY },
+    }));
+    const revoked = makeJws({
+      bundleId: 'com.example.app', type: 'Auto-Renewable Subscription', productId: 'pro_monthly', transactionId: 'gr-t',
+      originalTransactionId: 'gr', purchaseDate: t - 31 * DAY, expiresDate: t - DAY, signedDate: t, revocationDate: t - 1000, environment: 'Production',
+    });
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: revoked, userId: 'u1', productId: 'pro_monthly' });
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'u1' })).body.active).toBe(false);
+  });
+
+  it('a store lookup failure does not fail the purchase validation (0.27 parity)', async () => {
+    const store = new InMemorySubscriptionStore();
+    store.getByTransactionId = () => Promise.reject(new Error('replica down'));
+    const app = express();
+    app.use(express.json());
+    app.use(createValidateRouter(config, store));
+    const t = Date.now();
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: appleTx('lk', t + 30 * DAY, t), userId: 'u1', productId: 'pro_monthly' });
+    expect(res.status).toBe(200);
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+  });
+
+  it('a stale Google RTDN is retried (5xx), not acked, when Play is down for its re-fetch', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const key = JSON.stringify({ client_email: 'sa@example.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+    const cfg: OneSubServerConfig = { google: { packageName: 'com.example.app', serviceAccountKey: key, allowUnauthenticatedWebhook: true }, database: { url: '' } };
+    const store = new InMemorySubscriptionStore();
+    // Stored state stamped 5 minutes ahead (a server clock running fast).
+    await store.save(stored({ originalTransactionId: 'skew', platform: 'google', stateAsOf: new Date(Date.now() + 5 * 60_000).toISOString() }));
+    const app = express();
+    app.use(express.json());
+    app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
+    const spy = vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+    try {
+      const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(12, 'skew', Date.now())); // REVOKED
+      expect(res.status).toBe(500);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('/status with several subscriptions', () => {
   it('reports the active subscription even when an expired one was written more recently', async () => {
     const { app, store } = buildApp();

@@ -78,9 +78,13 @@ export function createPurchaseRouter(
    * - Google: checks consumptionState for consumables (replay prevention),
    *   enforces 72h receipt age, uses orderId as the dedup key
    */
+  // Per-transaction lock for the lookup → save below (see lockTransaction).
+  const claimLocks = new Map<string, Promise<void>>();
+
   router.post(ROUTES.VALIDATE_PURCHASE, async (req: Request, res: Response) => {
     const body = parseOrSend(res, validatePurchaseSchema, req.body, { extra: NO_PURCHASE });
     if (!body) return;
+    let releaseClaim: (() => void) | undefined;
 
     const { platform, receipt, userId, productId, type, appId } = body;
 
@@ -213,6 +217,9 @@ export function createPurchaseRouter(
       // - Different userId + non_consumable → reassign (device reinstall)
       // - Different userId + consumable → reject (receipts can't be reused)
       // - No existing row → fresh purchase, INSERT below
+      // Two concurrent copies of one request would otherwise both read "not
+      // recorded" and both answer `new` — a consumable granted twice.
+      releaseClaim = await lockTransaction(claimLocks, `${platform}:${transactionId}`);
       const existing = await purchaseStore.getPurchaseByTransactionId(transactionId);
       let action: 'new' | 'restored' = 'new';
 
@@ -327,6 +334,8 @@ export function createPurchaseRouter(
       }
       log.error('[onesub/purchase/validate] Unexpected error', { userId, productId, platform, type, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during purchase validation', NO_PURCHASE);
+    } finally {
+      releaseClaim?.();
     }
   });
 
@@ -361,4 +370,21 @@ export function createPurchaseRouter(
   });
 
   return router;
+}
+
+/**
+ * Wait for any request already working on `key`, then hold it until released.
+ * In-process only: instances behind a load balancer can still race, as before.
+ */
+async function lockTransaction(locks: Map<string, Promise<void>>, key: string): Promise<() => void> {
+  const prev = locks.get(key);
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = (prev ?? Promise.resolve()).then(() => mine);
+  locks.set(key, tail);
+  await prev;
+  return () => {
+    release();
+    if (locks.get(key) === tail) locks.delete(key);
+  };
 }

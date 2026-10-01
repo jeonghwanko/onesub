@@ -232,9 +232,9 @@ export async function handleAppleWebhook(
   webhookQueue?: WebhookQueue,
 ): Promise<void> {
   // `req.body` is undefined for a non-JSON request, and anything for a hostile one.
-  const body = (req.body ?? {}) as { signedPayload?: unknown };
+  const body = (req.body ?? {}) as { signedPayload?: string };
 
-  if (typeof body.signedPayload !== 'string' || body.signedPayload === '') {
+  if (!body.signedPayload) {
     sendError(res, 400, ONESUB_ERROR_CODE.MISSING_SIGNED_PAYLOAD, 'Missing signedPayload');
     return;
   }

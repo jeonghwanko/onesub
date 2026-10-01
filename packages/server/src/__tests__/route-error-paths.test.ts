@@ -373,10 +373,42 @@ describe('webhook request bodies of the wrong shape', () => {
     expect(google.body.errorCode).toBe(ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA);
   });
 
-  it('answers a non-string payload field with 400', async () => {
+  it('answers a non-string payload field exactly as 0.27 did', async () => {
+    // Apple: not a JWS → INVALID_SIGNED_PAYLOAD. Google: acknowledged, so
+    // Pub/Sub does not redeliver a malformed message for days.
     const apple = await request(app()).post('/onesub/webhook/apple').send({ signedPayload: { nested: true } });
     expect(apple.status).toBe(400);
+    expect(apple.body.errorCode).toBe(ONESUB_ERROR_CODE.INVALID_SIGNED_PAYLOAD);
     const google = await request(app()).post('/onesub/webhook/google').send({ message: { data: 42 } });
-    expect(google.status).toBe(400);
+    expect(google.status).toBe(200);
   });
 });
+
+/** Database-like read latency, so two concurrent requests both read before either writes. */
+class SlowReadPurchaseStore extends InMemoryPurchaseStore {
+  override async getPurchaseByTransactionId(txId: string) {
+    const snapshot = await super.getPurchaseByTransactionId(txId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return snapshot;
+  }
+}
+
+describe('concurrent duplicate purchase validation', () => {
+  it('grants a consumable once: the second of two concurrent identical requests is "restored"', async () => {
+    const app = express();
+    app.use(createOneSubMiddleware({
+      database: { url: '' },
+      google: { packageName: 'com.test.mock', mockMode: true },
+      store: new InMemorySubscriptionStore(),
+      purchaseStore: new SlowReadPurchaseStore(),
+    }));
+    const body = { platform: 'google', receipt: 'MOCK_VALID_coins_race', userId: 'u1', productId: 'coins', type: 'consumable' };
+    const [a, b] = await Promise.all([
+      request(app).post('/onesub/purchase/validate').send(body),
+      request(app).post('/onesub/purchase/validate').send(body),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect([a.body.action, b.body.action].sort()).toEqual(['new', 'restored']);
+  });
+});
+

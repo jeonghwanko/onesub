@@ -15,6 +15,7 @@ import { ROUTES, ONESUB_ERROR_CODE, PURCHASE_TYPE, isSubscriptionEntitled } from
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError, parseOrSend } from '../errors.js';
+import { withoutReplaced } from '../lifecycle.js';
 
 /**
  * Evaluate one entitlement against records the caller already holds.
@@ -49,7 +50,7 @@ export function evaluateEntitlementFrom(
   const productIdSet = new Set(entitlement.productIds);
 
   // 1. Check subscriptions first (richer signal — has expiry).
-  for (const sub of subs) {
+  for (const sub of withoutReplaced(subs)) {
     if (!productIdSet.has(sub.productId)) continue;
     if (!isSubscriptionEntitled(sub, now)) continue;
     return {

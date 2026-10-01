@@ -11,5 +11,6 @@ Make subscription state follow the newest store snapshot, hold the three stores 
 - `isSubscriptionEntitled()` / `ENTITLED_SUBSCRIPTION_STATUSES` in `@onesub/shared` are the single definition of "active".
 - Every built-in `PurchaseStore` refuses a second non-consumable row for the same user and product with `NON_CONSUMABLE_ALREADY_OWNED` (new `purchaseConflict()` helper). The in-memory store's list ordering now matches Postgres and Redis.
 - `createOneSubMiddleware` validates the config at startup: an unknown `defaultAppId` is refused; an unusable `serviceAccountKey` or a duplicated app id only warns. `database` is optional and deprecated. `node dist/index.js` uses Postgres stores when `DATABASE_URL` is set.
-- Webhook bodies that are not JSON, or whose payload field is not a string, get a 400.
+- A webhook request without a JSON body gets a 400 instead of crashing the handler.
 - `SubscriptionStore.save()` applies the ordering rule atomically (Postgres conditional upsert, a Redis Lua script over `onesub:sub:asof:<id>`), so concurrent deliveries cannot land out of order. An Apple `/validate` receipt is applied as before, except that it no longer undoes a recorded refund (unless signed after it) or ends a running grace period. `ProviderUnavailableError` and `validateGoogleReceiptOrThrow` are exported.
+- A Google subscription record replaced by another (its token is the newer record's `linkedPurchaseToken`) no longer grants access in `/onesub/status` or entitlements.

@@ -70,6 +70,9 @@ retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
 
 - A purchase whose `transactionId` another request claims concurrently answers **409
   `TRANSACTION_BELONGS_TO_OTHER_USER`**, not 500.
+- Two concurrent copies of the same `/onesub/purchase/validate` request no longer both answer
+  `action: "new"`. The second waits for the first and answers `restored`, so a consumable is granted
+  once. This applies within one server process; separate instances can still race, as in 0.27.
 - Admin `reset`, `transfer` and `grant` answer **500 `STORE_ERROR`** on a store failure instead of
   leaving the request unanswered. `grant` with a `transactionId` that another user owns answers
   **409**.
@@ -89,7 +92,8 @@ or resubscribe is always applied.
 - **A refund.** A transaction signed before the refund was recorded still decodes as active, and
   re-posting it used to re-activate the refunded subscription. It no longer does. A transaction signed
   *after* the refund without a revocation means the refund was reversed, and is applied. Records
-  written before 0.28 cannot tell the two apart, so they keep the refund.
+  written before 0.28 cannot tell the two apart, so they keep the refund, but only for the same product:
+  another product in the group is a new purchase.
 - **A billing grace period, for the same user.** The transaction alone reads as expired, while Apple
   says to keep providing service through the grace period.
 
@@ -126,6 +130,10 @@ ordering is not enforced for its records.
 - **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
   most recent one that grants access. Before, it read only the most recently written record, so a webhook
   for an old expired subscription could hide an active one.
+- **Replaced Google tokens:** a record that another of the user's records replaced (its token is the
+  newer record's `linkedPurchaseToken`) no longer grants access in `/onesub/status` or the entitlement
+  routes. Before, after a plan change whose replacement was refunded, the old token could keep access
+  alive until its own expiry.
 
 ### Every store refuses a second non-consumable row
 

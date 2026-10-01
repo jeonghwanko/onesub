@@ -12,3 +12,4 @@ Answer failures with the status that says whose fault it is, and close two produ
 - `/onesub/*` routes answer malformed or oversized JSON with the JSON error body instead of Express's HTML page; other errors still reach the host's error handler. `createOneSubServer` answers them with a JSON 500.
 - Apple summary notifications no longer crash the webhook.
 - `BullMQWebhookQueue` job ids no longer contain `:`, which BullMQ 5 rejected on every enqueue.
+- Concurrent duplicate `/onesub/purchase/validate` requests for one transaction no longer both answer `action: "new"` (a consumable granted twice); within a process the second answers `restored`.

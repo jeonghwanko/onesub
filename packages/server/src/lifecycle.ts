@@ -66,3 +66,15 @@ export function snapshotTimeFromEpochMs(
   const iso = isoFromEpochMs(ms);
   return iso && Date.parse(iso) <= nowMs + MAX_FUTURE_SKEW_MS ? iso : undefined;
 }
+
+/**
+ * A user's records minus those another of their records replaced. Google issues
+ * a new purchase token on every plan change and points it back at the old one
+ * through `linkedPurchaseToken`; nothing marks the old record ended, so it can
+ * still read as active until its own expiry. Entitlement must come from the
+ * replacement — if that was refunded, the old token must not keep access alive.
+ */
+export function withoutReplaced<T extends Pick<SubscriptionInfo, 'originalTransactionId' | 'linkedPurchaseToken'>>(subs: readonly T[]): T[] {
+  const replaced = new Set(subs.map((s) => s.linkedPurchaseToken).filter(Boolean));
+  return subs.filter((s) => !replaced.has(s.originalTransactionId));
+}

@@ -62,17 +62,23 @@
 // Apple /validate, transient-vs-credential Play failures, column-fallback
 // recheck), with new log messages shortened to stay under. ~0.04 KB headroom:
 // the next server addition needs a decision here.
+//
+// 2026-10-02: raised 45 → 47 KB (approved by the maintainer) for the third
+// review's payment fixes: per-transaction serialization of purchase/validate
+// (a consumable was granted twice to concurrent duplicate requests), replaced
+// Google tokens no longer granting access, stale-RTDN retry during a Play
+// outage, and refund-time snapshots. Measured 45.05/45.40 KB at the bump.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '45 KB',
+    limit: '47 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '45 KB',
+    limit: '47 KB',
     gzip: true,
   },
 ];

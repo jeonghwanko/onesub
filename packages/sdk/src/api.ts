@@ -18,9 +18,10 @@ import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
  *
  * It must exceed the server's own worst case, or the client gives up on a
  * validation the server then completes: a Google validation makes two
- * sequential store calls of up to 10 s each, plus the store write.
+ * sequential store calls of up to 10 s each, plus the store write, and a host
+ * may make its own store calls before it (a pre-check) — so allow for double.
  */
-export const REQUEST_TIMEOUT_MS = 45_000;
+export const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * `fetch` + `read` under one deadline. A transport failure — offline, DNS, TLS,

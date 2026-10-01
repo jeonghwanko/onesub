@@ -252,7 +252,7 @@ The `<OneSubProvider>` unmounted while a purchase was in flight. Any pending `pu
 
 Thrown from `api.ts` helpers when a request to the onesub server does not complete:
 - `fetch()` rejects (offline, DNS failure, TLS error)
-- the request runs past the 30-second deadline
+- the request runs past the 60-second deadline
 - a proxy or load balancer answers 5xx / 429 / 408 without a onesub error body
 
 - **Fix (client)**: show "네트워크 상태를 확인해주세요" alert + retry. The server never surfaces this — it's purely client-side.

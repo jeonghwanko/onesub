@@ -221,6 +221,20 @@ async function refetchGoogleSubscription(
   }
 }
 
+/** Like `refetchGoogleSubscription`, but a transient Play outage throws (so the delivery is retried). */
+async function refetchUnlessTransient(
+  purchaseToken: string,
+  subscriptionId: string,
+  google: NonNullable<OneSubServerConfig['google']>,
+): Promise<SubscriptionInfo | null> {
+  try {
+    return await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, google);
+  } catch (err) {
+    if (err instanceof ProviderUnavailableError && !err.transient) return null;
+    throw err;
+  }
+}
+
 function googleResolver(config: OneSubServerConfig) {
   const registry = getAppRegistry(config);
   const restricted = registry.apps.some((app) => !!app.google?.packageName);
@@ -350,7 +364,11 @@ export async function processGoogleNotification(
       : { ...existing, status: finalStatus, ...stateAsOfField(laterStateAsOf(existing.stateAsOf, eventAt)) };
 
     if (subGoogleCfg?.serviceAccountKey) {
-      const fresh = await refetchGoogleSubscription(purchaseToken, subscriptionId, subGoogleCfg);
+      // A stale notification is only applied through a fresh read, so if Play is
+      // down for it, fail the delivery and let Pub/Sub retry rather than ack it.
+      const fresh = stale
+        ? await refetchUnlessTransient(purchaseToken, subscriptionId, subGoogleCfg)
+        : await refetchGoogleSubscription(purchaseToken, subscriptionId, subGoogleCfg);
       if (fresh) {
         // Preserve grace/on-hold only when the NOTIFICATION said so — a
         // finalStatus inherited from the stored record (unknown types above)
@@ -483,7 +501,7 @@ export async function handleGoogleWebhook(
   // `req.body` is undefined for a non-JSON request, and anything for a hostile one.
   const body = (req.body ?? {}) as Partial<GoogleNotificationPayload>;
 
-  if (typeof body.message?.data !== 'string' || body.message.data === '') {
+  if (!body.message?.data) {
     sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');
     return;
   }

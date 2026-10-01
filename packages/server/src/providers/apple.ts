@@ -329,8 +329,11 @@ export async function validateAppleReceipt(
   // A transaction is true as of when it began — its purchaseDate — not when the
   // device last fetched a signed copy (signedDate). Using purchaseDate keeps a
   // renewal-info notification signed after the period started (auto-renew off,
-  // billing failure) from looking older than this receipt.
-  const stateAsOf = snapshotTimeFromEpochMs(tx.purchaseDate);
+  // billing failure) from looking older than this receipt. A revoked one is true
+  // as of its revocation, so a copy signed before the refund reads as older.
+  // Never later than now: a future stamp would make genuine notifications stale.
+  const asOfMs = Math.max(tx.purchaseDate ?? 0, tx.revocationDate ?? 0);
+  const stateAsOf = snapshotTimeFromEpochMs(asOfMs > 0 ? Math.min(asOfMs, Date.now()) : undefined);
   const signedAt = snapshotTimeFromEpochMs(tx.signedDate);
 
   return {
