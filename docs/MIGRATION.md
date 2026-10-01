@@ -28,11 +28,11 @@ These used to fail later, per request:
 | Config problem | Used to |
 |---|---|
 | `defaultAppId` naming no app | route every unrouted request to the first app |
-| duplicate `apps[]` ids | — |
 | empty `apple.bundleId` | — |
 | a `productReceiptMaxAgeHours` that is not positive (`Infinity` is allowed), negative `metricsCacheTtlSeconds`, unknown `refundPolicy` | — |
 
 These only log a warning:
+- the same `apps[]` id listed twice (the first entry wins)
 - a `google.serviceAccountKey` that is not usable key JSON
 - partial Apple API credentials
 - a half-set promotional-offer key
@@ -55,26 +55,15 @@ refused (401/403) — `POST /onesub/validate` and `POST /onesub/purchase/validat
 final, so valid purchases were dropped during outages. `MOCK_NETWORK_ERROR` receipts give the same
 503 instead of a 500.
 
-`validateGoogleReceipt`, which is exported, now **throws `ProviderUnavailableError`** in these cases
-instead of returning `null`. `null` still means Play rejected the token (400/404/410). Callers
-outside onesub's own routes should catch it; the class is exported from `@onesub/server`.
+The exported `validateGoogleReceipt` keeps its contract: it still returns `null` in these cases, so a
+host that calls it directly sees no change. onesub's own routes use an internal variant that throws
+`ProviderUnavailableError`, which is exported for hosts that want the distinction.
 
 The Google webhook can now fail a delivery too: for a purchase token the server has never seen, a Play
 outage answers 5xx so Pub/Sub redelivers it. Before, the 200 dropped the new subscription.
 
 **Fix:** if your client special-cases `RECEIPT_VALIDATION_FAILED`, treat `PROVIDER_UNAVAILABLE` as
 retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
-
-### Requests for an app the server does not host are a 400
-
-| Request | Was | Now |
-|---|---|---|
-| `appId` matches no configured app | 500 `APPLE_CONFIG_MISSING` / `GOOGLE_CONFIG_MISSING` | 400 `INVALID_INPUT` (`Unknown appId`) |
-| Apple receipt's `bundleId` matches no configured app | 500 `APPLE_CONFIG_MISSING` | 400 `BUNDLE_ID_MISMATCH` |
-
-A server with no Apple or Google config at all still answers 500 `*_CONFIG_MISSING`, because that
-is a server-side misconfiguration. If you alert on 5xx from these routes, the alerts now stop
-firing for client mistakes.
 
 ### Other status corrections
 
@@ -84,8 +73,9 @@ firing for client mistakes.
   leaving the request unanswered. `grant` with a `transactionId` that another user owns answers
   **409**.
 - A malformed JSON body on a `/onesub/*` route answers **400 `INVALID_INPUT`**, and an oversized
-  one **413**, with the usual JSON error body instead of Express's HTML page. Errors on your own
-  routes still reach your own error handler.
+  one **413**, with the usual JSON error body instead of Express's HTML page. Every other error still
+  reaches your own error handler, as before. `createOneSubServer`, which has no host handler, answers
+  those with a JSON 500.
 - An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
   of crashing the handler.
 
@@ -104,7 +94,7 @@ returned.
 | older than the stored one | **409 `TRANSACTION_BELONGS_TO_OTHER_USER`**. It used to rebind the subscription to the requester |
 | current | moves the subscription as before (reinstall, account migration) |
 
-### New column `state_as_of`; out-of-order notifications are ignored
+### New columns `state_as_of` and `grace_period_expires_at`; out-of-order notifications are ignored
 
 `SubscriptionInfo` gains `stateAsOf`, the time of the newest store-state snapshot applied to the record.
 A notification or receipt older than that no longer changes status, expiry or renewal, so a late
@@ -115,16 +105,23 @@ EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. See
 
 ```sql
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS state_as_of TIMESTAMPTZ;
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS grace_period_expires_at TIMESTAMPTZ;
 ```
+
+Run it before deploying if your host calls `initSchema()` without awaiting it. Until the columns
+exist, the store keeps saving the way 0.27 did: it logs one warning and skips the ordering guard, so
+nothing fails. Only the admin metrics query needs the new columns.
 
 Redis and in-memory stores need nothing. A custom `SubscriptionStore` must persist the new field, or
 ordering is not enforced for its records.
 
 ### Apple grace period grants access; `/onesub/status` looks at every subscription
 
-- **Grace period:** during an Apple billing grace period, `expiresAt` is now the end of the grace period
-  (`gracePeriodExpiresDate`). Before, it was the already-past paid-period end, so a `grace_period`
-  record reported `active: false`.
+- **Grace period:** during an Apple billing grace period, the new `gracePeriodExpiresAt` holds when
+  the grace period ends, and `isSubscriptionEntitled` / `active` count access until then. Before, a
+  `grace_period` record reported `active: false` because its paid period had already ended.
+  `expiresAt` is unchanged: it still means "paid through". Hosts that compute billing cycles from it
+  are unaffected.
 - **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
   most recent one that grants access. Before, it read only the most recently written record, so a webhook
   for an old expired subscription could hide an active one.

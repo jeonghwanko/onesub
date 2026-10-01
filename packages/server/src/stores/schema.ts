@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS onesub_subscriptions (
   linked_purchase_token   TEXT,
   auto_resume_time        TIMESTAMPTZ,
   state_as_of             TIMESTAMPTZ,
+  grace_period_expires_at TIMESTAMPTZ,
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -44,6 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_onesub_subscriptions_product
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS linked_purchase_token TEXT;
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS auto_resume_time TIMESTAMPTZ;
 ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS state_as_of TIMESTAMPTZ;
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS grace_period_expires_at TIMESTAMPTZ;
 `.trim();
 
 export const PURCHASES_SCHEMA_SQL = `

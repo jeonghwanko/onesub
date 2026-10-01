@@ -36,7 +36,6 @@ The request body or query failed zod validation — required field missing, wron
 
 - **Symptom**: any 400 on `POST /onesub/validate`, `POST /onesub/purchase/validate`, `GET /onesub/status`, or admin routes.
 - **Fix**: check the `error` string — it contains the zod `issue.message` joined with commas. Common misses: `receipt` missing, `userId` > 256 chars, `type` not one of `consumable`/`non_consumable`.
-- **`error: "Unknown appId"`**: the request's `appId` names no app in the server's `apps` config. Fix the client's `appId`, or add the app on the server. The server never falls back to another app's credentials.
 - **`error: "Malformed JSON body"`**: the request body is not valid JSON. A body over the 50 kb cap gets status **413** with this same code.
 
 ### `APPLE_CONFIG_MISSING` / `GOOGLE_CONFIG_MISSING` (500)
@@ -44,7 +43,7 @@ The request body or query failed zod validation — required field missing, wron
 Request arrived with `platform: 'apple'` but `config.apple` is not set on the server (or same for Google).
 
 - **Symptom**: Apple devices get `APPLE_CONFIG_MISSING`, Android devices work fine (or vice versa).
-- **Not this code**: a request for an app the server does not host gets a 400 — `INVALID_INPUT` (`Unknown appId`) or `BUNDLE_ID_MISMATCH` — not this 500.
+- **Also this code**: a request naming an app the server does not host — an unknown `appId`, or an Apple receipt whose `bundleId` no configured app uses. The server never falls back to another app's credentials. It answers 500 rather than 4xx on purpose: clients read a 4xx as a verdict on the receipt, and the server has not judged it.
 - **Fix**: set `APPLE_BUNDLE_ID` / `GOOGLE_PACKAGE_NAME` + credentials in the server's `.env` and restart. For app-only testing without real credentials, use SDK `mockMode: true` instead.
 
 ### `USER_ID_TOO_LONG` (400)
@@ -151,7 +150,7 @@ Google Pub/Sub RTDN body is missing `message.data`. The endpoint expects a stand
 
 An Apple receipt or notification names a `bundleId` that no app configured on this server uses.
 
-- **Where**: `POST /onesub/webhook/apple`, `POST /onesub/validate`, and `POST /onesub/purchase/validate`.
+- **Where**: `POST /onesub/webhook/apple`. (Validation routes answer an unhosted app with `APPLE_CONFIG_MISSING`.)
 - **Common cause**: a second app's App Store Server Notifications URL or client pointing at this server, or a multi-app server missing that app in `apps`.
 - **Fix**: add the app under `apps` (see [CONFIGURATION.md](CONFIGURATION.md)), or point the other app at its own server.
 
@@ -170,7 +169,7 @@ RTDN notification's `packageName` does not match `config.google.packageName`.
 
 Catch-all for unexpected exceptions in route handlers.
 
-- **Fix**: check server logs for the stack trace (`[onesub] Unhandled route error` for one that escaped a route). Upstream Apple/Google failures are reported separately, as `PROVIDER_UNAVAILABLE`.
+- **Fix**: check server logs for the stack trace. An error that escapes a route goes to your app's own error handler (`createOneSubServer` logs it as `[onesub] Unhandled route error`). Google Play outages are reported separately, as `PROVIDER_UNAVAILABLE`.
 - **SDK**: also thrown for an unexpected non-2xx response that carries no onesub error body (for example a 403 from a proxy).
 
 ### `STORE_ERROR` (500)

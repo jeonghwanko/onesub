@@ -71,8 +71,9 @@ export const ENTITLED_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = [
 ];
 
 /**
- * Whether a subscription grants access at `nowMs`: an entitled status AND an
- * `expiresAt` still in the future. The one definition of "active" — the status
+ * Whether a subscription grants access at `nowMs`: an entitled status AND access
+ * that has not run out — `expiresAt`, or for an Apple billing grace period the
+ * later `gracePeriodExpiresAt`. The one definition of "active" — the status
  * route, entitlements and metrics use it, and so can a host; the Postgres metrics
  * query is its SQL translation and is tested against it.
  *
@@ -81,10 +82,12 @@ export const ENTITLED_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = [
  * ends, and a missed EXPIRED notification leaves a stale `active` behind.
  */
 export function isSubscriptionEntitled(
-  sub: Pick<SubscriptionInfo, 'status' | 'expiresAt'>,
+  sub: Pick<SubscriptionInfo, 'status' | 'expiresAt' | 'gracePeriodExpiresAt'>,
   nowMs: number = Date.now(),
 ): boolean {
-  return ENTITLED_SUBSCRIPTION_STATUSES.includes(sub.status) && Date.parse(sub.expiresAt) > nowMs;
+  if (!ENTITLED_SUBSCRIPTION_STATUSES.includes(sub.status)) return false;
+  const until = Math.max(Date.parse(sub.expiresAt), sub.gracePeriodExpiresAt ? Date.parse(sub.gracePeriodExpiresAt) : 0);
+  return until > nowMs;
 }
 
 /**

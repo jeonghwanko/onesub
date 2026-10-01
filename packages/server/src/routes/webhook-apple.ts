@@ -100,13 +100,10 @@ export async function processAppleNotification(
   const mapped = mapAppleNotificationStatus(notificationType, subtype);
   const finalStatus: SubscriptionInfo['status'] = mapped ?? status;
   // In a billing grace period the paid period has ended, yet Apple says to keep
-  // providing service until the grace period does — so access runs to that end.
-  const accessExpiresAt =
-    finalStatus === SUBSCRIPTION_STATUS.GRACE_PERIOD &&
-    gracePeriodExpiresAt &&
-    (!expiresAt || Date.parse(gracePeriodExpiresAt) > Date.parse(expiresAt))
-      ? gracePeriodExpiresAt
-      : expiresAt;
+  // providing service until the grace period does. That end is stored on its
+  // own, so `expiresAt` keeps meaning "paid through" — hosts derive billing
+  // cycles from it — and is dropped once the record leaves grace.
+  const graceUntil = finalStatus === SUBSCRIPTION_STATUS.GRACE_PERIOD ? gracePeriodExpiresAt ?? undefined : undefined;
 
   if (
     notificationType === 'CONSUMPTION_REQUEST' &&
@@ -190,9 +187,13 @@ export async function processAppleNotification(
           userId: correctedUserId,
           status: finalStatus,
           willRenew,
-          expiresAt: accessExpiresAt ?? existing.expiresAt,
+          expiresAt: expiresAt ?? existing.expiresAt,
           ...(stateAsOf ? { stateAsOf } : {}),
         };
+    if (!keepEntitlement) {
+      if (graceUntil) updated.gracePeriodExpiresAt = graceUntil;
+      else delete updated.gracePeriodExpiresAt;
+    }
     await store.save(updated);
   } else if (appleConfigForApp?.issuerId && appleConfigForApp?.keyId && appleConfigForApp?.privateKey) {
     const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, appleConfigForApp, {

@@ -108,9 +108,13 @@ export function isNonConsumableOwnedConflict(err: unknown): boolean {
 }
 
 /**
- * Last-resort handler for the onesub router, so an error that escapes a route
- * still answers with the `{ error, errorCode }` body every client parses —
- * not Express's HTML page, and not a hung request.
+ * Error handler for the onesub router: answers body-parser rejections on
+ * `/onesub/*` with the `{ error, errorCode }` body every client parses, instead
+ * of Express's HTML page.
+ *
+ * Everything else goes on to the host's own error handler via `next(err)`, so a
+ * host that alerts on route errors keeps seeing onesub's. `createOneSubServer`,
+ * which has no host, adds `oneSubFallbackErrorHandler` after the router.
  *
  * Scoped to `/onesub/*`: the router's JSON parser runs for every request that
  * passes through it, and a host's own routes must keep reaching the host's
@@ -118,23 +122,27 @@ export function isNonConsumableOwnedConflict(err: unknown): boolean {
  */
 export const oneSubErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   // Express matches routes case-insensitively, so must this.
-  if (res.headersSent || !req.path.toLowerCase().startsWith('/onesub/')) {
+  const { type, status } = (err ?? {}) as { type?: unknown; status?: unknown };
+  if (res.headersSent || typeof type !== 'string' || !req.path.toLowerCase().startsWith('/onesub/')) {
     next(err);
     return;
   }
-  const { type, status } = (err ?? {}) as { type?: unknown; status?: unknown };
   if (type === 'entity.parse.failed') {
     sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'Malformed JSON body');
-    return;
-  }
-  if (type === 'entity.too.large') {
+  } else if (type === 'entity.too.large') {
     sendError(res, 413, ONESUB_ERROR_CODE.INVALID_INPUT, 'Request body too large');
-    return;
-  }
-  // Any other body-parser rejection (unsupported charset/encoding, an aborted
-  // upload) is the client's: keep its 4xx rather than reporting a server error.
-  if (typeof type === 'string' && typeof status === 'number' && status >= 400 && status < 500) {
+  } else if (typeof status === 'number' && status >= 400 && status < 500) {
+    // Unsupported charset/encoding, an aborted upload: the client's, keep its 4xx.
     sendError(res, status, ONESUB_ERROR_CODE.INVALID_INPUT, 'Unreadable request body');
+  } else {
+    next(err);
+  }
+};
+
+/** For `createOneSubServer`: a JSON 500 for any error nothing else answered. */
+export const oneSubFallbackErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  if (res.headersSent) {
+    next(err);
     return;
   }
   log.error('[onesub] Unhandled route error', { route: req.path, err });

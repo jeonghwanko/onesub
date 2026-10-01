@@ -8,7 +8,7 @@ import {
   decodeGoogleNotification,
   decodeGoogleVoidedNotification,
   decodeGoogleOneTimeProductNotification,
-  validateGoogleReceipt,
+  validateGoogleReceiptOrThrow,
   acknowledgeGoogleProduct,
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
@@ -210,7 +210,7 @@ async function refetchGoogleSubscription(
   google: NonNullable<OneSubServerConfig['google']>,
 ): Promise<SubscriptionInfo | null> {
   try {
-    return await validateGoogleReceipt(purchaseToken, subscriptionId, google);
+    return await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, google);
   } catch (err) {
     if (!(err instanceof ProviderUnavailableError)) throw err;
     log.warn('[onesub/webhook/google] Play API unavailable — applying notification without fresh state', {
@@ -393,7 +393,7 @@ export async function processGoogleNotification(
     if (subGoogleCfg?.serviceAccountKey) {
       // No record to fall back on: a Play outage here must fail the delivery so
       // Pub/Sub retries it, or a new subscription is never recorded.
-      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, subGoogleCfg);
+      const fresh = await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, subGoogleCfg);
       if (fresh) {
         // Consume the account identity out of the record: it seeds the
         // placeholder userId, but must never be persisted (validate route

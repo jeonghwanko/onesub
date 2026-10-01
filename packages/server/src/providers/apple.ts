@@ -68,24 +68,6 @@ interface AppleRenewalPayload {
   [key: string]: unknown;
 }
 
-/**
- * Until when a subscription in this status grants access. During a billing
- * grace period the paid period has already ended — renewal failed at
- * `expiresDate` — but Apple says to "continue to provide service through the
- * grace period", which ends at the renewal info's `gracePeriodExpiresDate`.
- * Using the transaction's expiry there stored a `grace_period` record that no
- * longer granted access.
- */
-function appleAccessExpiresMs(
-  status: SubscriptionInfo['status'],
-  txExpiresMs: number | undefined,
-  renewal: AppleRenewalPayload | null,
-): number | undefined {
-  const graceEnds = renewal?.gracePeriodExpiresDate;
-  if (status === SUBSCRIPTION_STATUS.GRACE_PERIOD && graceEnds && graceEnds > (txExpiresMs ?? 0)) return graceEnds;
-  return txExpiresMs;
-}
-
 function derBase64ToPem(der: string): string {
   return (
     '-----BEGIN CERTIFICATE-----\n' +
@@ -877,13 +859,16 @@ export async function fetchAppleSubscriptionStatus(
 
   const status = mapAppleStatusCode(entry.status);
   const purchasedAt = tx.originalPurchaseDate ?? tx.purchaseDate ?? Date.now();
+  const graceEnds = isoFromEpochMs(renewal?.gracePeriodExpiresDate);
 
   return {
     userId: '',  // caller fills this in
     productId: tx.productId,
     platform: 'apple',
     status,
-    expiresAt: new Date(appleAccessExpiresMs(status, tx.expiresDate, renewal)!).toISOString(),
+    expiresAt: new Date(tx.expiresDate).toISOString(),
+    // During a billing grace period access runs past the paid period's end.
+    ...(status === SUBSCRIPTION_STATUS.GRACE_PERIOD && graceEnds ? { gracePeriodExpiresAt: graceEnds } : {}),
     originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: renewal?.autoRenewStatus === 1,

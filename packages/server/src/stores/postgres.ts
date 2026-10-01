@@ -17,6 +17,51 @@ import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 import { log } from '../logger.js';
 
 /**
+ * Upsert for `PostgresSubscriptionStore.save`. The WHERE refuses to roll a row
+ * back to an older snapshot (lifecycle.ts) inside the statement itself, so
+ * concurrent deliveries cannot both pass a check and race.
+ */
+const SAVE_SUBSCRIPTION_SQL = `INSERT INTO onesub_subscriptions
+         (original_transaction_id, user_id, product_id, platform, status,
+          expires_at, purchased_at, will_renew, linked_purchase_token,
+          auto_resume_time, state_as_of, grace_period_expires_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+       ON CONFLICT (original_transaction_id) DO UPDATE SET
+         user_id    = EXCLUDED.user_id,
+         product_id = EXCLUDED.product_id,
+         platform   = EXCLUDED.platform,
+         status     = EXCLUDED.status,
+         expires_at = EXCLUDED.expires_at,
+         purchased_at = EXCLUDED.purchased_at,
+         will_renew = EXCLUDED.will_renew,
+         linked_purchase_token = EXCLUDED.linked_purchase_token,
+         auto_resume_time = EXCLUDED.auto_resume_time,
+         state_as_of = EXCLUDED.state_as_of,
+         grace_period_expires_at = EXCLUDED.grace_period_expires_at,
+         updated_at = NOW()
+       WHERE onesub_subscriptions.state_as_of IS NULL
+          OR EXCLUDED.state_as_of IS NULL
+          OR EXCLUDED.state_as_of >= onesub_subscriptions.state_as_of`;
+
+/** The 0.27 upsert, for a table that does not have the 0.28 columns yet. */
+const SAVE_SUBSCRIPTION_SQL_LEGACY = `INSERT INTO onesub_subscriptions
+         (original_transaction_id, user_id, product_id, platform, status,
+          expires_at, purchased_at, will_renew, linked_purchase_token,
+          auto_resume_time, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+       ON CONFLICT (original_transaction_id) DO UPDATE SET
+         user_id    = EXCLUDED.user_id,
+         product_id = EXCLUDED.product_id,
+         platform   = EXCLUDED.platform,
+         status     = EXCLUDED.status,
+         expires_at = EXCLUDED.expires_at,
+         purchased_at = EXCLUDED.purchased_at,
+         will_renew = EXCLUDED.will_renew,
+         linked_purchase_token = EXCLUDED.linked_purchase_token,
+         auto_resume_time = EXCLUDED.auto_resume_time,
+         updated_at = NOW()`;
+
+/**
  * The partial unique index on `(user_id, product_id) WHERE type =
  * 'non_consumable'` firing. Rethrown as the typed conflict every store uses, so
  * a route answers 409 instead of passing a raw `23505` through as a 500.
@@ -67,6 +112,8 @@ async function createPgPool(connectionString: string, label: string): Promise<im
  *   app.use(createOneSubMiddleware({ ...config, store }));
  */
 export class PostgresSubscriptionStore implements SubscriptionStore {
+  private warnedMissingColumns = false;
+
   // Lazy-loaded to avoid requiring `pg` unless this class is actually instantiated.
   private poolPromise: Promise<import('pg').Pool> | null = null;
 
@@ -97,43 +144,31 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
    */
   async save(sub: SubscriptionInfo): Promise<void> {
     const pool = await this.getPool();
-    await pool.query(
-      `INSERT INTO onesub_subscriptions
-         (original_transaction_id, user_id, product_id, platform, status,
-          expires_at, purchased_at, will_renew, linked_purchase_token,
-          auto_resume_time, state_as_of, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
-       ON CONFLICT (original_transaction_id) DO UPDATE SET
-         user_id    = EXCLUDED.user_id,
-         product_id = EXCLUDED.product_id,
-         platform   = EXCLUDED.platform,
-         status     = EXCLUDED.status,
-         expires_at = EXCLUDED.expires_at,
-         purchased_at = EXCLUDED.purchased_at,
-         will_renew = EXCLUDED.will_renew,
-         linked_purchase_token = EXCLUDED.linked_purchase_token,
-         auto_resume_time = EXCLUDED.auto_resume_time,
-         state_as_of = EXCLUDED.state_as_of,
-         updated_at = NOW()
-       -- Never roll back to an older snapshot (lifecycle.ts). In the statement
-       -- itself, so concurrent deliveries cannot both pass a check and race.
-       WHERE onesub_subscriptions.state_as_of IS NULL
-          OR EXCLUDED.state_as_of IS NULL
-          OR EXCLUDED.state_as_of >= onesub_subscriptions.state_as_of`,
-      [
-        sub.originalTransactionId,
-        sub.userId,
-        sub.productId,
-        sub.platform,
-        sub.status,
-        sub.expiresAt,
-        sub.purchasedAt,
-        sub.willRenew,
-        sub.linkedPurchaseToken ?? null,
-        sub.autoResumeTime ?? null,
-        sub.stateAsOf ?? null,
-      ]
-    );
+    const base = [
+      sub.originalTransactionId,
+      sub.userId,
+      sub.productId,
+      sub.platform,
+      sub.status,
+      sub.expiresAt,
+      sub.purchasedAt,
+      sub.willRenew,
+      sub.linkedPurchaseToken ?? null,
+      sub.autoResumeTime ?? null,
+    ];
+    try {
+      await pool.query(SAVE_SUBSCRIPTION_SQL, [...base, sub.stateAsOf ?? null, sub.gracePeriodExpiresAt ?? null]);
+    } catch (err) {
+      // 42703 undefined_column: the 0.28 columns are not there yet — a host
+      // that runs initSchema() without awaiting it, or applies sql/schema.sql by
+      // hand and has not yet. Write as 0.27 did rather than failing every save.
+      if ((err as { code?: unknown }).code !== '42703') throw err;
+      if (!this.warnedMissingColumns) {
+        this.warnedMissingColumns = true;
+        log.warn('[onesub/postgres] state_as_of / grace_period_expires_at columns missing — run initSchema() or sql/schema.sql; saving without ordering until then');
+      }
+      await pool.query(SAVE_SUBSCRIPTION_SQL_LEGACY, base);
+    }
   }
 
   /**
@@ -257,7 +292,8 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     const result = await pool.query<{ product_id: string; platform: string; status: string; n: string }>(
       `SELECT product_id, platform, status, COUNT(*)::text AS n
          FROM onesub_subscriptions
-        WHERE status = ANY($1::text[]) AND expires_at > $2
+        WHERE status = ANY($1::text[])
+          AND GREATEST(expires_at, COALESCE(grace_period_expires_at, expires_at)) > $2
         GROUP BY product_id, platform, status`,
       // SQL form of isSubscriptionEntitled — tested against the in-memory reduction.
       [ENTITLED_SUBSCRIPTION_STATUSES, now],
@@ -611,6 +647,7 @@ interface DbRow {
   linked_purchase_token: string | null;
   auto_resume_time: Date | null;
   state_as_of: Date | null;
+  grace_period_expires_at: Date | null;
 }
 
 function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
@@ -626,6 +663,7 @@ function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
     linkedPurchaseToken: row.linked_purchase_token ?? undefined,
     autoResumeTime: row.auto_resume_time?.toISOString(),
     stateAsOf: row.state_as_of?.toISOString(),
+    gracePeriodExpiresAt: row.grace_period_expires_at?.toISOString(),
   };
 }
 

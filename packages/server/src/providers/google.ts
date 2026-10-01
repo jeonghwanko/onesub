@@ -527,6 +527,25 @@ function deriveStatusV2(
 }
 
 /**
+ * Public, 0.27-compatible form of `validateGoogleReceiptOrThrow`: `null` for any
+ * failure, including Play being unavailable. Hosts call this directly (e.g. to
+ * pre-check a purchase token), so its contract stays as it was. onesub's own
+ * routes use the throwing form, to answer an outage with a retryable 503.
+ */
+export async function validateGoogleReceipt(
+  receipt: string,
+  productId: string,
+  config: GoogleConfig,
+): Promise<SubscriptionInfo | null> {
+  try {
+    return await validateGoogleReceiptOrThrow(receipt, productId, config);
+  } catch (err) {
+    if (err instanceof ProviderUnavailableError && !config.mockMode) return null;
+    throw err;
+  }
+}
+
+/**
  * Validate a Google Play purchase token via purchases.subscriptionsv2.get.
  *
  * The productId argument is used to pick the matching `lineItems` entry. If
@@ -538,7 +557,7 @@ function deriveStatusV2(
  * @param productId  Expected subscription productId — must match a lineItem
  * @param config     Google config with packageName + optional serviceAccountKey
  */
-export async function validateGoogleReceipt(
+export async function validateGoogleReceiptOrThrow(
   receipt: string,
   productId: string,
   config: GoogleConfig

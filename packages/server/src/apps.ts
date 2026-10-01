@@ -1,5 +1,4 @@
-import type { OneSubAppConfig, OneSubErrorCode, OneSubServerConfig } from '@onesub/shared';
-import { ONESUB_ERROR_CODE } from '@onesub/shared';
+import type { OneSubAppConfig, OneSubServerConfig } from '@onesub/shared';
 import { log } from './logger.js';
 
 /**
@@ -19,11 +18,7 @@ export interface AppRegistry {
    * `config.google` without knowing about multi-app.
    */
   configFor(hint: AppHint): OneSubServerConfig;
-  /**
-   * Like `configFor`, but `undefined` when the hint names no app this instance
-   * serves — so a route can tell "you sent an app we don't host" (the caller's
-   * fault, 4xx) apart from "this app has no Apple/Google config" (ours, 5xx).
-   */
+  /** Like `configFor`, but `undefined` when the hint names no app this instance serves. */
   resolve(hint: AppHint): OneSubServerConfig | undefined;
 }
 
@@ -119,16 +114,6 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
     },
     resolve,
   };
-}
-
-/**
- * The 400 a validation route answers with when the request named an app — by
- * appId, or by the bundleId inside its Apple receipt — that `resolve` could not
- * match to one this instance hosts.
- */
-export function unknownAppError(hint: AppHint): { code: OneSubErrorCode; message: string } {
-  if (hint.appId) return { code: ONESUB_ERROR_CODE.INVALID_INPUT, message: 'Unknown appId' };
-  return { code: ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH, message: 'Bundle ID mismatch' };
 }
 
 /**

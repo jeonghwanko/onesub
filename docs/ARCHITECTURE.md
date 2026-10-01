@@ -199,11 +199,13 @@ interface SubscriptionInfo {
   linkedPurchaseToken?: string;   // Google plan upgrade chain (0.8.0+, populated only when chain exists)
   autoResumeTime?: string;        // RFC3339, populated only when status === 'paused' (0.9.0+)
   stateAsOf?: string;             // time of the newest store-state snapshot applied (0.28.0+) — see Lifecycle State Machine
+  gracePeriodExpiresAt?: string;  // Apple, in grace_period: when the billing grace period ends (0.28.0+)
 }
 ```
 
 Postgres columns added in `0.8.0` (`linked_purchase_token`), `0.9.0` (`auto_resume_time`) and `0.28.0`
-(`state_as_of`) are auto-backfilled by `initSchema()` via `ALTER TABLE IF NOT EXISTS` — safe to upgrade in place.
+(`state_as_of`, `grace_period_expires_at`) are auto-backfilled by `initSchema()` via `ALTER TABLE IF NOT EXISTS` — safe to upgrade in place. Until
+the `0.28.0` columns exist, `save()` falls back to the previous statement and logs a warning.
 
 Implementations:
 - `InMemorySubscriptionStore` / `InMemoryPurchaseStore` — development/testing only
@@ -351,16 +353,18 @@ The rule lives in `packages/server/src/lifecycle.ts`. Edge cases:
 ### Apple billing grace period
 
 In `DID_FAIL_TO_RENEW` / `GRACE_PERIOD` the paid period has already ended at the transaction's
-`expiresDate`, and Apple says to "continue to provide service through the grace period". The record's
-`expiresAt` is therefore the renewal info's `gracePeriodExpiresDate`, from the webhook or from the Status
-API, so a `grace_period` record grants access until the grace period ends.
+`expiresDate`, and Apple says to "continue to provide service through the grace period". The renewal
+info's `gracePeriodExpiresDate` is stored as `gracePeriodExpiresAt`, from the webhook or from the Status
+API, and dropped when the record leaves grace. `isSubscriptionEntitled` counts access until the later of
+the two times. `expiresAt` itself is left as the paid-period end: hosts derive billing cycles from it,
+and moving it forward would look like a renewal.
 
 ### `active`
 
 `isSubscriptionEntitled` in `@onesub/shared` collapses the lifecycle. The status route, entitlements and
 metrics use it, hosts can too, and the Postgres metrics query is its SQL form:
 ```
-active = (status === 'active' || status === 'grace_period') && expiresAt > now
+active = (status === 'active' || status === 'grace_period') && max(expiresAt, gracePeriodExpiresAt) > now
 ```
 The status route evaluates every record the user has. It reports the most recent one that grants access,
 or the most recent one when none does.

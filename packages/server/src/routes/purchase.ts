@@ -9,7 +9,7 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
-import { getAppRegistry, peekAppleBundleId, unknownAppError } from '../apps.js';
+import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
 import {
   validateGoogleProductReceipt,
@@ -138,14 +138,10 @@ export function createPurchaseRouter(
       // whether we have a record of it — see the replay guard before the INSERT.
       let alreadyConsumed = false;
 
-      // The request named an app (appId, or the receipt's own bundleId) that
-      // this instance does not host: the caller's mistake, not a server one.
-      if (!appConfig && (appHint.appId || appHint.bundleId)) {
-        const { code, message } = unknownAppError(appHint);
-        sendError(res, 400, code, message, NO_PURCHASE);
-        return;
-      }
-
+      // An app this instance does not host gets no credentials — never another
+      // app's — and so the "config missing" 500 below. Deliberately not a 4xx:
+      // clients (the Unity package) read a 4xx as a verdict on the receipt, and
+      // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
         if (!appConfig?.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);

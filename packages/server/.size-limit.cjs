@@ -52,6 +52,11 @@
 // ordering in every store's save, including a Redis Lua script; the Apple
 // receipt decision; the Redis claim CAS). Limit unchanged; 0.56 KB of headroom
 // left on CJS, so the next server addition needs a decision here.
+//
+// 2026-10-01: 44.17/44.66 KB after the backward-compatibility pass for existing
+// hosts (separate gracePeriodExpiresAt, 0.27 save fallback for a table without
+// the new columns, public validateGoogleReceipt keeping its null contract).
+// Limit unchanged; 0.34 KB of headroom on CJS.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',

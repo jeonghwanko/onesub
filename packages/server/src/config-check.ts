@@ -28,7 +28,9 @@ export function assertValidConfig(config: OneSubServerConfig): void {
   for (const app of registry.apps) {
     const id = app.id;
     if (!id) errors.push('every apps[] entry needs a non-empty id');
-    else if (seenIds.has(id)) errors.push(`app id "${id}" is used twice`);
+    // A repeated id (e.g. listed twice in an env var) is deterministic — the
+    // first entry wins — so it warns rather than refusing to boot the host.
+    else if (seenIds.has(id)) warn(`app id is listed twice — the first entry is used`, id);
     seenIds.add(id);
 
     const apple = app.apple;

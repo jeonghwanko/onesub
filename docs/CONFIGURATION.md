@@ -41,7 +41,6 @@ entrypoint is the exception: it builds Postgres stores from `DATABASE_URL`.)
 `createOneSubMiddleware` checks the config before mounting anything, and throws with every problem
 listed when one cannot work:
 - a `defaultAppId` that names no app
-- two `apps[]` entries with the same `id`
 - an empty `apple.bundleId`
 - a `productReceiptMaxAgeHours` that is not positive (`Infinity`, which switches the age check off, is allowed)
 - a negative `metricsCacheTtlSeconds`
@@ -52,7 +51,7 @@ Settings that only disable a feature, or are ambiguous but deterministic, log a 
   is passing the file path). Google validation then fails; Apple is unaffected
 - Apple `keyId` / `issuerId` / `privateKey` only partly set
 - only one of `offerKeyId` / `offerPrivateKey`
-- one bundle ID or package name on two apps, where the first listed wins
+- one bundle ID or package name on two apps, or one `id` listed twice — the first listed wins
 
 An empty `serviceAccountKey` string counts as unset.
 

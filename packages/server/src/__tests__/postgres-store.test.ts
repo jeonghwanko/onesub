@@ -88,6 +88,22 @@ describePg('Postgres stores', () => {
   // ── schema ───────────────────────────────────────────────────────────────
 
   describe('schema', () => {
+    it('keeps saving, as 0.27 did, while the 0.28 columns are not there yet', async () => {
+      // A host that calls initSchema() without awaiting it serves its first
+      // requests before the ALTER lands; a hand-managed schema may lag a deploy.
+      await pool.query('ALTER TABLE onesub_subscriptions DROP COLUMN state_as_of, DROP COLUMN grace_period_expires_at');
+      try {
+        await store.save(sub({ stateAsOf: '2026-01-01T00:00:00.000Z' }));
+        const rec = await store.getByTransactionId('sub-1');
+        expect(rec).not.toBeNull();
+        expect(rec?.stateAsOf).toBeUndefined();
+      } finally {
+        await store.initSchema();
+      }
+      await store.save(sub({ stateAsOf: '2026-01-02T00:00:00.000Z' }));
+      expect((await store.getByTransactionId('sub-1'))?.stateAsOf).toBe('2026-01-02T00:00:00.000Z');
+    });
+
     it('initSchema is safe to run repeatedly', async () => {
       // Hosts are told to call it at every startup, so it has to be idempotent
       // against an already-migrated database, not just an empty one.
@@ -385,11 +401,15 @@ describePg('Postgres stores', () => {
       // Excluded: on_hold / paused do not grant entitlement.
       await store.save(sub({ originalTransactionId: 'e', status: 'on_hold', expiresAt: '2026-07-01T00:00:00.000Z' }));
       await store.save(sub({ originalTransactionId: 'f', status: 'paused', expiresAt: '2026-07-01T00:00:00.000Z' }));
+      // Included: an Apple grace period — paid period over, grace still running.
+      await store.save(sub({ originalTransactionId: 'g', status: 'grace_period', expiresAt: '2026-01-01T00:00:00.000Z', gracePeriodExpiresAt: '2026-07-01T00:00:00.000Z' }));
+      // Excluded: a grace end that has passed too.
+      await store.save(sub({ originalTransactionId: 'h', status: 'grace_period', expiresAt: '2026-01-01T00:00:00.000Z', gracePeriodExpiresAt: '2026-01-02T00:00:00.000Z' }));
 
       const { sql, memory } = await bothWays();
       expect(sql).toEqual(memory);
-      expect(sql.active).toBe(3);
-      expect(sql.gracePeriod).toBe(2);
+      expect(sql.active).toBe(4);
+      expect(sql.gracePeriod).toBe(3);
     });
 
     it('agrees on the expiry boundary, which is strictly greater-than', async () => {

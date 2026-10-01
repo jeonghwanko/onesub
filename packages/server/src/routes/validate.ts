@@ -5,12 +5,12 @@ import type { ValidateReceiptResponse, OneSubServerConfig, SubscriptionInfo } fr
 import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
-import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
+import { validateGoogleReceiptOrThrow, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
 import { laterStateAsOf } from '../lifecycle.js';
 import { ProviderUnavailableError } from '../providers/errors.js';
 import { sendError, parseOrSend } from '../errors.js';
-import { getAppRegistry, peekAppleBundleId, unknownAppError } from '../apps.js';
+import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 import { getTestOverride } from '../test-overrides.js';
 
 const NO_SUB = { valid: false, subscription: null } as const;
@@ -47,14 +47,10 @@ export function createValidateRouter(
       };
       const appConfig = registry.resolve(appHint);
 
-      // The request named an app (appId, or the receipt's own bundleId) that
-      // this instance does not host: the caller's mistake, not a server one.
-      if (!appConfig && (appHint.appId || appHint.bundleId)) {
-        const { code, message } = unknownAppError(appHint);
-        sendError(res, 400, code, message, NO_SUB);
-        return;
-      }
-
+      // An app this instance does not host gets no credentials — never another
+      // app's — and so the "config missing" 500 below. Deliberately not a 4xx:
+      // clients (the Unity package) read a 4xx as a verdict on the receipt, and
+      // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
         if (!appConfig?.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_SUB);
@@ -66,7 +62,7 @@ export function createValidateRouter(
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_SUB);
           return;
         }
-        sub = await validateGoogleReceipt(receipt, productId, appConfig.google);
+        sub = await validateGoogleReceiptOrThrow(receipt, productId, appConfig.google);
       }
 
       if (!sub) {
@@ -127,6 +123,7 @@ export function createValidateRouter(
           sub.status = existing.status;
           sub.willRenew = existing.willRenew;
           sub.expiresAt = existing.expiresAt;
+          if (existing.gracePeriodExpiresAt) sub.gracePeriodExpiresAt = existing.gracePeriodExpiresAt;
         }
       }
       // Never move the record's snapshot time backwards (lifecycle.ts); the

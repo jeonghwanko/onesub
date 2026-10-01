@@ -13,7 +13,7 @@ import { createEntitlementRouter } from './routes/entitlements.js';
 import { createMetricsRouter } from './routes/metrics.js';
 import { createAppleOfferRouter } from './routes/apple-offer.js';
 import { setLogger, log } from './logger.js';
-import { oneSubErrorHandler } from './errors.js';
+import { oneSubErrorHandler, oneSubFallbackErrorHandler } from './errors.js';
 import { assertValidConfig } from './config-check.js';
 import { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postgres.js';
 import type { CacheAdapter } from './cache.js';
@@ -155,7 +155,8 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   const appleOfferRouter = createAppleOfferRouter(config);
   if (appleOfferRouter) router.use(appleOfferRouter);
 
-  // Must stay last: it only sees errors from the routers mounted above.
+  // Must stay last: it only sees errors from the routers mounted above, and
+  // passes anything but a body-parser rejection on to the host.
   router.use(oneSubErrorHandler);
 
   return router;
@@ -178,6 +179,8 @@ export function createOneSubServer(config: OneSubMiddlewareConfig): ReturnType<t
   });
 
   app.use(createOneSubMiddleware(config));
+  // No host error handler here, so answer what reaches the end in JSON.
+  app.use(oneSubFallbackErrorHandler);
 
   return app;
 }
@@ -228,7 +231,8 @@ export {
   signApplePromotionalOffer,
 } from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
-// Thrown by validateGoogleReceipt when Play cannot answer (not a verdict on the receipt).
+// What onesub's routes see when a store API cannot answer (not a verdict on the receipt).
+// validateGoogleReceipt itself keeps returning null in that case, as before.
 export { ProviderUnavailableError } from './providers/errors.js';
 
 // Entitlement evaluator — exported so hosts can evaluate entitlements

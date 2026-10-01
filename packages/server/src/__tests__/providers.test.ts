@@ -13,6 +13,7 @@ import {
 import {
   validateGoogleProductReceipt,
   validateGoogleReceipt,
+  validateGoogleReceiptOrThrow,
   acknowledgeGoogleSubscription,
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
@@ -522,8 +523,10 @@ describe('validateGoogleProductReceipt', () => {
         validateGoogleProductReceipt('token_x', 'credits_100', makeGoogleConfig()),
       ).rejects.toBeInstanceOf(ProviderUnavailableError);
       await expect(
-        validateGoogleReceipt('token_x', 'pro_monthly', makeGoogleConfig()),
+        validateGoogleReceiptOrThrow('token_x', 'pro_monthly', makeGoogleConfig()),
       ).rejects.toBeInstanceOf(ProviderUnavailableError);
+      // The exported function keeps its 0.27 contract for hosts that call it directly.
+      await expect(validateGoogleReceipt('token_x', 'pro_monthly', makeGoogleConfig())).resolves.toBeNull();
     },
   );
 

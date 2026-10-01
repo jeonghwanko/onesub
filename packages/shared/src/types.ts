@@ -85,6 +85,14 @@ export interface SubscriptionInfo {
    */
   stateAsOf?: string;
   /**
+   * Apple only, while `status === 'grace_period'`: when the billing grace period
+   * ends (the renewal info's `gracePeriodExpiresDate`). Access continues until
+   * then even though `expiresAt` — the end of the paid period, which renewal
+   * failed to extend — has passed. Kept separate so `expiresAt` keeps meaning
+   * "paid through" for hosts that compute billing cycles from it.
+   */
+  gracePeriodExpiresAt?: string;
+  /**
    * Account identity baked into the receipt at purchase time (Apple
    * `appAccountToken` / Google `obfuscatedExternalAccountId`). Transient:
    * populated by the receipt validators, consumed by the validate route's

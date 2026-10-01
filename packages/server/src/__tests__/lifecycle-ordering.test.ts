@@ -190,9 +190,29 @@ describe('Apple billing grace period', () => {
 
     const rec = await store.getByTransactionId('g1');
     expect(rec?.status).toBe(SUBSCRIPTION_STATUS.GRACE_PERIOD);
-    expect(rec?.expiresAt).toBe(new Date(graceEnds).toISOString());
+    expect(rec?.gracePeriodExpiresAt).toBe(new Date(graceEnds).toISOString());
+    // expiresAt keeps meaning "paid through": hosts derive billing cycles from it,
+    // and moving it forward here read as a renewal (premium rewards reopened).
+    expect(rec?.expiresAt).toBe(new Date(t - DAY).toISOString());
     const status = await request(app).get(ROUTES.STATUS).query({ userId: 'u1' });
     expect(status.body.active).toBe(true);
+  });
+
+  it('drops the grace end once the subscription leaves grace', async () => {
+    const { app, store } = buildApp();
+    await store.save(stored({ originalTransactionId: 'g3' }));
+    const t = Date.now();
+    await request(app).post(ROUTES.WEBHOOK_APPLE).send(appleNotification({
+      type: 'DID_FAIL_TO_RENEW', subtype: 'GRACE_PERIOD', orig: 'g3', expiresDate: t - DAY, signedDate: t - 60_000,
+      renewal: { gracePeriodExpiresDate: t + 6 * DAY },
+    }));
+    await request(app).post(ROUTES.WEBHOOK_APPLE).send(appleNotification({
+      type: 'GRACE_PERIOD_EXPIRED', orig: 'g3', expiresDate: t - DAY, signedDate: t,
+    }));
+    const rec = await store.getByTransactionId('g3');
+    expect(rec?.status).toBe(SUBSCRIPTION_STATUS.ON_HOLD);
+    expect(rec?.gracePeriodExpiresAt).toBeUndefined();
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'u1' })).body.active).toBe(false);
   });
 
   it('does not extend access for a billing failure outside a grace period', async () => {
@@ -310,7 +330,8 @@ describe('Apple grace period on an unmapped notification', () => {
     }));
     const rec = await store.getByTransactionId('gu');
     expect(rec?.status).toBe(SUBSCRIPTION_STATUS.GRACE_PERIOD);
-    expect(rec?.expiresAt).toBe(new Date(graceEnds).toISOString());
+    expect(rec?.gracePeriodExpiresAt).toBe(new Date(graceEnds).toISOString());
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'u1' })).body.active).toBe(true);
   });
 });
 

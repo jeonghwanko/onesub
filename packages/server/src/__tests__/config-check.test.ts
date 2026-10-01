@@ -59,22 +59,29 @@ describe('startup config validation', () => {
     })).toThrow(/defaultAppId "typo" names no configured app/);
   });
 
-  it('refuses duplicate app ids and nonsensical numbers, listing every problem at once', () => {
+  it('refuses nonsensical numbers, listing every problem at once', () => {
     let message = '';
     try {
       build({
-        apps: [
-          { id: 'a', apple: { bundleId: 'com.a', productReceiptMaxAgeHours: 0 } },
-          { id: 'a', apple: { bundleId: 'com.a2' } },
-        ],
+        apps: [{ id: 'a', apple: { bundleId: 'com.a', productReceiptMaxAgeHours: 0 } }],
         metricsCacheTtlSeconds: -1,
       });
     } catch (err) {
       message = (err as Error).message;
     }
-    expect(message).toMatch(/app id "a" is used twice/);
     expect(message).toMatch(/productReceiptMaxAgeHours must be a positive number/);
     expect(message).toMatch(/metricsCacheTtlSeconds must be a non-negative number/);
+  });
+
+  it('only warns for an app id listed twice (e.g. appended twice to an env list), so the host still boots', () => {
+    const { logger, warnings } = capturingLogger();
+    expect(() => build({
+      apps: [
+        { id: 'weather', apple: { bundleId: 'com.w' } },
+        { id: 'weather', apple: { bundleId: 'com.w' } },
+      ],
+    }, logger)).not.toThrow();
+    expect(warnings.some((w) => w.includes('listed twice'))).toBe(true);
   });
 
   it('allows Infinity for productReceiptMaxAgeHours (the age check switched off) but not NaN', () => {

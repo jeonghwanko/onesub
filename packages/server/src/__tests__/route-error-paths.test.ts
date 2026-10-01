@@ -9,7 +9,7 @@ import express from 'express';
 import request from 'supertest';
 import type { PurchaseInfo } from '@onesub/shared';
 import { ONESUB_ERROR_CODE } from '@onesub/shared';
-import { createOneSubMiddleware } from '../index.js';
+import { createOneSubMiddleware, createOneSubServer } from '../index.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
 import { InMemoryWebhookEventStore } from '../webhook-events.js';
 
@@ -116,6 +116,44 @@ describe('error handler', () => {
   });
 });
 
+describe('errors that escape a onesub route', () => {
+  // markIfNew runs before the webhook's own try/catch, so a throw there reaches
+  // the error pipeline (via the route's .catch(next)).
+  const throwingEvents = {
+    markIfNew: async () => { throw new Error('event store down'); },
+    unmark: async () => {},
+  };
+
+  it("go to the host's error handler, so host alerting keeps working", async () => {
+    const a = express();
+    a.use(createOneSubMiddleware({
+      database: { url: '' },
+      apple: { bundleId: 'com.example.app', skipJwsVerification: true },
+      store: new InMemorySubscriptionStore(),
+      purchaseStore: new InMemoryPurchaseStore(),
+      webhookEventStore: throwingEvents as never,
+    }));
+    a.use((_err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      res.status(418).json({ handledBy: 'host' });
+    });
+    const res = await request(a).post('/onesub/webhook/apple').send({ signedPayload: makeJws({ notificationType: 'TEST', notificationUUID: 'x' }) });
+    expect(res.status).toBe(418);
+  });
+
+  it('get a JSON 500 from createOneSubServer, which has no host', async () => {
+    const app = createOneSubServer({
+      database: { url: '' },
+      apple: { bundleId: 'com.example.app', skipJwsVerification: true },
+      store: new InMemorySubscriptionStore(),
+      purchaseStore: new InMemoryPurchaseStore(),
+      webhookEventStore: throwingEvents as never,
+    });
+    const res = await request(app).post('/onesub/webhook/apple').send({ signedPayload: makeJws({ notificationType: 'TEST', notificationUUID: 'x' }) });
+    expect(res.status).toBe(500);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.INTERNAL_ERROR);
+  });
+});
+
 describe('unknown app', () => {
   function multiApp() {
     const a = express();
@@ -132,22 +170,25 @@ describe('unknown app', () => {
     return a;
   }
 
-  it('is a 400 INVALID_INPUT for an appId the server does not host, not a 500', async () => {
+  it('answers an appId the server does not host with CONFIG_MISSING (500), never another app', async () => {
+    // Not a 4xx on purpose: the Unity client reads a 4xx as a verdict on the
+    // receipt (clears cached entitlement, blacklists the order). The server has
+    // not judged the receipt; it does not know the app.
     for (const route of ['/onesub/validate', '/onesub/purchase/validate']) {
       const res = await request(multiApp()).post(route).send({
         platform: 'google',
-        receipt: 'token',
+        receipt: 'MOCK_VALID_token',
         userId: 'u1',
         productId: 'pro',
         type: 'consumable',
         appId: 'nope',
       });
-      expect(res.status, route).toBe(400);
-      expect(res.body.errorCode, route).toBe(ONESUB_ERROR_CODE.INVALID_INPUT);
+      expect(res.status, route).toBe(500);
+      expect(res.body.errorCode, route).toBe(ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING);
     }
   });
 
-  it('is a 400 BUNDLE_ID_MISMATCH for an Apple receipt from an app it does not host', async () => {
+  it('answers an Apple receipt from an app it does not host with APPLE_CONFIG_MISSING (500)', async () => {
     const receipt = makeJws({
       bundleId: 'com.elsewhere',
       productId: 'pro',
@@ -161,8 +202,8 @@ describe('unknown app', () => {
       userId: 'u1',
       productId: 'pro',
     });
-    expect(res.status).toBe(400);
-    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH);
+    expect(res.status).toBe(500);
+    expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING);
   });
 });
 

@@ -505,6 +505,7 @@ export const ONESUB_OPENAPI: OpenAPIDoc = {
           willRenew: { type: 'boolean' },
           linkedPurchaseToken: { type: 'string', description: 'Google only: the purchaseToken this subscription replaced.' },
           autoResumeTime: { type: 'string', format: 'date-time', description: 'Google only: when a paused subscription resumes.' },
+          gracePeriodExpiresAt: { type: 'string', format: 'date-time', description: 'Apple only, in grace_period: when the billing grace period ends. expiresAt stays the paid-period end.' },
           stateAsOf: { type: 'string', format: 'date-time', description: 'Time of the newest store-state snapshot applied; older notifications are ignored.' },
         },
       },

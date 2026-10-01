@@ -94,6 +94,7 @@ function describeSubscriptionContract(factory: StoreFactory): void {
         linkedPurchaseToken: 'prev-token',
         autoResumeTime: '2030-02-01T00:00:00.000Z',
       stateAsOf: '2029-12-31T23:59:59.123Z',
+      gracePeriodExpiresAt: '2030-01-10T00:00:00.000Z',
         platform: 'google',
         status: SUBSCRIPTION_STATUS.PAUSED,
         willRenew: false,
