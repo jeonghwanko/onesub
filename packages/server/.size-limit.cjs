@@ -40,17 +40,29 @@
 // webhook startup warning. Cumulative growth this session: 32.78 → 35.47 KB,
 // each step recorded above. Raised because 0.53 KB of headroom means the next
 // unrelated commit fails this gate rather than the change that earned it.
+//
+// 2026-10-01: raised 40 → 45 KB (approved by the maintainer) for the hardening
+// pass recorded in docs/MIGRATION.md 0.28.0: startup config validation
+// (`config-check.ts`), snapshot ordering (`lifecycle.ts`, `stateAsOf`), the
+// router error handler, `ProviderUnavailableError` / 503 mapping, the Redis
+// non-consumable claim, and the dev-mode production guard. Measured 38.11/38.45 KB
+// before, 39.28/39.75 KB after the bug-fix half, 42.84/43.25 KB at the bump.
+//
+// 2026-10-01: 43.97/44.44 KB after the review fixes to that pass (atomic
+// ordering in every store's save, including a Redis Lua script; the Apple
+// receipt decision; the Redis claim CAS). Limit unchanged; 0.56 KB of headroom
+// left on CJS, so the next server addition needs a decision here.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '40 KB',
+    limit: '45 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '40 KB',
+    limit: '45 KB',
     gzip: true,
   },
 ];

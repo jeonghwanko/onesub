@@ -5,7 +5,7 @@ import type {
   PurchaseInfo,
   SubscriptionInfo,
 } from '@onesub/shared';
-import { PURCHASE_TYPE, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { PURCHASE_TYPE, SUBSCRIPTION_STATUS, isSubscriptionEntitled } from '@onesub/shared';
 import type {
   ActiveSubscriptionAggregate,
   MetricsRangeAggregate,
@@ -136,9 +136,7 @@ export function aggregateRange<T extends Countable>(
 
 /** A subscription counts as currently entitled: allowed status AND not yet expired. */
 export function isActiveSubscription(sub: SubscriptionInfo, nowMs: number): boolean {
-  const statusAllows =
-    sub.status === SUBSCRIPTION_STATUS.ACTIVE || sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD;
-  return statusAllows && new Date(sub.expiresAt).getTime() > nowMs;
+  return isSubscriptionEntitled(sub, nowMs);
 }
 
 /** A subscription counts as ended: the store recorded it expired or canceled. */

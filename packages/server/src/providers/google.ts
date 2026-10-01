@@ -7,8 +7,30 @@ import {
   mockValidateGoogleSubscription,
   mockValidateGoogleProduct,
 } from './mock.js';
+import { ProviderUnavailableError } from './errors.js';
+import { snapshotTimeFromEpochMs } from '../lifecycle.js';
 
 type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
+
+/** A non-2xx Play Developer API response, keeping the status for classification. */
+class GooglePlayHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'GooglePlayHttpError';
+  }
+}
+
+/**
+ * Statuses where Play has looked at the token and said no: malformed (400),
+ * unknown (404), or no longer valid (410). Everything else — 5xx, 429, our own
+ * credentials refused (401/403), a timeout, a failed token exchange — is Play
+ * being unable to answer, and must not be reported as a rejected receipt.
+ */
+const GOOGLE_RECEIPT_REJECTED_STATUSES = new Set([400, 404, 410]);
+
+function isGoogleReceiptRejection(err: unknown): boolean {
+  return err instanceof GooglePlayHttpError && GOOGLE_RECEIPT_REJECTED_STATUSES.has(err.status);
+}
 
 /**
  * Google Play Developer API v3 — SubscriptionPurchaseV2 resource (partial).
@@ -296,7 +318,7 @@ async function fetchSubscriptionPurchaseV2(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`[onesub/google] Play API v2 error ${resp.status}: ${body}`);
+    throw new GooglePlayHttpError(resp.status, `[onesub/google] Play API v2 error ${resp.status}: ${body}`);
   }
 
   return resp.json() as Promise<GoogleSubscriptionPurchaseV2>;
@@ -323,7 +345,7 @@ async function fetchProductPurchase(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`[onesub/google] Play Products API error ${resp.status}: ${body}`);
+    throw new GooglePlayHttpError(resp.status, `[onesub/google] Play Products API error ${resp.status}: ${body}`);
   }
 
   return resp.json() as Promise<GoogleProductPurchase>;
@@ -531,6 +553,9 @@ export async function validateGoogleReceipt(
     return null;
   }
 
+  // Live state as of the moment we asked. Taken before the call, so an event
+  // that lands while the request is in flight is never mistaken for older.
+  const stateAsOf = new Date().toISOString();
   let purchase: GoogleSubscriptionPurchaseV2;
   try {
     const token = await getCachedAccessToken(config.serviceAccountKey);
@@ -541,7 +566,8 @@ export async function validateGoogleReceipt(
       packageName: config.packageName,
       err,
     });
-    return null;
+    if (isGoogleReceiptRejection(err)) return null;
+    throw new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err });
   }
 
   const status = deriveStatusV2(purchase.subscriptionState);
@@ -596,6 +622,7 @@ export async function validateGoogleReceipt(
     // logic) can follow upgrade/downgrade chains.
     linkedPurchaseToken: purchase.linkedPurchaseToken,
     autoResumeTime,
+    stateAsOf,
     ...(boundAccountId ? { boundAccountId } : {}),
   };
 }
@@ -666,7 +693,8 @@ export async function validateGoogleProductReceipt(
       type,
       err,
     });
-    return null;
+    if (isGoogleReceiptRejection(err)) return null;
+    throw new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err });
   }
 
   // purchaseState 0 = completed (1 = canceled, 2 = pending)
@@ -735,6 +763,8 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   purchaseToken: string;
   subscriptionId: string;
   packageName: string;
+  /** The RTDN's eventTimeMillis as ISO — its snapshot time (see lifecycle.ts). */
+  stateAsOf?: string;
 } | null {
   let notification: GoogleDeveloperNotification;
 
@@ -751,12 +781,14 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   }
 
   const { notificationType, purchaseToken, subscriptionId } = notification.subscriptionNotification;
+  const stateAsOf = snapshotTimeFromEpochMs(notification.eventTimeMillis);
 
   return {
     notificationType,
     purchaseToken,
     subscriptionId,
     packageName: notification.packageName,
+    ...(stateAsOf ? { stateAsOf } : {}),
   };
 }
 
@@ -776,6 +808,8 @@ export interface GoogleVoidedNotification {
   /** 1 = Full refund, 2 = Quantity-based partial refund (consumables) */
   refundType: 1 | 2;
   packageName: string;
+  /** The RTDN's eventTimeMillis as ISO — when the refund happened (see lifecycle.ts). */
+  stateAsOf?: string;
 }
 
 /**
@@ -797,6 +831,7 @@ export function decodeGoogleVoidedNotification(
   if (!notification.voidedPurchaseNotification) return null;
 
   const { purchaseToken, orderId, productType, refundType } = notification.voidedPurchaseNotification;
+  const stateAsOf = snapshotTimeFromEpochMs(notification.eventTimeMillis);
 
   return {
     purchaseToken,
@@ -804,6 +839,7 @@ export function decodeGoogleVoidedNotification(
     productType,
     refundType,
     packageName: notification.packageName,
+    ...(stateAsOf ? { stateAsOf } : {}),
   };
 }
 

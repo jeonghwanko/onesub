@@ -9,7 +9,7 @@ import type {
 } from '@onesub/shared';
 import { ROUTES, PURCHASE_TYPE, ONESUB_ERROR_CODE } from '@onesub/shared';
 import type { PurchaseStore } from '../store.js';
-import { getAppRegistry, peekAppleBundleId } from '../apps.js';
+import { getAppRegistry, peekAppleBundleId, unknownAppError } from '../apps.js';
 import { validateAppleConsumableReceipt } from '../providers/apple.js';
 import {
   validateGoogleProductReceipt,
@@ -17,7 +17,8 @@ import {
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
 import { log } from '../logger.js';
-import { sendError, parseOrSend } from '../errors.js';
+import { ProviderUnavailableError } from '../providers/errors.js';
+import { sendError, parseOrSend, isOwnershipConflict, isNonConsumableOwnedConflict } from '../errors.js';
 
 const NO_PURCHASE = { valid: false, purchase: null } as const;
 
@@ -85,10 +86,11 @@ export function createPurchaseRouter(
 
     // An Apple receipt names its own app; a Google purchase token does not, so it
     // relies on appId (or the default app).
-    const appConfig = registry.configFor({
+    const appHint = {
       appId,
       bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
-    });
+    };
+    const appConfig = registry.resolve(appHint);
 
     try {
       // Non-consumable idempotent restore. If the user already owns this
@@ -104,21 +106,23 @@ export function createPurchaseRouter(
       // intact and is safe: ownership was already proven by the prior validated
       // purchase recorded under this userId (same idempotent-restore semantics
       // as the transactionId-match path below).
-      if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-        // Scoped to this product rather than reading the user's whole purchase
-        // history — a consumable-heavy account otherwise paid for every one of
-        // its rows on each lifetime-product purchase.
+      //
+      // Scoped to this product rather than reading the user's whole purchase
+      // history — a consumable-heavy account otherwise paid for every one of
+      // its rows on each lifetime-product purchase. Also the answer when a
+      // write below loses a race to another copy of this non-consumable.
+      const sendOwnedRestore = async (): Promise<boolean> => {
         const owned = (await purchasesForProduct(purchaseStore, userId, productId))[0];
-        if (owned) {
-          const response: ValidatePurchaseResponse = {
-            valid: true,
-            purchase: { ...owned, userId },
-            action: 'restored',
-          };
-          res.status(200).json(response);
-          return;
-        }
-      }
+        if (!owned) return false;
+        const response: ValidatePurchaseResponse = {
+          valid: true,
+          purchase: { ...owned, userId },
+          action: 'restored',
+        };
+        res.status(200).json(response);
+        return true;
+      };
+      if (type === PURCHASE_TYPE.NON_CONSUMABLE && (await sendOwnedRestore())) return;
 
       // Validate receipt via the appropriate platform-specific product validator.
       // Note: these are separate from the subscription validators — they call
@@ -134,8 +138,16 @@ export function createPurchaseRouter(
       // whether we have a record of it — see the replay guard before the INSERT.
       let alreadyConsumed = false;
 
+      // The request named an app (appId, or the receipt's own bundleId) that
+      // this instance does not host: the caller's mistake, not a server one.
+      if (!appConfig && (appHint.appId || appHint.bundleId)) {
+        const { code, message } = unknownAppError(appHint);
+        sendError(res, 400, code, message, NO_PURCHASE);
+        return;
+      }
+
       if (platform === 'apple') {
-        if (!appConfig.apple) {
+        if (!appConfig?.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);
           return;
         }
@@ -146,7 +158,7 @@ export function createPurchaseRouter(
           boundAccountId = result.appAccountToken ?? null;
         }
       } else {
-        if (!appConfig.google) {
+        if (!appConfig?.google) {
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_PURCHASE);
           return;
         }
@@ -212,7 +224,13 @@ export function createPurchaseRouter(
         action = 'restored';
         if (existing.userId !== userId) {
           if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-            await purchaseStore.reassignPurchase(transactionId, userId);
+            try {
+              await purchaseStore.reassignPurchase(transactionId, userId);
+            } catch (err) {
+              if (!isNonConsumableOwnedConflict(err)) throw err;
+              if (await sendOwnedRestore()) return;
+              throw err;
+            }
             log.info('[onesub/purchase] reassigned transaction to a new user', {
               transactionId,
               fromUserId: existing.userId,
@@ -264,7 +282,25 @@ export function createPurchaseRouter(
         quantity: 1,
       };
 
-      await purchaseStore.savePurchase(purchase);
+      try {
+        await purchaseStore.savePurchase(purchase);
+      } catch (err) {
+        // The user came to own this non-consumable (another transaction, a
+        // concurrent request) after the owned-check at the top of this route.
+        if (isNonConsumableOwnedConflict(err) && (await sendOwnedRestore())) return;
+        // The lookup above found no record, but a concurrent request for the
+        // same receipt claimed it for another user before this INSERT landed.
+        if (!isOwnershipConflict(err)) throw err;
+        log.warn('[onesub/purchase] transaction claimed by another user concurrently', { transactionId, userId });
+        sendError(
+          res,
+          409,
+          ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER,
+          'TRANSACTION_BELONGS_TO_OTHER_USER',
+          NO_PURCHASE,
+        );
+        return;
+      }
 
       // Google requires acknowledgement within 3 days of purchase or the
       // transaction is auto-refunded.
@@ -273,7 +309,7 @@ export function createPurchaseRouter(
       // Both must run after savePurchase — if called before, a DB failure would
       // leave the receipt acknowledged/consumed but the entitlement ungranted
       // with no retry path.
-      if (platform === 'google' && appConfig.google) {
+      if (platform === 'google' && appConfig?.google) {
         if (type === PURCHASE_TYPE.CONSUMABLE) {
           void consumeGoogleProductReceipt(receipt, productId, appConfig.google);
         } else {
@@ -288,6 +324,11 @@ export function createPurchaseRouter(
       };
       res.status(200).json(response);
     } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        log.warn('[onesub/purchase/validate] store API unavailable', { userId, productId, platform, err });
+        sendError(res, 503, ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE, 'Store API unavailable — retry later', NO_PURCHASE);
+        return;
+      }
       log.error('[onesub/purchase/validate] Unexpected error', { userId, productId, platform, type, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during purchase validation', NO_PURCHASE);
     }

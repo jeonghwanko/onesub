@@ -189,7 +189,7 @@ interface OneSubServerConfig {
     mockMode?: boolean;          // DEV ONLY
     productReceiptMaxAgeHours?: number;  // default 72
   };
-  database: { url: string };
+  database?: { url: string };  // deprecated, not read — pass `store` / `purchaseStore`
   apps?: Array<{             // optional: isolate credentials for multiple apps
     id: string;
     apple?: OneSubAppleConfig;

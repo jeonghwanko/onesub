@@ -28,3 +28,13 @@ export function isLocalhostUrl(input: unknown): boolean {
   const host = urlHost(input);
   return host === '127.0.0.1' || host === 'localhost';
 }
+
+/**
+ * A service account key that parses as one — the server checks the shape at
+ * startup. The private key is not a real key, so any token exchange with it
+ * fails, exactly as the old `'{}'` placeholder did.
+ */
+export const FAKE_SERVICE_ACCOUNT_KEY = JSON.stringify({
+  client_email: 'onesub-test@example.iam.gserviceaccount.com',
+  private_key: '-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n',
+});

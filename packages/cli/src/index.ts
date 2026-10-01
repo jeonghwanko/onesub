@@ -43,7 +43,7 @@ Receipt patterns (prefix match):
   MOCK_REVOKED_*                    → revoked/refunded (422)
   MOCK_EXPIRED_*                    → 72h expired (422)
   MOCK_INVALID_* / MOCK_BAD_SIG_*   → bad signature (422)
-  MOCK_NETWORK_ERROR_*              → simulated upstream failure (500)
+  MOCK_NETWORK_ERROR_*              → simulated upstream failure (503)
   MOCK_SANDBOX_*                    → valid but short expiry
 
 No persistence — restarting clears all purchases.

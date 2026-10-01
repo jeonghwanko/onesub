@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { ROUTES, DEFAULT_PORT } from '@onesub/shared';
 
+/** The React Native SDK's npm name (renamed from `@onesub/sdk`; see docs/MIGRATION.md). */
+export const SDK_PACKAGE = '@jeonghwanko/onesub-sdk';
+
 export const setupInputSchema = {
   projectPath: z.string().describe('Absolute path to the project root directory'),
   productId: z.string().describe('Your subscription product ID (e.g. "com.yourapp.pro_monthly")'),
@@ -37,15 +40,24 @@ function buildSetupInstructions(opts: {
   const { productId, price, serverUrl } = opts;
 
   const providerCode = `// app/_layout.tsx  (or App.tsx for bare React Native)
-import { OneSubProvider } from '@onesub/sdk';
+import { OneSubProvider } from '${SDK_PACKAGE}';
+
+// Wire this to your auth: the signed-in user's stable id. The server records
+// every purchase against it, so it must survive app restarts and reinstalls.
+function getSignedInUserId(): string {
+  throw new Error('getSignedInUserId: return your signed-in user\'s stable id');
+}
 
 export default function RootLayout() {
+  const userId = getSignedInUserId();
+
   return (
     <OneSubProvider
       config={{
         serverUrl: '${serverUrl}',
         productId: '${productId}',
       }}
+      userId={userId}
     >
       {/* your existing app layout */}
     </OneSubProvider>
@@ -55,7 +67,7 @@ export default function RootLayout() {
   const paywallCode = buildMinimalPaywall({ productId, price });
 
   const gateCode = `// anywhere in your app — gate premium features
-import { useOneSub } from '@onesub/sdk';
+import { useOneSub } from '${SDK_PACKAGE}';
 
 export function PremiumFeature() {
   const { isActive, isLoading, subscribe } = useOneSub();
@@ -75,28 +87,50 @@ export function PremiumFeature() {
 }`;
 
   const serverCode = `// server.ts (standalone onesub validation server)
-import { createOneSubServer } from '@onesub/server';
+import {
+  createOneSubServer,
+  PostgresSubscriptionStore,
+  PostgresPurchaseStore,
+} from '@onesub/server';
 
-const app = createOneSubServer({
-  apple: {
-    bundleId: 'com.yourcompany.yourapp',
-    sharedSecret: process.env.APPLE_SHARED_SECRET!,
-    // For StoreKit 2 (recommended):
-    keyId: process.env.APPLE_KEY_ID!,
-    issuerId: process.env.APPLE_ISSUER_ID!,
-    privateKey: process.env.APPLE_PRIVATE_KEY!,
-  },
-  google: {
-    packageName: 'com.yourcompany.yourapp',
-    serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY!,
-  },
-  database: {
-    url: process.env.DATABASE_URL!,
-  },
-});
+async function main() {
+  // Pass the stores explicitly: without them onesub keeps subscription and
+  // purchase state in memory and loses all of it on restart.
+  const dbUrl = process.env.DATABASE_URL!;
+  const store = new PostgresSubscriptionStore(dbUrl);
+  const purchaseStore = new PostgresPurchaseStore(dbUrl);
+  await store.initSchema();
+  await purchaseStore.initSchema();
 
-app.listen(${DEFAULT_PORT}, () => {
-  console.log('onesub server running on port ${DEFAULT_PORT}');
+  const app = createOneSubServer({
+    apple: {
+      bundleId: 'com.yourcompany.yourapp',
+      sharedSecret: process.env.APPLE_SHARED_SECRET!,
+      // For StoreKit 2 (recommended):
+      keyId: process.env.APPLE_KEY_ID!,
+      issuerId: process.env.APPLE_ISSUER_ID!,
+      privateKey: process.env.APPLE_PRIVATE_KEY!,
+    },
+    google: {
+      packageName: 'com.yourcompany.yourapp',
+      serviceAccountKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY!,
+      // Required in production: without it the RTDN webhook cannot tell a
+      // Pub/Sub push from a forged request. See docs/SECURITY.md.
+      pushAudience: process.env.GOOGLE_PUSH_AUDIENCE,
+      pushServiceAccountEmail: process.env.GOOGLE_PUSH_SERVICE_ACCOUNT_EMAIL,
+    },
+    store,
+    purchaseStore,
+  });
+
+  app.listen(${DEFAULT_PORT}, () => {
+    console.log('onesub server running on port ${DEFAULT_PORT}');
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
 });`;
 
   const envCode = `# .env
@@ -105,6 +139,8 @@ APPLE_KEY_ID=your_key_id
 APPLE_ISSUER_ID=your_issuer_id
 APPLE_PRIVATE_KEY="-----BEGIN EC PRIVATE KEY-----\\n...\\n-----END EC PRIVATE KEY-----"
 GOOGLE_SERVICE_ACCOUNT_KEY='{"type":"service_account",...}'
+GOOGLE_PUSH_AUDIENCE=https://your-server.example.com${ROUTES.WEBHOOK_GOOGLE}
+GOOGLE_PUSH_SERVICE_ACCOUNT_EMAIL=pubsub-push@your-project.iam.gserviceaccount.com
 DATABASE_URL=postgresql://user:password@localhost:5432/onesub`;
 
   const sections: string[] = [
@@ -120,16 +156,16 @@ DATABASE_URL=postgresql://user:password@localhost:5432/onesub`;
     '```bash',
     '# Expo — requires a development build (npx expo prebuild / dev client);',
     '# react-native-iap does NOT work in Expo Go',
-    'npx expo install @onesub/sdk react-native-iap',
+    `npx expo install ${SDK_PACKAGE} react-native-iap`,
     '',
     '# Bare React Native (uses react-native-iap)',
-    'npm install @onesub/sdk react-native-iap',
+    `npm install ${SDK_PACKAGE} react-native-iap`,
     'cd ios && pod install',
     '```',
     '',
     '**For the validation server (separate Node.js project or same repo):**',
     '```bash',
-    'npm install @onesub/server',
+    'npm install @onesub/server pg',
     '```',
     '',
 
@@ -227,7 +263,7 @@ function buildMinimalPaywall(opts: { productId: string; price: string }): string
 
   return `import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
-import { useOneSub } from '@onesub/sdk';
+import { useOneSub } from '${SDK_PACKAGE}';
 
 export default function PaywallScreen() {
   const { subscribe, restore, isLoading } = useOneSub();

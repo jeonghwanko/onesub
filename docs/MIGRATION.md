@@ -4,6 +4,154 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.27.x → 0.28.0
+
+Several failures used to be answered with the wrong status, or with one a client could not act
+on. Each now has the status that says whose fault it is. None needs a configuration change unless
+you run a dev mode in production (first item) or alert on the old codes.
+
+### Breaking: `skipJwsVerification` is refused in production, and `apps[]` is checked too
+
+`createOneSubMiddleware` now **throws at startup** when `NODE_ENV=production` and
+`apple.skipJwsVerification` is set. It already threw for `mockMode`. Both checks now cover every
+`apps[]` entry as well as the top-level config. Before, a `mockMode: true` on one `apps[]` entry
+went straight past the guard, so that app accepted any receipt in production.
+
+**Fix:** remove the flag from production configuration. There is no supported production use for
+it: it accepts unsigned Apple receipts and notifications.
+
+### Breaking: the config is validated at startup
+
+`createOneSubMiddleware` now throws at boot, listing every problem, for a config that cannot work.
+These used to fail later, per request:
+
+| Config problem | Used to |
+|---|---|
+| `defaultAppId` naming no app | route every unrouted request to the first app |
+| duplicate `apps[]` ids | — |
+| empty `apple.bundleId` | — |
+| a `productReceiptMaxAgeHours` that is not positive (`Infinity` is allowed), negative `metricsCacheTtlSeconds`, unknown `refundPolicy` | — |
+
+These only log a warning:
+- a `google.serviceAccountKey` that is not usable key JSON
+- partial Apple API credentials
+- a half-set promotional-offer key
+- one bundle ID on two apps
+ An empty `serviceAccountKey` string still counts as unset. The full list is in
+[CONFIGURATION.md](CONFIGURATION.md#startup-validation).
+
+**Fix:** if the server now refuses to start, the message names the field. For the warnings, a key passed
+as a file path is the common one: pass the file's contents.
+
+`database` is now optional and deprecated. The server never read it, and a config that set only
+`database.url` kept everything in memory. Pass `store` / `purchaseStore`. The package's own
+`node dist/index.js` entrypoint now builds Postgres stores from `DATABASE_URL`.
+
+### A store outage is `503 PROVIDER_UNAVAILABLE`, not `422 RECEIPT_VALIDATION_FAILED`
+
+When Google Play cannot answer — 5xx, 429, a timeout, a network failure, or the service account
+refused (401/403) — `POST /onesub/validate` and `POST /onesub/purchase/validate` now answer
+**503** with the new `PROVIDER_UNAVAILABLE` code. They used to answer 422, which clients treat as
+final, so valid purchases were dropped during outages. `MOCK_NETWORK_ERROR` receipts give the same
+503 instead of a 500.
+
+`validateGoogleReceipt`, which is exported, now **throws `ProviderUnavailableError`** in these cases
+instead of returning `null`. `null` still means Play rejected the token (400/404/410). Callers
+outside onesub's own routes should catch it; the class is exported from `@onesub/server`.
+
+The Google webhook can now fail a delivery too: for a purchase token the server has never seen, a Play
+outage answers 5xx so Pub/Sub redelivers it. Before, the 200 dropped the new subscription.
+
+**Fix:** if your client special-cases `RECEIPT_VALIDATION_FAILED`, treat `PROVIDER_UNAVAILABLE` as
+retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
+
+### Requests for an app the server does not host are a 400
+
+| Request | Was | Now |
+|---|---|---|
+| `appId` matches no configured app | 500 `APPLE_CONFIG_MISSING` / `GOOGLE_CONFIG_MISSING` | 400 `INVALID_INPUT` (`Unknown appId`) |
+| Apple receipt's `bundleId` matches no configured app | 500 `APPLE_CONFIG_MISSING` | 400 `BUNDLE_ID_MISMATCH` |
+
+A server with no Apple or Google config at all still answers 500 `*_CONFIG_MISSING`, because that
+is a server-side misconfiguration. If you alert on 5xx from these routes, the alerts now stop
+firing for client mistakes.
+
+### Other status corrections
+
+- A purchase whose `transactionId` another request claims concurrently answers **409
+  `TRANSACTION_BELONGS_TO_OTHER_USER`**, not 500.
+- Admin `reset`, `transfer` and `grant` answer **500 `STORE_ERROR`** on a store failure instead of
+  leaving the request unanswered. `grant` with a `transactionId` that another user owns answers
+  **409**.
+- A malformed JSON body on a `/onesub/*` route answers **400 `INVALID_INPUT`**, and an oversized
+  one **413**, with the usual JSON error body instead of Express's HTML page. Errors on your own
+  routes still reach your own error handler.
+- An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
+  of crashing the handler.
+
+### Apple `/validate` only applies a receipt that brings news
+
+A signed Apple transaction never expires and carries no renewal information. Re-posting one used to
+overwrite whatever the store's notifications had established, for example re-activating a refunded
+subscription or ending a billing grace period early.
+
+For a subscription already stored for the same user, a receipt now changes it only when it shows a later
+expiry (a renewal or resubscribe) or a revocation (a refund). Otherwise the stored state is kept and
+returned.
+
+| Receipt for a subscription bound to another user | Answer |
+|---|---|
+| older than the stored one | **409 `TRANSACTION_BELONGS_TO_OTHER_USER`**. It used to rebind the subscription to the requester |
+| current | moves the subscription as before (reinstall, account migration) |
+
+### New column `state_as_of`; out-of-order notifications are ignored
+
+`SubscriptionInfo` gains `stateAsOf`, the time of the newest store-state snapshot applied to the record.
+A notification or receipt older than that no longer changes status, expiry or renewal, so a late
+EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. See
+[ARCHITECTURE.md](ARCHITECTURE.md#ordering-newest-snapshot-wins).
+
+**Postgres:** `initSchema()` adds the column. If your DBAs apply `sql/schema.sql` by hand instead, run:
+
+```sql
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS state_as_of TIMESTAMPTZ;
+```
+
+Redis and in-memory stores need nothing. A custom `SubscriptionStore` must persist the new field, or
+ordering is not enforced for its records.
+
+### Apple grace period grants access; `/onesub/status` looks at every subscription
+
+- **Grace period:** during an Apple billing grace period, `expiresAt` is now the end of the grace period
+  (`gracePeriodExpiresDate`). Before, it was the already-past paid-period end, so a `grace_period`
+  record reported `active: false`.
+- **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
+  most recent one that grants access. Before, it read only the most recently written record, so a webhook
+  for an old expired subscription could hide an active one.
+
+### Every store refuses a second non-consumable row
+
+All three built-in `PurchaseStore`s refuse a second non-consumable row for the same user and product.
+They throw `{ code: 'NON_CONSUMABLE_ALREADY_OWNED' }`, and `purchaseConflict()` builds that error.
+Postgres already refused it, but with a raw `23505` that surfaced as a 500.
+
+| Route | Answer when the user already owns the non-consumable |
+|---|---|
+| Purchase validation that loses the race | the recorded copy, `action: "restored"` |
+| Admin grant / transfer | 409 |
+
+Redis records the claim under `onesub:purchase:nc:<userId>:<productId>`. A custom `PurchaseStore` should
+enforce the same rule. `packages/server/src/__tests__/store-contract.ts` is the executable statement of
+the contract.
+
+### BullMQ webhook queue
+
+`BullMQWebhookQueue` job ids changed from `apple:<id>` to `apple-<id>`. BullMQ 5 rejects a custom
+id with one `:`, so every enqueue had been failing. No action is needed. A job left over under the
+old format would not be deduplicated against a new one, but none could have been created.
+
+---
+
 ## `@onesub/server` 0.26.x → 0.27.0
 
 ### Breaking: the Google RTDN webhook refuses unauthenticated requests in production

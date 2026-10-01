@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { PurchaseInfo, SubscriptionInfo } from '@onesub/shared';
 import { PostgresSubscriptionStore, PostgresPurchaseStore } from '../stores/postgres.js';
+import { describeStoreContract, type StoreFactory } from './store-contract.js';
+import { describeFullFlow } from './full-flow.js';
 import {
   aggregateActiveSubscriptions,
   aggregateNonConsumablePurchases,
@@ -572,3 +574,36 @@ describePg('Postgres stores', () => {
     });
   });
 });
+
+// The behavioural contract and the full-middleware flows shared with the
+// in-memory and Redis stores (see store-contract.ts / full-flow.ts). They run
+// from this file, after the suite above, because all of them truncate the same
+// tables and Vitest runs files in parallel workers.
+if (DATABASE_URL) {
+  let sharedSubs: PostgresSubscriptionStore | undefined;
+  let sharedPurchases: PostgresPurchaseStore | undefined;
+  let sharedPool: import('pg').Pool | undefined;
+  const postgresFactory: StoreFactory = {
+    name: 'postgres',
+    async setup() {
+      const pg = await import('pg');
+      const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
+      sharedPool = new Pool({ connectionString: DATABASE_URL, max: 2 });
+      sharedSubs = new PostgresSubscriptionStore(DATABASE_URL);
+      sharedPurchases = new PostgresPurchaseStore(DATABASE_URL);
+      await sharedSubs.initSchema();
+      await sharedPurchases.initSchema();
+    },
+    async reset() {
+      await sharedPool!.query('TRUNCATE onesub_subscriptions, onesub_purchases');
+      return { subs: sharedSubs!, purchases: sharedPurchases! };
+    },
+    async teardown() {
+      await sharedSubs?.close();
+      await sharedPurchases?.close();
+      await sharedPool?.end();
+    },
+  };
+  describeStoreContract(postgresFactory);
+  describeFullFlow(postgresFactory);
+}

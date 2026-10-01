@@ -1,5 +1,5 @@
 import type { SubscriptionInfo, PurchaseInfo } from '@onesub/shared';
-import { PURCHASE_TYPE, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { ENTITLED_SUBSCRIPTION_STATUSES, PURCHASE_TYPE, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type {
   SubscriptionStore,
   PurchaseStore,
@@ -12,8 +12,21 @@ import type {
 } from '../store.js';
 // Shared with the in-memory reduction so both paths agree on UTC day boundaries.
 import { emptyDailyBuckets } from '../metrics-aggregate.js';
+import { purchaseConflict } from '../store.js';
 import { SUBSCRIPTIONS_SCHEMA_SQL, PURCHASES_SCHEMA_SQL } from './schema.js';
 import { log } from '../logger.js';
+
+/**
+ * The partial unique index on `(user_id, product_id) WHERE type =
+ * 'non_consumable'` firing. Rethrown as the typed conflict every store uses, so
+ * a route answers 409 instead of passing a raw `23505` through as a 500.
+ */
+function asNonConsumableConflict(err: unknown): unknown {
+  const e = err as { code?: unknown; constraint?: unknown } | null;
+  return e?.code === '23505' && e.constraint === 'idx_onesub_purchases_non_consumable'
+    ? purchaseConflict('NON_CONSUMABLE_ALREADY_OWNED')
+    : err;
+}
 
 /**
  * Shared pool construction for both Postgres stores.
@@ -88,8 +101,8 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
       `INSERT INTO onesub_subscriptions
          (original_transaction_id, user_id, product_id, platform, status,
           expires_at, purchased_at, will_renew, linked_purchase_token,
-          auto_resume_time, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+          auto_resume_time, state_as_of, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
        ON CONFLICT (original_transaction_id) DO UPDATE SET
          user_id    = EXCLUDED.user_id,
          product_id = EXCLUDED.product_id,
@@ -100,7 +113,13 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
          will_renew = EXCLUDED.will_renew,
          linked_purchase_token = EXCLUDED.linked_purchase_token,
          auto_resume_time = EXCLUDED.auto_resume_time,
-         updated_at = NOW()`,
+         state_as_of = EXCLUDED.state_as_of,
+         updated_at = NOW()
+       -- Never roll back to an older snapshot (lifecycle.ts). In the statement
+       -- itself, so concurrent deliveries cannot both pass a check and race.
+       WHERE onesub_subscriptions.state_as_of IS NULL
+          OR EXCLUDED.state_as_of IS NULL
+          OR EXCLUDED.state_as_of >= onesub_subscriptions.state_as_of`,
       [
         sub.originalTransactionId,
         sub.userId,
@@ -112,6 +131,7 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
         sub.willRenew,
         sub.linkedPurchaseToken ?? null,
         sub.autoResumeTime ?? null,
+        sub.stateAsOf ?? null,
       ]
     );
   }
@@ -237,9 +257,10 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     const result = await pool.query<{ product_id: string; platform: string; status: string; n: string }>(
       `SELECT product_id, platform, status, COUNT(*)::text AS n
          FROM onesub_subscriptions
-        WHERE status IN ($1, $2) AND expires_at > $3
+        WHERE status = ANY($1::text[]) AND expires_at > $2
         GROUP BY product_id, platform, status`,
-      [SUBSCRIPTION_STATUS.ACTIVE, SUBSCRIPTION_STATUS.GRACE_PERIOD, now],
+      // SQL form of isSubscriptionEntitled — tested against the in-memory reduction.
+      [ENTITLED_SUBSCRIPTION_STATUSES, now],
     );
 
     const byProduct: Record<string, number> = {};
@@ -335,6 +356,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
     // atomically: under two concurrent saves of the same transactionId only
     // one INSERT wins, and the loser gets zero rows back instead of a raw
     // PK-violation error (which used to surface as a 500).
+    // ON CONFLICT names only the PK, so the non-consumable index still raises.
     const inserted = await pool.query(
       `INSERT INTO onesub_purchases
          (transaction_id, user_id, product_id, platform, type, quantity, purchased_at)
@@ -350,7 +372,9 @@ export class PostgresPurchaseStore implements PurchaseStore {
         purchase.quantity,
         purchase.purchasedAt,
       ],
-    );
+    ).catch((err: unknown) => {
+      throw asNonConsumableConflict(err);
+    });
     if (inserted.rows.length > 0) return; // fresh row inserted — we own it
 
     // Row already existed — enforce ownership.
@@ -360,9 +384,7 @@ export class PostgresPurchaseStore implements PurchaseStore {
     );
     const owner = existing.rows[0]?.user_id;
     if (owner !== undefined && owner !== purchase.userId) {
-      const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
-      err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
-      throw err;
+      throw purchaseConflict('TRANSACTION_BELONGS_TO_OTHER_USER');
     }
     // same user — idempotent no-op (owner === undefined means the row was
     // deleted between the INSERT and the SELECT; treat as no-op as well)
@@ -429,7 +451,9 @@ export class PostgresPurchaseStore implements PurchaseStore {
     const result = await pool.query(
       `UPDATE onesub_purchases SET user_id = $2 WHERE transaction_id = $1`,
       [transactionId, newUserId],
-    );
+    ).catch((err: unknown) => {
+      throw asNonConsumableConflict(err);
+    });
     return (result.rowCount ?? 0) > 0;
   }
 
@@ -586,6 +610,7 @@ interface DbRow {
   will_renew: boolean;
   linked_purchase_token: string | null;
   auto_resume_time: Date | null;
+  state_as_of: Date | null;
 }
 
 function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
@@ -600,6 +625,7 @@ function rowToSubscriptionInfo(row: DbRow): SubscriptionInfo {
     willRenew: row.will_renew,
     linkedPurchaseToken: row.linked_purchase_token ?? undefined,
     autoResumeTime: row.auto_resume_time?.toISOString(),
+    stateAsOf: row.state_as_of?.toISOString(),
   };
 }
 

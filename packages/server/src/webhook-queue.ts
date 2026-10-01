@@ -145,6 +145,18 @@ export interface BullMQWebhookQueueOptions {
   concurrency?: number;
 }
 
+
+/**
+ * Queue-level dedup key for a webhook job. BullMQ (>=5) rejects a custom jobId
+ * that contains `:` unless it splits into exactly three parts, and rejects one
+ * that parses as an integer — `apple:<uuid>` failed the first rule, so every
+ * enqueue threw. `-` cannot collide across providers either: the provider name
+ * is a fixed prefix.
+ */
+export function webhookJobId(job: Pick<WebhookJob, 'provider' | 'eventId'>): string {
+  return `${job.provider}-${job.eventId}`;
+}
+
 export class BullMQWebhookQueue implements WebhookQueue {
   private queueName: string;
   private maxAttempts: number;
@@ -236,7 +248,7 @@ export class BullMQWebhookQueue implements WebhookQueue {
       backoff: { type: 'exponential', delay: this.backoffMs },
       removeOnFail: false,
       removeOnComplete: { age: 24 * 60 * 60, count: 1000 },
-      jobId: `${job.provider}:${job.eventId}`,
+      jobId: webhookJobId(job),
     });
   }
 

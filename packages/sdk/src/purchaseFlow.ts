@@ -253,11 +253,14 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         await deps.RNIap.finishTransaction({
           purchase,
           isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
-        }).catch(() => {
-          /* ignore */
+        }).catch((err: unknown) => {
+          // The server already recorded it, so the replay is idempotent — but on
+          // Android a failed consume leaves the SKU owned and blocks a rebuy
+          // until it does, which is worth being able to see.
+          deps.logger?.warn('purchase finishTransaction failed; transaction will replay', err);
         });
         inFlight?.resolve(result);
-      } else if (result.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
+      } else if (isAlreadyOwnedResponse(result)) {
         // Defensive fallback for servers still returning the legacy 409 instead
         // of an idempotent `restored` success (see server purchase route). Carry
         // the store transactionId through — an object missing it violates the
@@ -272,8 +275,8 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
         await deps.RNIap.finishTransaction({
           purchase,
           isConsumable: purchaseType === PURCHASE_TYPE.CONSUMABLE,
-        }).catch(() => {
-          /* ignore */
+        }).catch((err: unknown) => {
+          deps.logger?.warn('purchase finishTransaction failed; transaction will replay', err);
         });
         inFlight?.resolve({
           valid: true,
@@ -308,6 +311,19 @@ export async function handlePurchaseEvent(purchase: any, deps: PurchaseFlowDeps)
     // a subsequent fresh event can still resolve it.
     if (inFlight) deps.inFlight.delete(productId);
   }
+}
+
+/**
+ * A validation response meaning "this non-consumable is already owned", from a
+ * legacy server that answers 409 instead of an idempotent `restored` success.
+ * Matched on the machine-readable `errorCode`; the `error` comparison stays for
+ * servers older than `errorCode`, which put the code in the message.
+ */
+export function isAlreadyOwnedResponse(result: { error?: string; errorCode?: string }): boolean {
+  return (
+    result.errorCode === ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED ||
+    result.error === ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED
+  );
 }
 
 /**

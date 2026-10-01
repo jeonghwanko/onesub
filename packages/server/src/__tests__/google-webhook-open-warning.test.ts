@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { OneSubLogger, OneSubServerConfig } from '@onesub/shared';
 import { createOneSubMiddleware } from '../index.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
+import { FAKE_SERVICE_ACCOUNT_KEY } from './test-utils.js';
 
 /** Captures what the configured logger was told. */
 function recordingLogger() {
@@ -64,7 +65,7 @@ const OPTED_IN = 'runs unauthenticated by explicit opt-in';
 describe('unauthenticated Google webhook', () => {
   it('says the route will refuse traffic when no pushAudience is set', () => {
     const { logger, joined } = recordingLogger();
-    build({ google: { packageName: 'com.example.app', serviceAccountKey: '{}' } }, logger);
+    build({ google: { packageName: 'com.example.app', serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY } }, logger);
 
     expect(joined()).toContain(WILL_REJECT);
     expect(joined()).toContain('google.pushAudience');
@@ -83,7 +84,7 @@ describe('unauthenticated Google webhook', () => {
       {
         google: {
           packageName: 'com.example.app',
-          serviceAccountKey: '{}',
+          serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY,
           allowUnauthenticatedWebhook: true,
         },
       },
@@ -101,7 +102,7 @@ describe('unauthenticated Google webhook', () => {
       {
         google: {
           packageName: 'com.example.app',
-          serviceAccountKey: '{}',
+          serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY,
           pushAudience: 'https://api.example.com/onesub/webhook/google',
         },
       },
@@ -160,7 +161,7 @@ describe('open mode (no packageName declared)', () => {
 
   it('warns when google is configured without a packageName', () => {
     const { logger, joined } = recordingLogger();
-    build({ google: { serviceAccountKey: '{}' } as OneSubServerConfig['google'] }, logger);
+    build({ google: { serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY } as OneSubServerConfig['google'] }, logger);
     expect(joined()).toContain('open mode');
   });
 
@@ -170,7 +171,7 @@ describe('open mode (no packageName declared)', () => {
       {
         google: {
           packageName: 'com.example.app',
-          serviceAccountKey: '{}',
+          serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY,
           pushAudience: 'https://api.example.com/onesub/webhook/google',
         },
       },

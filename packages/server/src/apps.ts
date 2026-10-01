@@ -1,4 +1,5 @@
-import type { OneSubAppConfig, OneSubServerConfig } from '@onesub/shared';
+import type { OneSubAppConfig, OneSubErrorCode, OneSubServerConfig } from '@onesub/shared';
+import { ONESUB_ERROR_CODE } from '@onesub/shared';
 import { log } from './logger.js';
 
 /**
@@ -18,6 +19,12 @@ export interface AppRegistry {
    * `config.google` without knowing about multi-app.
    */
   configFor(hint: AppHint): OneSubServerConfig;
+  /**
+   * Like `configFor`, but `undefined` when the hint names no app this instance
+   * serves — so a route can tell "you sent an app we don't host" (the caller's
+   * fault, 4xx) apart from "this app has no Apple/Google config" (ours, 5xx).
+   */
+  resolve(hint: AppHint): OneSubServerConfig | undefined;
 }
 
 export interface AppHint {
@@ -97,19 +104,31 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
     return defaultApp;
   }
 
+  function resolve(hint: AppHint): OneSubServerConfig | undefined {
+    const app = match(hint);
+    return app ? { ...config, apple: app.apple, google: app.google } : undefined;
+  }
+
   return {
     apps,
     defaultApp,
     configFor(hint: AppHint): OneSubServerConfig {
-      const app = match(hint);
-      if (!app) {
-        // Hand back a config with no providers: the route then reports the usual
-        // "config missing" error rather than validating against the wrong app.
-        return { ...config, apple: undefined, google: undefined };
-      }
-      return { ...config, apple: app.apple, google: app.google };
+      // No match: hand back a config with no providers, so the caller reports
+      // "config missing" rather than validating against the wrong app.
+      return resolve(hint) ?? { ...config, apple: undefined, google: undefined };
     },
+    resolve,
   };
+}
+
+/**
+ * The 400 a validation route answers with when the request named an app — by
+ * appId, or by the bundleId inside its Apple receipt — that `resolve` could not
+ * match to one this instance hosts.
+ */
+export function unknownAppError(hint: AppHint): { code: OneSubErrorCode; message: string } {
+  if (hint.appId) return { code: ONESUB_ERROR_CODE.INVALID_INPUT, message: 'Unknown appId' };
+  return { code: ONESUB_ERROR_CODE.BUNDLE_ID_MISMATCH, message: 'Bundle ID mismatch' };
 }
 
 /**

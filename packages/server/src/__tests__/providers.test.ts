@@ -12,9 +12,11 @@ import {
 } from '../providers/apple.js';
 import {
   validateGoogleProductReceipt,
+  validateGoogleReceipt,
   acknowledgeGoogleSubscription,
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
+import { ProviderUnavailableError } from '../providers/errors.js';
 import { urlHost } from './test-utils.js';
 
 // ── Apple helpers ──────────────────────────────────────────────────────────
@@ -491,7 +493,7 @@ describe('validateGoogleProductReceipt', () => {
           text: async () => '',
         } as Response;
       }
-      return { ok: false, text: async () => 'Not Found', json: async () => ({}) } as Response;
+      return { ok: false, status: 404, text: async () => 'Not Found', json: async () => ({}) } as Response;
     });
 
     const result = await validateGoogleProductReceipt(
@@ -500,6 +502,36 @@ describe('validateGoogleProductReceipt', () => {
       makeGoogleConfig(),
     );
     expect(result).toBeNull();
+  });
+
+  it.each([500, 503, 429, 401])(
+    'throws ProviderUnavailableError (not null) when Play API answers %i',
+    async (status) => {
+      vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+        if (urlHost(url) === 'oauth2.googleapis.com') {
+          return {
+            ok: true,
+            json: async () => ({ access_token: 'tok', expires_in: 3600 }),
+            text: async () => '',
+          } as Response;
+        }
+        return { ok: false, status, text: async () => 'boom', json: async () => ({}) } as Response;
+      });
+
+      await expect(
+        validateGoogleProductReceipt('token_x', 'credits_100', makeGoogleConfig()),
+      ).rejects.toBeInstanceOf(ProviderUnavailableError);
+      await expect(
+        validateGoogleReceipt('token_x', 'pro_monthly', makeGoogleConfig()),
+      ).rejects.toBeInstanceOf(ProviderUnavailableError);
+    },
+  );
+
+  it('throws ProviderUnavailableError when the network call itself fails', async () => {
+    vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+    await expect(
+      validateGoogleProductReceipt('token_x', 'credits_100', makeGoogleConfig()),
+    ).rejects.toBeInstanceOf(ProviderUnavailableError);
   });
 });
 

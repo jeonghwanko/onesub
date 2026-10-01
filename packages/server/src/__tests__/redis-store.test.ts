@@ -216,17 +216,17 @@ describe('RedisPurchaseStore', () => {
   it('getPurchasesForProduct returns most-recent-first', async () => {
     // The user_product index is an unordered SET, unlike the per-user sorted
     // set, so the ordering contract depends on an explicit sort.
-    await store.savePurchase({ ...basePurchase, transactionId: 'mid', productId: 'coins_100', purchasedAt: '2026-04-10T00:00:00.000Z' });
-    await store.savePurchase({ ...basePurchase, transactionId: 'newest', productId: 'coins_100', purchasedAt: '2026-08-01T00:00:00.000Z' });
-    await store.savePurchase({ ...basePurchase, transactionId: 'oldest', productId: 'coins_100', purchasedAt: '2026-01-01T00:00:00.000Z' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'mid', productId: 'coins_100', type: 'consumable', purchasedAt: '2026-04-10T00:00:00.000Z' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'newest', productId: 'coins_100', type: 'consumable', purchasedAt: '2026-08-01T00:00:00.000Z' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'oldest', productId: 'coins_100', type: 'consumable', purchasedAt: '2026-01-01T00:00:00.000Z' });
 
     const rows = await store.getPurchasesForProduct('alice', 'coins_100');
     expect(rows.map((p) => p.transactionId)).toEqual(['newest', 'mid', 'oldest']);
   });
 
   it('getPurchasesForProduct reflects deletions and reassignment', async () => {
-    await store.savePurchase({ ...basePurchase, transactionId: 'p-1', productId: 'coins_100' });
-    await store.savePurchase({ ...basePurchase, transactionId: 'p-2', productId: 'coins_100' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-1', productId: 'coins_100', type: 'consumable' });
+    await store.savePurchase({ ...basePurchase, transactionId: 'p-2', productId: 'coins_100', type: 'consumable' });
 
     await store.deletePurchaseByTransactionId('p-1');
     expect(await store.getPurchasesForProduct('alice', 'coins_100')).toHaveLength(1);

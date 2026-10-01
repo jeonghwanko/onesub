@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { runSetup } from '../tools/setup.js';
+import { readFileSync } from 'node:fs';
+import { runSetup, SDK_PACKAGE } from '../tools/setup.js';
 import { runAddPaywall } from '../tools/add-paywall.js';
 import { runTroubleshoot } from '../tools/troubleshoot.js';
 
@@ -70,6 +71,33 @@ describe('onesub_setup tool', () => {
     const text = getText(result);
 
     expect(text).toContain('https://api.example.com');
+  });
+
+  it('installs and imports the SDK under its published npm name', async () => {
+    const sdkName = (JSON.parse(readFileSync(new URL('../../../sdk/package.json', import.meta.url), 'utf-8')) as { name: string }).name;
+    expect(SDK_PACKAGE).toBe(sdkName);
+
+    const text = getText(await runSetup(BASE_SETUP_ARGS));
+    expect(text).toContain(`from '${sdkName}'`);
+    expect(text).toContain(`expo install ${sdkName}`);
+    expect(text).not.toMatch(/@onesub\/sdk\b/);
+
+    const paywall = getText(await runAddPaywall(BASE_PAYWALL_ARGS));
+    expect(paywall).not.toMatch(/@onesub\/sdk\b/);
+  });
+
+  it('passes the required userId prop to OneSubProvider', async () => {
+    const text = getText(await runSetup(BASE_SETUP_ARGS));
+    expect(text).toMatch(/<OneSubProvider[\s\S]*?userId=\{userId\}[\s\S]*?>/);
+  });
+
+  it('gives the generated server a durable store, not the in-memory default', async () => {
+    const text = getText(await runSetup(BASE_SETUP_ARGS));
+    expect(text).toContain('new PostgresSubscriptionStore(');
+    expect(text).toContain('new PostgresPurchaseStore(');
+    expect(text).toMatch(/^\s+store,$/m);
+    expect(text).toMatch(/^\s+purchaseStore,$/m);
+    expect(text).toContain('pushAudience');
   });
 
   it('returns content array with at least one text entry', async () => {

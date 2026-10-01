@@ -46,7 +46,7 @@ import {
 | `canceled` | ❌ revoked | refunded or revoked by store |
 | `none` | ❌ revoked | no record |
 
-The status route's `active: boolean` is computed as `(status === 'active' || status === 'grace_period') && expiresAt > now`. Hosts that branch on the raw `status` string get the full granularity above (e.g. `paused` → "재개 예정" UX, `on_hold` → "결제 정보 업데이트" UX).
+`active` is `isSubscriptionEntitled(sub)`, exported from this package: `(status === 'active' || status === 'grace_period') && expiresAt > now`. The server's status route, entitlements and metrics all use it, and so can a host. The status route evaluates every subscription the user has and reports the most recent one that grants access. For an Apple grace period, `expiresAt` is the end of the grace period. Hosts that branch on the raw `status` string get the full granularity above (e.g. `paused` → "재개 예정" UX, `on_hold` → "결제 정보 업데이트" UX).
 
 All type definitions are single-source-of-truth. Don't re-declare them in consuming packages — derive from these.
 

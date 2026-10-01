@@ -76,6 +76,15 @@ export interface SubscriptionInfo {
    */
   autoResumeTime?: string;
   /**
+   * ISO time of the newest store-state snapshot applied to this record: a
+   * webhook's own event time (Apple `signedDate`, Google `eventTimeMillis`),
+   * an Apple transaction's `signedDate`, or the moment the server read live
+   * state from Google Play. The server applies a snapshot only if it is not
+   * older than this, so an out-of-order or replayed notification cannot roll
+   * the record back. Undefined on records written before 0.28.0.
+   */
+  stateAsOf?: string;
+  /**
    * Account identity baked into the receipt at purchase time (Apple
    * `appAccountToken` / Google `obfuscatedExternalAccountId`). Transient:
    * populated by the receipt validators, consumed by the validate route's
@@ -111,6 +120,12 @@ export interface AppleNotificationPayload {
    * https://developer.apple.com/documentation/appstoreservernotifications/responsebodyv2decodedpayload
    */
   notificationUUID?: string;
+  /**
+   * When the App Store signed this notification (ms). Stable across retries;
+   * Apple: of several notifications for one transaction, the newest signedDate
+   * carries the most recent state.
+   */
+  signedDate?: number;
   data: {
     signedTransactionInfo: string;
     signedRenewalInfo: string;
@@ -336,7 +351,13 @@ export interface OneSubServerConfig {
      */
     onPriceChangeConfirmed?: (ctx: GooglePriceChangeContext) => void | Promise<void>;
   };
-  database: {
+  /**
+   * @deprecated Not read by the server. Persistence comes from the `store` /
+   * `purchaseStore` you pass to `createOneSubMiddleware` — e.g.
+   * `new PostgresSubscriptionStore(url)`. Configuring only this field leaves
+   * every record in memory. Optional since 0.28.0; still accepted.
+   */
+  database?: {
     url: string;
   };
   /**

@@ -1,3 +1,4 @@
+import { isStaleSnapshot } from './lifecycle.js';
 import type { SubscriptionInfo, PurchaseInfo, SubscriptionStatus, Platform } from '@onesub/shared';
 
 /** Filter options for SubscriptionStore.listFiltered. All fields optional. */
@@ -82,6 +83,13 @@ export interface NonConsumablePurchaseAggregate {
  * by passing `store` in OneSubServerConfig.
  */
 export interface SubscriptionStore {
+  /**
+   * Upsert by `originalTransactionId`. Must not overwrite a stored record whose
+   * `stateAsOf` is newer than `sub.stateAsOf` (see lifecycle.ts), and must make
+   * that check atomically with the write: routes check first, but two deliveries
+   * processed at once would otherwise both pass and the older could land last.
+   * A write without `stateAsOf`, or onto a record without one, always applies.
+   */
   save(sub: SubscriptionInfo): Promise<void>;
   /**
    * Returns the most recent subscription for the user, or null if none exist.
@@ -102,8 +110,8 @@ export interface SubscriptionStore {
    * without pulling the entire table.
    *
    * Filter semantics: each non-undefined field is an AND condition.
-   * Sorting: most-recently-updated first (PostgresStore uses `updated_at DESC`;
-   * InMemoryStore approximates via insertion order with newest at the front).
+   * Sorting: most-recently-updated first, across all users (Postgres
+   * `updated_at DESC`, Redis save-time score, in-memory write order).
    */
   listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult>;
   /**
@@ -147,8 +155,15 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
   // last-written-first so getByUserId returns "most recent" naturally.
   private readonly byUserId = new Map<string, SubscriptionInfo[]>();
   private readonly byTransactionId = new Map<string, SubscriptionInfo>();
+  // Write order across all users, for listFiltered's newest-first contract.
+  // Postgres sorts by `updated_at`, Redis by a save-time score; this is the
+  // same thing without a clock, so two writes in one millisecond still order.
+  private readonly writeSeq = new Map<string, number>();
+  private seq = 0;
 
   async save(sub: SubscriptionInfo): Promise<void> {
+    // Synchronous from here on, so the check and the write cannot interleave.
+    if (isStaleSnapshot(this.byTransactionId.get(sub.originalTransactionId), sub.stateAsOf)) return;
     // If this transaction was previously bound to a different userId (the
     // validate route rebinds ownership on re-validation), remove the stale
     // copy from the old user's index — otherwise webhooks (which update by
@@ -164,6 +179,7 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
     }
 
     this.byTransactionId.set(sub.originalTransactionId, sub);
+    this.writeSeq.set(sub.originalTransactionId, ++this.seq);
 
     const existing = this.byUserId.get(sub.userId) ?? [];
     // Replace any prior record with the same originalTransactionId, then
@@ -193,13 +209,11 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
   async listFiltered(opts: ListFilteredOptions): Promise<ListFilteredResult> {
     const limit = opts.limit ?? 50;
     const offset = opts.offset ?? 0;
-    // Iterate via byUserId so insertion-order is "newest first" within each
-    // user (matches PostgresStore's `updated_at DESC` semantic). Across users
-    // we collect in Map iteration order — stable for a given run.
-    const all: SubscriptionInfo[] = [];
-    for (const list of this.byUserId.values()) {
-      for (const s of list) all.push(s);
-    }
+    // Most-recently-written first across all users, matching Postgres's
+    // `updated_at DESC`. (This used to walk the per-user lists in Map order,
+    // which is newest-first only within a user.)
+    const seqOf = (s: SubscriptionInfo) => this.writeSeq.get(s.originalTransactionId) ?? 0;
+    const all = [...this.byTransactionId.values()].sort((a, b) => seqOf(b) - seqOf(a));
     const filtered = all.filter((s) => {
       if (opts.userId && s.userId !== opts.userId) return false;
       if (opts.status && s.status !== opts.status) return false;
@@ -220,6 +234,12 @@ export class InMemorySubscriptionStore implements SubscriptionStore {
  * Pluggable purchase store interface for consumables and non-consumables.
  */
 export interface PurchaseStore {
+  /**
+   * Record a purchase. Idempotent for the same transactionId and user. Throws
+   * `purchaseConflict(...)` — `TRANSACTION_BELONGS_TO_OTHER_USER` when the
+   * transactionId is another user's, `NON_CONSUMABLE_ALREADY_OWNED` when the
+   * user already holds this non-consumable under a different transactionId.
+   */
   savePurchase(purchase: PurchaseInfo): Promise<void>;
   /**
    * Every purchase for the user, most-recent-first (by `purchasedAt`).
@@ -269,6 +289,8 @@ export interface PurchaseStore {
    * original Apple account, so it's safe to transfer ownership (device
    * reinstall, account migration).
    * Returns true if a row was updated, false if the transactionId was not found.
+   * Throws `NON_CONSUMABLE_ALREADY_OWNED` (and moves nothing) when the new user
+   * already holds this non-consumable.
    */
   reassignPurchase(transactionId: string, newUserId: string): Promise<boolean>;
   /**
@@ -286,6 +308,37 @@ export interface PurchaseStore {
 }
 
 /**
+ * The error a PurchaseStore throws for a rule it enforces. Every built-in store
+ * throws exactly this shape, so routes can map `code` to a status without
+ * knowing which store is behind them:
+ *
+ * - `TRANSACTION_BELONGS_TO_OTHER_USER` — the transactionId is recorded for a
+ *   different user (also the loser of a concurrent claim).
+ * - `NON_CONSUMABLE_ALREADY_OWNED` — the user already has a non-consumable row
+ *   for this product under another transactionId. Postgres enforces this with a
+ *   partial unique index; the other stores check it themselves.
+ */
+export function purchaseConflict(
+  code: 'TRANSACTION_BELONGS_TO_OTHER_USER' | 'NON_CONSUMABLE_ALREADY_OWNED',
+): Error & { code: string } {
+  const err = new Error(code) as Error & { code: string };
+  err.code = code;
+  return err;
+}
+
+/** Insert keeping the list most-recent-first by purchasedAt. */
+function insertByPurchasedAt(list: PurchaseInfo[], purchase: PurchaseInfo): void {
+  const at = Date.parse(purchase.purchasedAt);
+  const idx = list.findIndex((p) => Date.parse(p.purchasedAt) < at);
+  if (idx === -1) list.push(purchase);
+  else list.splice(idx, 0, purchase);
+}
+
+function ownsNonConsumable(list: PurchaseInfo[], productId: string): boolean {
+  return list.some((p) => p.type === 'non_consumable' && p.productId === productId);
+}
+
+/**
  * In-memory implementation of PurchaseStore — suitable for development and testing.
  * Data is lost on process restart.
  */
@@ -296,25 +349,18 @@ export class InMemoryPurchaseStore implements PurchaseStore {
   async savePurchase(purchase: PurchaseInfo): Promise<void> {
     const existing = this.byTransactionId.get(purchase.transactionId);
     if (existing) {
-      if (existing.userId !== purchase.userId) {
-        const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
-        err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
-        throw err;
-      }
+      if (existing.userId !== purchase.userId) throw purchaseConflict('TRANSACTION_BELONGS_TO_OTHER_USER');
       return; // same user — idempotent
     }
-    this.byTransactionId.set(purchase.transactionId, purchase);
     const list = this.byUserId.get(purchase.userId) ?? [];
-    // Insert so the list stays most-recent-first by purchasedAt, matching what
-    // Postgres (`ORDER BY purchased_at DESC`) and Redis (`zrevrange`) return.
-    // This used to push to the end, so the in-memory store — the one behind
-    // `onesub dev` and most tests — handed back the opposite order from the
-    // stores used in production, and `/onesub/purchase/status` changed order
-    // between dev and prod for the same data.
-    const at = Date.parse(purchase.purchasedAt);
-    const idx = list.findIndex((p) => Date.parse(p.purchasedAt) < at);
-    if (idx === -1) list.push(purchase);
-    else list.splice(idx, 0, purchase);
+    if (purchase.type === 'non_consumable' && ownsNonConsumable(list, purchase.productId)) {
+      throw purchaseConflict('NON_CONSUMABLE_ALREADY_OWNED');
+    }
+    this.byTransactionId.set(purchase.transactionId, purchase);
+    // Most-recent-first by purchasedAt, matching what Postgres
+    // (`ORDER BY purchased_at DESC`) and Redis (`zrevrange`) return — so
+    // `/onesub/purchase/status` has the same order in dev and prod.
+    insertByPurchasedAt(list, purchase);
     this.byUserId.set(purchase.userId, list);
   }
 
@@ -344,15 +390,17 @@ export class InMemoryPurchaseStore implements PurchaseStore {
     if (!existing) return false;
     const oldUserId = existing.userId;
     if (oldUserId === newUserId) return true;
+    const newList = this.byUserId.get(newUserId) ?? [];
+    if (existing.type === 'non_consumable' && ownsNonConsumable(newList, existing.productId)) {
+      throw purchaseConflict('NON_CONSUMABLE_ALREADY_OWNED');
+    }
     const updated = { ...existing, userId: newUserId };
     this.byTransactionId.set(transactionId, updated);
     // remove from old userId index
     const oldList = (this.byUserId.get(oldUserId) ?? []).filter((p) => p.transactionId !== transactionId);
     if (oldList.length) this.byUserId.set(oldUserId, oldList);
     else this.byUserId.delete(oldUserId);
-    // add to new userId index
-    const newList = this.byUserId.get(newUserId) ?? [];
-    newList.push(updated);
+    insertByPurchasedAt(newList, updated);
     this.byUserId.set(newUserId, newList);
     return true;
   }

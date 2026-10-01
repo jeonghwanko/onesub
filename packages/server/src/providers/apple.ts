@@ -9,6 +9,7 @@ import type {
 import { SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { APPLE_ROOT_CA_PEMS } from './apple-root-ca.js';
 import { log } from '../logger.js';
+import { isoFromEpochMs, snapshotTimeFromEpochMs } from '../lifecycle.js';
 import { fetchWithTimeout } from '../http.js';
 import { getDefaultCache } from '../cache.js';
 import { VerifiedKeyCache } from './verified-key-cache.js';
@@ -36,6 +37,8 @@ interface AppleTransactionPayload {
   type?: string;               // 'Auto-Renewable Subscription' | 'Consumable' | 'Non-Consumable'
   isUpgraded?: boolean;
   revocationDate?: number;
+  /** When the App Store signed this payload (ms) — the snapshot time. */
+  signedDate?: number;
   [key: string]: unknown;
 }
 
@@ -58,7 +61,29 @@ interface AppleRenewalPayload {
   expirationIntent?: number;   // 1=Customer canceled, 2=Billing error, etc.
   originalTransactionId?: string;
   productId?: string;
+  /** When the App Store signed this renewal info (ms). */
+  signedDate?: number;
+  /** End of the Billing Grace Period (ms), while the subscription is in one. */
+  gracePeriodExpiresDate?: number;
   [key: string]: unknown;
+}
+
+/**
+ * Until when a subscription in this status grants access. During a billing
+ * grace period the paid period has already ended — renewal failed at
+ * `expiresDate` — but Apple says to "continue to provide service through the
+ * grace period", which ends at the renewal info's `gracePeriodExpiresDate`.
+ * Using the transaction's expiry there stored a `grace_period` record that no
+ * longer granted access.
+ */
+function appleAccessExpiresMs(
+  status: SubscriptionInfo['status'],
+  txExpiresMs: number | undefined,
+  renewal: AppleRenewalPayload | null,
+): number | undefined {
+  const graceEnds = renewal?.gracePeriodExpiresDate;
+  if (status === SUBSCRIPTION_STATUS.GRACE_PERIOD && graceEnds && graceEnds > (txExpiresMs ?? 0)) return graceEnds;
+  return txExpiresMs;
 }
 
 function derBase64ToPem(der: string): string {
@@ -245,6 +270,12 @@ function deriveStatus(
 
   if (expires > now) return SUBSCRIPTION_STATUS.ACTIVE;
 
+  // The paid period ended because renewal failed, and Apple is still granting
+  // a billing grace period. Without this, any notification type the webhook
+  // does not map itself (DID_CHANGE_RENEWAL_STATUS, PRICE_INCREASE, …) arriving
+  // during grace re-derived the record as expired and cut access early.
+  if ((renewal?.gracePeriodExpiresDate ?? 0) > now) return SUBSCRIPTION_STATUS.GRACE_PERIOD;
+
   // Expired — check if it was voluntarily canceled
   if (renewal?.autoRenewStatus === 0) return SUBSCRIPTION_STATUS.CANCELED;
 
@@ -313,6 +344,11 @@ export async function validateAppleReceipt(
   const status = deriveStatus(tx, null);
   const purchasedAt = tx.originalPurchaseDate ?? tx.purchaseDate ?? Date.now();
   const appAccountToken = normalizeAppleAppAccountToken(tx.appAccountToken);
+  // A transaction is true as of when it began — its purchaseDate — not when the
+  // device last fetched a signed copy (signedDate). Using purchaseDate keeps a
+  // renewal-info notification signed after the period started (auto-renew off,
+  // billing failure) from looking older than this receipt.
+  const stateAsOf = snapshotTimeFromEpochMs(tx.purchaseDate);
 
   return {
     userId: '',  // caller fills this in from the request body
@@ -323,6 +359,7 @@ export async function validateAppleReceipt(
     originalTransactionId: tx.originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: status === SUBSCRIPTION_STATUS.ACTIVE, // refined by renewal info in webhook
+    ...(stateAsOf ? { stateAsOf } : {}),
     ...(appAccountToken ? { boundAccountId: appAccountToken } : {}),
     // Transient, like boundAccountId: the validate route uses it to decide
     // whether a sandbox-only test override may apply, then strips it.
@@ -509,7 +546,12 @@ export async function decodeAppleNotification(
    * and appAccountToken belong to the family member, not the purchaser.
    */
   inAppOwnershipType: string | null;
+  /** End of the billing grace period, when the renewal info carries one. */
+  gracePeriodExpiresAt: string | null;
 } | null> {
+  // Summary notifications (RENEWAL_EXTENSION/SUMMARY) carry `summary` instead
+  // of `data`, and TEST carries no transaction — nothing to apply for either.
+  if (!payload.data?.signedTransactionInfo) return null;
   const { signedTransactionInfo, signedRenewalInfo } = payload.data;
 
   let tx: AppleTransactionPayload;
@@ -553,6 +595,7 @@ export async function decodeAppleNotification(
     expiresAt: tx.expiresDate ? new Date(tx.expiresDate).toISOString() : null,
     appAccountToken: normalizeAppleAppAccountToken(tx.appAccountToken) ?? null,
     inAppOwnershipType: tx.inAppOwnershipType ?? null,
+    gracePeriodExpiresAt: isoFromEpochMs(renewal?.gracePeriodExpiresDate) ?? null,
   };
 }
 
@@ -840,10 +883,13 @@ export async function fetchAppleSubscriptionStatus(
     productId: tx.productId,
     platform: 'apple',
     status,
-    expiresAt: new Date(tx.expiresDate).toISOString(),
+    expiresAt: new Date(appleAccessExpiresMs(status, tx.expiresDate, renewal)!).toISOString(),
     originalTransactionId,
     purchasedAt: new Date(purchasedAt).toISOString(),
     willRenew: renewal?.autoRenewStatus === 1,
+    // A live read, stamped with Apple's own signing time rather than our clock,
+    // so it orders against notification signedDates without clock skew.
+    stateAsOf: snapshotTimeFromEpochMs(Math.max(tx.signedDate ?? 0, (renewal?.signedDate as number | undefined) ?? 0)) ?? new Date().toISOString(),
   };
 }
 

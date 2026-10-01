@@ -174,6 +174,33 @@ describe('full server in mockMode', () => {
     expect(res.body.errorCode).toBe(ONESUB_ERROR_CODE.RECEIPT_VALIDATION_FAILED);
   });
 
+  it.each(['apple', 'google'] as const)(
+    'reports a %s upstream failure as a retryable 503, not a rejected receipt',
+    async (platform) => {
+      const app = mockApp();
+      const sub = await request(app).post('/onesub/validate').send({
+        platform,
+        receipt: `${MOCK_RECEIPT_PREFIX.NETWORK_ERROR}_sub`,
+        userId: 'user_1',
+        productId: 'pro_monthly',
+      });
+      expect(sub.status).toBe(503);
+      expect(sub.body.errorCode).toBe(ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE);
+      expect(sub.body.valid).toBe(false);
+
+      const purchase = await request(app).post('/onesub/purchase/validate').send({
+        platform,
+        receipt: `${MOCK_RECEIPT_PREFIX.NETWORK_ERROR}_iap`,
+        userId: 'user_1',
+        productId: 'premium',
+        type: 'non_consumable',
+      });
+      expect(purchase.status).toBe(503);
+      expect(purchase.body.errorCode).toBe(ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE);
+      expect(purchase.body.purchase).toBeNull();
+    },
+  );
+
   it('throws when NODE_ENV=production + mockMode is set (fraud guard)', () => {
     const original = process.env['NODE_ENV'];
     process.env['NODE_ENV'] = 'production';
@@ -184,6 +211,45 @@ describe('full server in mockMode', () => {
         store: new InMemorySubscriptionStore(),
         purchaseStore: new InMemoryPurchaseStore(),
       })).toThrow(/mockMode cannot be enabled when NODE_ENV=production/);
+    } finally {
+      if (original === undefined) delete process.env['NODE_ENV'];
+      else process.env['NODE_ENV'] = original;
+    }
+  });
+
+  it('throws when NODE_ENV=production + mockMode is set on an apps[] entry', () => {
+    const original = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'production';
+    try {
+      expect(() => createOneSubMiddleware({
+        database: { url: '' },
+        apple: { bundleId: 'com.test' },
+        apps: [{ id: 'second', google: { packageName: 'com.second', mockMode: true } }],
+        store: new InMemorySubscriptionStore(),
+        purchaseStore: new InMemoryPurchaseStore(),
+      })).toThrow(/mockMode cannot be enabled when NODE_ENV=production/);
+    } finally {
+      if (original === undefined) delete process.env['NODE_ENV'];
+      else process.env['NODE_ENV'] = original;
+    }
+  });
+
+  it('throws when NODE_ENV=production + skipJwsVerification is set, top-level or per app', () => {
+    const original = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'production';
+    try {
+      expect(() => createOneSubMiddleware({
+        database: { url: '' },
+        apple: { bundleId: 'com.test', skipJwsVerification: true },
+        store: new InMemorySubscriptionStore(),
+        purchaseStore: new InMemoryPurchaseStore(),
+      })).toThrow(/skipJwsVerification cannot be enabled when NODE_ENV=production/);
+      expect(() => createOneSubMiddleware({
+        database: { url: '' },
+        apps: [{ id: 'a', apple: { bundleId: 'com.a', skipJwsVerification: true } }],
+        store: new InMemorySubscriptionStore(),
+        purchaseStore: new InMemoryPurchaseStore(),
+      })).toThrow(/skipJwsVerification cannot be enabled when NODE_ENV=production/);
     } finally {
       if (original === undefined) delete process.env['NODE_ENV'];
       else process.env['NODE_ENV'] = original;

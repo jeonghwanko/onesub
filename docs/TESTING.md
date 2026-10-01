@@ -35,6 +35,21 @@ behavior, and their message reads as a puzzle unless you know that:
 The schema test strips SQL comments, collapses whitespace, and does a normalized substring check — it
 also strips `\r` first, so a CRLF checkout does not break it.
 
+A third suite holds the three store implementations to each other.
+`packages/server/src/__tests__/store-contract.ts` defines one behavioural contract for
+`SubscriptionStore` and `PurchaseStore`: ordering, rebind cleanup, ownership and non-consumable
+conflicts, deletes, and pagination. `store-contract.test.ts` runs it against the in-memory store and
+against Redis on `ioredis-mock`. `postgres-store.test.ts` runs it against Postgres. When you change a
+store's behaviour, change the contract, and all three stores must then pass it.
+
+`packages/server/src/__tests__/full-flow.ts` walks one user through whole lifecycles via
+`createOneSubMiddleware` on the same three stores, and reads the result back through the status and
+entitlement routes. The Apple lifecycle covers validation, renewal, a late retry, grace period,
+refund and a replayed receipt; the one-time purchase flow covers retry, restore, consumables and an
+outage. It runs from `full-flow.test.ts`, and Postgres runs it from `postgres-store.test.ts`. Unit and
+router tests check each step alone; this is where a step that leaves the record in a state the next
+step mishandles shows up.
+
 Note what the schema test does **not** prove: it compares two pieces of SQL to each other as text, so
 it fails when they drift apart but passes when both are wrong. Executing them is
 `postgres-store.test.ts` below.
@@ -166,7 +181,7 @@ store routes without store credentials.
 | `MOCK_EXPIRED...` | Rejected as expired |
 | `MOCK_INVALID...` | Rejected as invalid |
 | `MOCK_BAD_SIG...` | Rejected as bad signature/integrity |
-| `MOCK_NETWORK_ERROR...` | Throws a simulated upstream network failure |
+| `MOCK_NETWORK_ERROR...` | Simulates a store outage: the route answers `503 PROVIDER_UNAVAILABLE` |
 
 The same receipt produces the same transaction ID, which makes replay/idempotency tests stable.
 Append `#token=<value>` to exercise account-binding validation.

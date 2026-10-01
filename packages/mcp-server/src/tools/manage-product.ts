@@ -27,6 +27,10 @@ export const manageProductInputSchema = {
   appleBundleId: z.string().optional().describe('iOS bundle ID (used to resolve App ID if appleAppId is not provided)'),
   googlePackageName: z.string().optional().describe('Android package name'),
   googleServiceAccountKey: z.string().optional().describe('Google service account JSON key'),
+  confirm: z
+    .boolean()
+    .optional()
+    .describe('Must be true for action="delete". Without it the tool only reports what would be deleted.'),
 };
 
 type ManageProductArgs = {
@@ -42,11 +46,12 @@ type ManageProductArgs = {
   appleBundleId?: string;
   googlePackageName?: string;
   googleServiceAccountKey?: string;
+  confirm?: boolean;
 };
 
 export async function runManageProduct(
   args: ManageProductArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   const needsApple = args.platform === 'apple' || args.platform === 'both';
   const needsGoogle = args.platform === 'google' || args.platform === 'both';
 
@@ -58,6 +63,25 @@ export async function runManageProduct(
   if (args.action === 'update' && !args.name) {
     return {
       content: [{ type: 'text', text: '**Error:** `name` is required for the update action.' }],
+      isError: true,
+    };
+  }
+
+  // Deleting a store product is irreversible, and an agent can reach this tool
+  // without the user having asked for a delete. Require an explicit opt-in.
+  if (args.action === 'delete' && args.confirm !== true) {
+    const platforms = [needsApple && 'Apple App Store Connect', needsGoogle && 'Google Play Console'].filter(Boolean).join(' and ');
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          '**Not deleted — confirmation required.**',
+          '',
+          `This would permanently delete \`${args.productId}\` (${args.productType}) from ${platforms}.`,
+          'Confirm with the user, then call again with `confirm: true`.',
+        ].join('\n'),
+      }],
+      isError: true,
     };
   }
 
@@ -129,7 +153,11 @@ export async function runManageProduct(
     googleConfigError,
   });
 
-  return { content: [{ type: 'text', text }] };
+  const anyFailed =
+    (needsApple && (!!appleConfigError || appleResult?.success === false)) ||
+    (needsGoogle && (!!googleConfigError || googleResult?.success === false));
+
+  return { content: [{ type: 'text', text }], ...(anyFailed ? { isError: true } : {}) };
 }
 
 function buildManageOutput(opts: {

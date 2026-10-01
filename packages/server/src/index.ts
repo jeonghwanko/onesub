@@ -12,7 +12,10 @@ import { createAdminRouter } from './routes/admin.js';
 import { createEntitlementRouter } from './routes/entitlements.js';
 import { createMetricsRouter } from './routes/metrics.js';
 import { createAppleOfferRouter } from './routes/apple-offer.js';
-import { setLogger } from './logger.js';
+import { setLogger, log } from './logger.js';
+import { oneSubErrorHandler } from './errors.js';
+import { assertValidConfig } from './config-check.js';
+import { PostgresSubscriptionStore, PostgresPurchaseStore } from './stores/postgres.js';
 import type { CacheAdapter } from './cache.js';
 import { setDefaultCache } from './cache.js';
 import type { WebhookEventStore } from './webhook-events.js';
@@ -83,18 +86,32 @@ export interface OneSubMiddlewareConfig extends OneSubServerConfig {
  *   POST /onesub/webhook/apple
  *   POST /onesub/webhook/google
  */
-export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
-  setLogger(config.logger);
-
-  // Hard guard — mockMode accepts ANY receipt as valid. Letting this run on
-  // a production server would be a fraud disaster. `skipJwsVerification` has
-  // a similar shape but only degrades Apple signature checking; this one is
-  // strictly worse, so the check is an error, not a warning.
-  if ((config.apple?.mockMode || config.google?.mockMode) && process.env['NODE_ENV'] === 'production') {
+/**
+ * Hard guard — mockMode accepts ANY receipt as valid, and skipJwsVerification
+ * accepts any self-made Apple JWS. Either on a production server is a fraud
+ * disaster, so both are errors, not warnings. Every app is checked: a dev mode
+ * on one `apps[]` entry is just as exploitable as one at the top level.
+ */
+function assertNoDevModesInProduction(config: OneSubServerConfig): void {
+  if (process.env['NODE_ENV'] !== 'production') return;
+  const apps = [{ apple: config.apple, google: config.google }, ...(config.apps ?? [])];
+  if (apps.some((a) => a.apple?.mockMode || a.google?.mockMode)) {
     throw new Error(
       '[onesub] apple.mockMode / google.mockMode cannot be enabled when NODE_ENV=production — these modes accept any receipt as valid.',
     );
   }
+  if (apps.some((a) => a.apple?.skipJwsVerification)) {
+    throw new Error(
+      '[onesub] apple.skipJwsVerification cannot be enabled when NODE_ENV=production — it accepts unsigned Apple receipts and notifications.',
+    );
+  }
+}
+
+export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
+  setLogger(config.logger);
+
+  assertNoDevModesInProduction(config);
+  assertValidConfig(config);
 
   // Google's webhook only verifies the Pub/Sub token when an app declares a
   // pushAudience, and serves any packageName when none declares one. Both are
@@ -137,6 +154,9 @@ export function createOneSubMiddleware(config: OneSubMiddlewareConfig): Router {
   // Apple Promotional Offer signing — only mounted when offerKeyId + offerPrivateKey are set
   const appleOfferRouter = createAppleOfferRouter(config);
   if (appleOfferRouter) router.use(appleOfferRouter);
+
+  // Must stay last: it only sees errors from the routers mounted above.
+  router.use(oneSubErrorHandler);
 
   return router;
 }
@@ -208,6 +228,8 @@ export {
   signApplePromotionalOffer,
 } from './providers/apple.js';
 export { validateGoogleReceipt } from './providers/google.js';
+// Thrown by validateGoogleReceipt when Play cannot answer (not a verdict on the receipt).
+export { ProviderUnavailableError } from './providers/errors.js';
 
 // Entitlement evaluator — exported so hosts can evaluate entitlements
 // in-process (e.g. from non-HTTP background workers, custom routes).
@@ -244,15 +266,27 @@ if (isMain) {
           serviceAccountKey: process.env['GOOGLE_SERVICE_ACCOUNT_KEY'],
         }
       : undefined,
-    database: {
-      url: process.env['DATABASE_URL'] ?? '',
-    },
     webhookSecret: process.env['WEBHOOK_SECRET'],
   };
 
   const port = process.env['PORT'] ? parseInt(process.env['PORT'], 10) : DEFAULT_PORT;
 
-  createOneSubServer(config).listen(port, () => {
-    console.log(`[onesub] Server listening on port ${port}`);
-  });
+  // DATABASE_URL used to be read into `database.url`, which nothing consumes, so
+  // this entrypoint kept everything in memory with a database configured. Use it.
+  const dbUrl = process.env['DATABASE_URL'];
+  const store = dbUrl ? new PostgresSubscriptionStore(dbUrl) : undefined;
+  const purchaseStore = dbUrl ? new PostgresPurchaseStore(dbUrl) : undefined;
+  if (!dbUrl) log.warn('[onesub] DATABASE_URL is not set — state is kept in memory and lost on restart.');
+
+  // No top-level await: this file is also the CommonJS bundle.
+  Promise.all([store?.initSchema(), purchaseStore?.initSchema()])
+    .then(() => {
+      createOneSubServer({ ...config, store, purchaseStore }).listen(port, () => {
+        console.log(`[onesub] Server listening on port ${port}`);
+      });
+    })
+    .catch((err: unknown) => {
+      console.error('[onesub] Failed to start:', err);
+      process.exit(1);
+    });
 }

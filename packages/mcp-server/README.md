@@ -25,9 +25,9 @@ Add to your MCP client config (Claude Code, Cursor, Zed, etc.):
 | `onesub_add_paywall` | Generate a `<Paywall />` component wired to `useOneSub()` |
 | `onesub_check_status` | Query subscription status for a given `userId` |
 | `onesub_troubleshoot` | Diagnose common IAP problems (receipt format, bundle ID mismatch, sandbox rejection) |
-| `onesub_create_product` | Create a subscription, consumable, or non-consumable on one or both stores, including regional prices |
+| `onesub_create_product` | Create a subscription, consumable, or non-consumable on one or both stores, including regional prices. `price` is an integer in the smallest unit (`499` for $4.99). Refuses a product ID that already exists |
 | `onesub_list_products` | List subscriptions and one-time products from one or both stores |
-| `onesub_manage_product` | Rename or delete a store product |
+| `onesub_manage_product` | Rename or delete a store product. Delete is irreversible and only runs with `confirm: true`; without it the tool reports what it would delete |
 | `onesub_view_subscribers` | Query one user, or fetch admin-gated aggregate and subscription-list data |
 | `onesub_simulate_purchase` | Send mock receipt scenarios to a development server |
 | `onesub_simulate_webhook` | Drive Apple/Google lifecycle transitions with development webhook fixtures |
@@ -44,6 +44,10 @@ Add to your MCP client config (Claude Code, Cursor, Zed, etc.):
 > "Simulate a Google subscription entering grace period, then inspect the user's state."
 
 The MCP server runs over stdio; no network port is opened.
+
+A tool call that fails, or a delete that was not confirmed, comes back with `isError: true`, so an
+agent cannot mistake it for success. The store-writing tools carry MCP `destructiveHint` /
+`openWorldHint` annotations, which clients use to ask before running them.
 
 For longer copy-ready prompts, local mock workflows, and a read-before-write pattern for store
 product changes, see [`../../docs/AI-WORKFLOW.md`](../../docs/AI-WORKFLOW.md).

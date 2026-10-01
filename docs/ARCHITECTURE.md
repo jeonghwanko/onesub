@@ -198,10 +198,12 @@ interface SubscriptionInfo {
   // ...existing fields
   linkedPurchaseToken?: string;   // Google plan upgrade chain (0.8.0+, populated only when chain exists)
   autoResumeTime?: string;        // RFC3339, populated only when status === 'paused' (0.9.0+)
+  stateAsOf?: string;             // time of the newest store-state snapshot applied (0.28.0+) — see Lifecycle State Machine
 }
 ```
 
-Postgres columns added in `0.8.0` (`linked_purchase_token`) and `0.9.0` (`auto_resume_time`) are auto-backfilled by `initSchema()` via `ALTER TABLE IF NOT EXISTS` — safe to upgrade in place.
+Postgres columns added in `0.8.0` (`linked_purchase_token`), `0.9.0` (`auto_resume_time`) and `0.28.0`
+(`state_as_of`) are auto-backfilled by `initSchema()` via `ALTER TABLE IF NOT EXISTS` — safe to upgrade in place.
 
 Implementations:
 - `InMemorySubscriptionStore` / `InMemoryPurchaseStore` — development/testing only
@@ -215,13 +217,21 @@ of the request path. BullMQ jobs that exhaust retries are exposed through the ad
 
 ### Non-consumable Duplicate Prevention
 
-PostgreSQL enforces a partial unique index:
-```sql
-CREATE UNIQUE INDEX idx_onesub_purchases_non_consumable
-  ON onesub_purchases (user_id, product_id)
-  WHERE type = 'non_consumable';
-```
-Application-level `hasPurchased()` check is a fast path; the DB constraint is the atomic guarantee.
+A user holds at most one non-consumable row per product. Every built-in `PurchaseStore` enforces this
+in `savePurchase` and `reassignPurchase`, and throws the same typed conflict (`code:
+'NON_CONSUMABLE_ALREADY_OWNED'`) when a write would break it:
+
+- PostgreSQL uses a partial unique index, which is the atomic guarantee:
+  ```sql
+  CREATE UNIQUE INDEX idx_onesub_purchases_non_consumable
+    ON onesub_purchases (user_id, product_id)
+    WHERE type = 'non_consumable';
+  ```
+- Redis claims `onesub:purchase:nc:<userId>:<productId>` with `SET NX`.
+- The in-memory store checks before it writes.
+
+The purchase route's up-front owned check is a fast path. When a write still loses the race, the route
+answers with the recorded copy as `action: "restored"`. Admin grant and transfer answer 409.
 
 ## SDK Purchase Flow (client)
 
@@ -304,10 +314,56 @@ actual `useOneSub` SDK API.
 2. **Fresh re-fetch** (Google only) — after the notification map yields a status, `validateGoogleReceipt` is called against `subscriptionsv2.get` to refresh `expiresAt`/`willRenew`/`linkedPurchaseToken`/`autoResumeTime`. The notification-derived status is *preserved* for `grace_period`/`on_hold` (the v2 mapping can't always re-derive these without notification context); other statuses defer to the v2 response.
 3. **Apple Status API fallback** — for an unknown `originalTransactionId`, `fetchAppleSubscriptionStatus` resolves canonical state from Apple, mapping `status` codes 1..5 → `active`/`expired`/`on_hold`/`grace_period`/`canceled`.
 
-The status route's `active: boolean` collapses the lifecycle:
+### Ordering: newest snapshot wins
+
+Every write applies a snapshot of store state taken at a known instant. That instant comes from:
+- the Apple notification's `signedDate`
+- the Apple transaction's `purchaseDate` (`/validate`): when the period it describes began. A device can
+  re-fetch a freshly signed copy at any time, so its `signedDate` says nothing about how current it is
+- the Google RTDN's `eventTimeMillis`
+- a live read: Apple's own `signedDate` on the App Store Server API response, or, for Google Play, the
+  moment the request was sent
+
+The record's `stateAsOf` stores the newest instant applied. A snapshot older than `stateAsOf` does not
+change status, expiry or renewal, so a retried or late EXPIRED / ON_HOLD cannot roll back a renewal or a
+recovery. This is Apple's guidance: of several notifications for one transaction, "use the notification
+with the most recent signedDate".
+
+The rule lives in `packages/server/src/lifecycle.ts`. Edge cases:
+- A Google live re-fetch is current by construction, so it is applied even when the RTDN that triggered
+  it is stale. Only the stale RTDN's own status (the grace/on-hold preservation) is dropped.
+- Every `SubscriptionStore.save()` applies the rule itself, atomically with the write:
+  - Postgres uses a conditional `ON CONFLICT … WHERE`.
+  - Redis uses a Lua script over the `onesub:sub:asof:<id>` key.
+  - The in-memory store checks synchronously.
+
+  Two deliveries processed at once therefore cannot both pass the routes' check and land in the wrong
+  order. Records written before `stateAsOf` existed are unguarded until their next write.
+- Snapshot times more than 10 minutes in the future are ignored. Storing one would freeze the record.
+- An Apple receipt sent to `/validate` is a partial view: a transaction with no renewal info. It changes a
+  stored subscription only when it brings news, meaning a later expiry (renewal, resubscribe) or a
+  revocation (refund). Otherwise the stored state stands. This covers a re-sent copy, a receipt signed
+  before a refund, and a transaction-only view of a subscription now in grace.
+- An Apple receipt for a subscription bound to another user is never merged with the stored state. If it
+  is older than the stored one, it is refused with 409, so a holder of an old receipt can neither take
+  over the subscription nor read it. A current receipt moves the subscription as before.
+
+### Apple billing grace period
+
+In `DID_FAIL_TO_RENEW` / `GRACE_PERIOD` the paid period has already ended at the transaction's
+`expiresDate`, and Apple says to "continue to provide service through the grace period". The record's
+`expiresAt` is therefore the renewal info's `gracePeriodExpiresDate`, from the webhook or from the Status
+API, so a `grace_period` record grants access until the grace period ends.
+
+### `active`
+
+`isSubscriptionEntitled` in `@onesub/shared` collapses the lifecycle. The status route, entitlements and
+metrics use it, hosts can too, and the Postgres metrics query is its SQL form:
 ```
 active = (status === 'active' || status === 'grace_period') && expiresAt > now
 ```
+The status route evaluates every record the user has. It reports the most recent one that grants access,
+or the most recent one when none does.
 
 The `expiresAt > now` half is a backstop. Two cases need it:
 - `refundPolicy: 'until_expiry'` keeps `status === 'active'` after a refund — `active` flips false naturally when expiry passes (no `EXPIRED` webhook required).

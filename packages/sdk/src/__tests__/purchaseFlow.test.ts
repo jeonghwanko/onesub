@@ -15,6 +15,7 @@ import {
   extractReceiptToken,
   isSubscriptionEvent,
   resolvePurchaseType,
+  isAlreadyOwnedResponse,
   type InFlightEntry,
   type PurchaseFlowDeps,
 } from '../purchaseFlow.js';
@@ -444,6 +445,43 @@ describe('handlePurchaseEvent — purchase (non-consumable)', () => {
     // with `undefined`, so a charged user was never granted their entitlement.
     expect(resolved).toMatchObject({ valid: true, action: 'restored' });
     expect(resolved!.purchase?.transactionId).toBe('GPA.1234-5678-9012-34567');
+  });
+});
+
+describe('isAlreadyOwnedResponse', () => {
+  it('matches the machine-readable errorCode, whatever the message says', () => {
+    expect(isAlreadyOwnedResponse({ error: 'You already own this.', errorCode: 'NON_CONSUMABLE_ALREADY_OWNED' })).toBe(true);
+  });
+  it('still matches pre-errorCode servers that put the code in `error`', () => {
+    expect(isAlreadyOwnedResponse({ error: 'NON_CONSUMABLE_ALREADY_OWNED' })).toBe(true);
+  });
+  it('does not match other failures', () => {
+    expect(isAlreadyOwnedResponse({ error: 'Receipt validation failed', errorCode: 'RECEIPT_VALIDATION_FAILED' })).toBe(false);
+  });
+});
+
+describe('handlePurchaseEvent — purchase finish failures', () => {
+  it('logs a failed one-time finishTransaction instead of swallowing it', async () => {
+    const inFlight = new Map<string, InFlightEntry>();
+    let resolved: unknown = null;
+    inFlight.set('coins_100', {
+      kind: 'purchase',
+      purchaseType: 'consumable',
+      resolve: (v) => { resolved = v; },
+      reject: () => {},
+    });
+    const warn = vi.fn();
+    const deps = makeDeps({
+      inFlight,
+      RNIap: { finishTransaction: vi.fn().mockRejectedValue(new Error('consume failed')) },
+      api: { validateReceipt: vi.fn(), validatePurchase: vi.fn().mockResolvedValue({ valid: true, action: 'new', purchase: {} }) },
+      logger: { trace: vi.fn(), warn } as unknown as PurchaseFlowDeps['logger'],
+    });
+
+    await handlePurchaseEvent(makePurchase({ productId: 'coins_100' }), deps);
+
+    expect(resolved).toMatchObject({ valid: true });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('finishTransaction failed'), expect.any(Error));
   });
 });
 
