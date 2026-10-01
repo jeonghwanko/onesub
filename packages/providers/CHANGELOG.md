@@ -1,5 +1,11 @@
 # @onesub/providers
 
+## 0.5.0
+
+### Minor Changes
+
+- d3da1dc: Google `createOneTimePurchase` refuses a product ID that already exists (`errorType: 'DUPLICATE'`) instead of silently replacing its listings and regional prices through the PATCH upsert. Play API errors now carry `httpStatus`.
+
 ## 0.4.4
 
 ### Patch Changes

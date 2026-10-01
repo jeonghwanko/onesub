@@ -1,5 +1,15 @@
 # @onesub/cli
 
+## 0.1.50
+
+### Patch Changes
+
+- d3da1dc: `onesub dev` help: `MOCK_NETWORK_ERROR_*` receipts now produce a 503, not a 500.
+- Updated dependencies [d3da1dc]
+- Updated dependencies [d3da1dc]
+  - @onesub/server@0.28.0
+  - @onesub/shared@0.17.0
+
 ## 0.1.49
 
 ### Patch Changes

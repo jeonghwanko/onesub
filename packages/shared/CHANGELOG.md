@@ -1,5 +1,31 @@
 # @onesub/shared
 
+## 0.17.0
+
+### Minor Changes
+
+- d3da1dc: Answer failures with the status that says whose fault it is, and close two production gaps. See docs/MIGRATION.md (0.27.x → 0.28.0).
+  - `mockMode` / `skipJwsVerification` are refused at startup under `NODE_ENV=production`, on the top-level config and on every `apps[]` entry. Before, a per-app `mockMode` bypassed the guard.
+  - A Google Play outage (5xx, 429, timeout, refused credentials) is `503 PROVIDER_UNAVAILABLE` (new error code) instead of `422 RECEIPT_VALIDATION_FAILED`. The exported `validateGoogleReceipt` still returns `null` in that case (unchanged contract); `ProviderUnavailableError` is exported for hosts that want the distinction.
+  - Re-posting an Apple transaction signed before a refund no longer re-activates the canceled subscription.
+  - A concurrently claimed purchase is 409, not 500. Admin reset/transfer/grant report store failures as `STORE_ERROR`.
+  - `/onesub/*` routes answer malformed or oversized JSON with the JSON error body instead of Express's HTML page; other errors still reach the host's error handler. `createOneSubServer` answers them with a JSON 500.
+  - Apple summary notifications no longer crash the webhook.
+  - `BullMQWebhookQueue` job ids no longer contain `:`, which BullMQ 5 rejected on every enqueue.
+  - Concurrent duplicate `/onesub/purchase/validate` requests for one transaction no longer both answer `action: "new"` (a consumable granted twice); within a process the second answers `restored`.
+  - A rejected Google service-account key (OAuth `400 invalid_grant`) answers 503 `PROVIDER_UNAVAILABLE` instead of a final 422. A failed store lookup in `/validate` no longer drops the save. A request waiting behind a hung purchase claim proceeds after 30 s.
+- d3da1dc: Make subscription state follow the newest store snapshot, hold the three stores to one contract, and validate the config at startup. See docs/MIGRATION.md (0.28.0).
+  - `SubscriptionInfo.stateAsOf` (new Postgres column `state_as_of`, added by `initSchema()`) records the newest snapshot applied: the Apple `signedDate` or Google `eventTimeMillis` of a notification, an Apple transaction's `purchaseDate`, or a live store read. Until the new columns exist the Postgres store saves as 0.27 did. Older notifications no longer roll a record back, so a late EXPIRED or ON_HOLD cannot undo a renewal or recovery.
+  - During an Apple billing grace period the new `gracePeriodExpiresAt` (Postgres column `grace_period_expires_at`) holds the grace end, and `grace_period` records grant access until then as Apple requires. `expiresAt` keeps meaning the paid-period end.
+  - `GET /onesub/status` evaluates all of a user's subscriptions, not only the most recently written one.
+  - `isSubscriptionEntitled()` / `ENTITLED_SUBSCRIPTION_STATUSES` in `@onesub/shared` are the single definition of "active".
+  - Every built-in `PurchaseStore` refuses a second non-consumable row for the same user and product with `NON_CONSUMABLE_ALREADY_OWNED` (new `purchaseConflict()` helper). The in-memory store's list ordering now matches Postgres and Redis.
+  - `createOneSubMiddleware` validates the config at startup: an unknown `defaultAppId` is refused; an unusable `serviceAccountKey` or a duplicated app id only warns. `database` is optional and deprecated. `node dist/index.js` uses Postgres stores when `DATABASE_URL` is set.
+  - A webhook request without a JSON body gets a 400 instead of crashing the handler.
+  - `SubscriptionStore.save()` applies the ordering rule atomically (Postgres conditional upsert, a Redis Lua script over `onesub:sub:asof:<id>`), so concurrent deliveries cannot land out of order. An Apple `/validate` receipt is applied as before, except that it no longer undoes a recorded refund (unless signed after it) or ends a running grace period. `ProviderUnavailableError` and `validateGoogleReceiptOrThrow` are exported.
+  - A Google subscription record replaced by another (its token is the newer record's `linkedPurchaseToken`) no longer counts in `/onesub/status` (entitlements still count every record, as in 0.27).
+  - A Google `SUBSCRIPTION_REVOKED` notification applies whatever its time, as a voided purchase does (it cancels outright; only voided purchases honour `until_expiry`). A refund ends an Apple grace period even under `refundPolicy: 'until_expiry'`.
+
 ## 0.16.2
 
 ### Patch Changes
