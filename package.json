@@ -32,7 +32,8 @@
     "@changesets/cli": "^3.0.3",
     "@types/supertest": "^7.2.1",
     "supertest": "^7.3.0",
-    "vitest": "^4.1.11"
+    "vite": "^8.1.5",
+    "vitest": "^5.0.2"
   },
   "overrides": {
     "esbuild": "0.27.2"
