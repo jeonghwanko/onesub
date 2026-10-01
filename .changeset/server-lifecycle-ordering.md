@@ -4,7 +4,6 @@
 ---
 
 Make subscription state follow the newest store snapshot, hold the three stores to one contract, and validate the config at startup. See docs/MIGRATION.md (0.28.0).
-
 - `SubscriptionInfo.stateAsOf` (new Postgres column `state_as_of`, added by `initSchema()`) records the newest snapshot applied: the Apple `signedDate` or Google `eventTimeMillis` of a notification, an Apple transaction's `purchaseDate`, or a live store read. Until the new columns exist the Postgres store saves as 0.27 did. Older notifications no longer roll a record back, so a late EXPIRED or ON_HOLD cannot undo a renewal or recovery.
 - During an Apple billing grace period the new `gracePeriodExpiresAt` (Postgres column `grace_period_expires_at`) holds the grace end, and `grace_period` records grant access until then as Apple requires. `expiresAt` keeps meaning the paid-period end.
 - `GET /onesub/status` evaluates all of a user's subscriptions, not only the most recently written one.
