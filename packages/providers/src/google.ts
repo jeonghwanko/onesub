@@ -47,6 +47,8 @@ export interface CreateSubscriptionResult {
 export interface CreateOneTimePurchaseResult {
   success: boolean;
   productId?: string;
+  /** 'DUPLICATE' when a product with this ID already exists — nothing was changed. */
+  errorType?: 'DUPLICATE';
   /** Currencies from extraRegions that have no known Play region code and were not applied. */
   skippedRegions?: string[];
   error?: string;
@@ -224,10 +226,16 @@ async function playRequest<T>(token: string, method: string, url: string, body?:
     if (resp.ok && text.trim() === '') return undefined as T;
     let json: T;
     try { json = JSON.parse(text) as T; }
-    catch { throw new Error(`Google Play API ${resp.status}: non-JSON — ${text.slice(0, 200)}`); }
+    catch {
+      const err = new Error(`Google Play API ${resp.status}: non-JSON — ${text.slice(0, 200)}`) as Error & { httpStatus?: number };
+      err.httpStatus = resp.status;
+      throw err;
+    }
     if (!resp.ok) {
       const detail = (json as { error?: { message?: string } }).error?.message ?? `HTTP ${resp.status}`;
-      throw new Error(`Google Play API error — ${detail}`);
+      const err = new Error(`Google Play API error — ${detail}`) as Error & { httpStatus?: number };
+      err.httpStatus = resp.status;
+      throw err;
     }
     return json;
   }
@@ -418,8 +426,23 @@ export async function createOneTimePurchase(opts: {
       regionalConfigs.push({ regionCode: code, price: toGooglePrice(region.price, region.currency), availability: 'AVAILABLE' });
     }
 
-    // Upsert via PATCH + allowMissing (the onetimeproducts API has no plain POST
-    // create). The single purchase option is left in its default DRAFT state —
+    // The onetimeproducts API has no plain POST create, only an upsert (PATCH +
+    // allowMissing), and that upsert REPLACES listings and every regional price.
+    // So "create" must refuse an existing product, or re-running it silently
+    // overwrites a live product's pricing with just the regions passed here.
+    const productUrl = `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}`;
+    try {
+      await playRequest<OneTimeProductResource>(token, 'GET', productUrl);
+      return {
+        success: false,
+        errorType: 'DUPLICATE',
+        error: `Product ID '${opts.productId}' already exists in Google Play. Use update instead of create.`,
+      };
+    } catch (err) {
+      if ((err as { httpStatus?: number }).httpStatus !== 404) throw err;
+    }
+
+    // The single purchase option is left in its default DRAFT state —
     // activation happens in Play Console, matching the tool's documented flow.
     const languageCode = await getDefaultLanguage(token, opts.packageName);
     const body: OneTimeProductResource = {
@@ -435,7 +458,7 @@ export async function createOneTimePurchase(opts: {
 
     await playRequest<OneTimeProductResource>(
       token, 'PATCH',
-      `${ANDROID_BASE}/${pkg}/onetimeproducts/${encodeURIComponent(opts.productId)}` +
+      productUrl +
         `?updateMask=listings,purchaseOptions&regionsVersion.version=${encodeURIComponent(REGIONS_VERSION)}&allowMissing=true`,
       body,
     );

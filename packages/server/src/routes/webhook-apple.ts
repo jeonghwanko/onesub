@@ -14,6 +14,7 @@ import {
   fetchAppleSubscriptionStatus,
 } from '../providers/apple.js';
 import { log } from '../logger.js';
+import { isStaleSnapshot, laterStateAsOf, snapshotTimeFromEpochMs } from '../lifecycle.js';
 import { getAppRegistry } from '../apps.js';
 import { sendError } from '../errors.js';
 import type { WebhookEventStore } from '../webhook-events.js';
@@ -57,6 +58,8 @@ export interface AppleWebhookWork {
   decoded: DecodedAppleNotification;
   notificationType: string;
   subtype?: string;
+  /** The notification's signedDate as ISO — its snapshot time (see lifecycle.ts). */
+  stateAsOf?: string;
 }
 
 /**
@@ -87,6 +90,7 @@ export async function processAppleNotification(
     expiresAt,
     appAccountToken,
     inAppOwnershipType,
+    gracePeriodExpiresAt,
   } = work.decoded;
 
   // The notification names its own app; use that app's Apple credentials rather
@@ -95,6 +99,11 @@ export async function processAppleNotification(
 
   const mapped = mapAppleNotificationStatus(notificationType, subtype);
   const finalStatus: SubscriptionInfo['status'] = mapped ?? status;
+  // In a billing grace period the paid period has ended, yet Apple says to keep
+  // providing service until the grace period does. That end is stored on its
+  // own, so `expiresAt` keeps meaning "paid through" — hosts derive billing
+  // cycles from it — and is dropped once the record leaves grace.
+  const graceUntil = finalStatus === SUBSCRIPTION_STATUS.GRACE_PERIOD ? gracePeriodExpiresAt ?? undefined : undefined;
 
   if (
     notificationType === 'CONSUMPTION_REQUEST' &&
@@ -144,7 +153,16 @@ export async function processAppleNotification(
   }
 
   const existing = await store.getByTransactionId(originalTransactionId);
+  if (existing && isStaleSnapshot(existing, work.stateAsOf)) {
+    // A retry or a late delivery: the record already reflects newer state.
+    log.info('[onesub/webhook/apple] stale notification ignored', {
+      originalTransactionId,
+      notificationType,
+    });
+    return;
+  }
   if (existing) {
+    const stateAsOf = laterStateAsOf(existing.stateAsOf, work.stateAsOf);
     const isSubscriptionRefund = isRefundOrRevoke && !isOneTimePurchase;
     const keepEntitlement = isSubscriptionRefund && config.refundPolicy === 'until_expiry';
 
@@ -163,14 +181,19 @@ export async function processAppleNotification(
     }
 
     const updated: SubscriptionInfo = keepEntitlement
-      ? { ...existing, userId: correctedUserId, willRenew: false }
+      ? { ...existing, userId: correctedUserId, willRenew: false, ...(stateAsOf ? { stateAsOf } : {}) }
       : {
           ...existing,
           userId: correctedUserId,
           status: finalStatus,
           willRenew,
           expiresAt: expiresAt ?? existing.expiresAt,
+          ...(stateAsOf ? { stateAsOf } : {}),
         };
+    // A refund ends any grace period, even when `until_expiry` keeps access to
+    // the paid period's end.
+    if (graceUntil && !keepEntitlement) updated.gracePeriodExpiresAt = graceUntil;
+    else delete updated.gracePeriodExpiresAt;
     await store.save(updated);
   } else if (appleConfigForApp?.issuerId && appleConfigForApp?.keyId && appleConfigForApp?.privateKey) {
     const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, appleConfigForApp, {
@@ -208,7 +231,8 @@ export async function handleAppleWebhook(
   webhookEventStore?: WebhookEventStore,
   webhookQueue?: WebhookQueue,
 ): Promise<void> {
-  const body = req.body as { signedPayload?: string };
+  // `req.body` is undefined for a non-JSON request, and anything for a hostile one.
+  const body = (req.body ?? {}) as { signedPayload?: string };
 
   if (!body.signedPayload) {
     sendError(res, 400, ONESUB_ERROR_CODE.MISSING_SIGNED_PAYLOAD, 'Missing signedPayload');
@@ -244,7 +268,21 @@ export async function handleAppleWebhook(
     markedEventId = payload.notificationUUID;
   }
 
-  const decoded = await decodeAppleNotification(payload, config.apple?.skipJwsVerification);
+  // Runs after the event is marked, so a throw here must release the mark —
+  // otherwise Apple's retry is deduped and the event is lost.
+  let decoded: Awaited<ReturnType<typeof decodeAppleNotification>>;
+  try {
+    decoded = await decodeAppleNotification(payload, config.apple?.skipJwsVerification);
+  } catch (err) {
+    log.error('[onesub/webhook/apple] Failed to decode notification data', {
+      notificationUUID: payload.notificationUUID,
+      notificationType: payload.notificationType,
+      err,
+    });
+    await unmarkWebhookEvent(webhookEventStore, 'apple', markedEventId);
+    sendError(res, 500, ONESUB_ERROR_CODE.WEBHOOK_PROCESSING_FAILED, 'Failed to process notification');
+    return;
+  }
   if (!decoded) {
     res.status(200).json({ received: true });
     return;
@@ -261,10 +299,12 @@ export async function handleAppleWebhook(
     return;
   }
 
+  const stateAsOf = snapshotTimeFromEpochMs(payload.signedDate);
   const work: AppleWebhookWork = {
     decoded,
     notificationType: payload.notificationType,
     subtype: payload.subtype,
+    ...(stateAsOf ? { stateAsOf } : {}),
   };
 
   if (webhookQueue) {

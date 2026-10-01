@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { SubscriptionInfo } from '@onesub/shared';
 import { SUBSCRIPTION_STATUS, MOCK_RECEIPT_PREFIX } from '@onesub/shared';
 import { log } from '../logger.js';
+import { ProviderUnavailableError } from './errors.js';
 
 /**
  * Mock provider — returns deterministic receipt-validation results based on
@@ -15,7 +16,7 @@ import { log } from '../logger.js';
  *  REVOKED         → null (revoked/refunded)
  *  EXPIRED         → null (> 72h old)
  *  INVALID / BAD_SIG → null (signature / integrity fail)
- *  NETWORK_ERROR   → throws (simulates upstream failure)
+ *  NETWORK_ERROR   → throws ProviderUnavailableError (simulates upstream failure → 503)
  *  SANDBOX         → valid; subscription has a shorter expiry (~1h)
  *  <anything else> → valid; transactionId = sha256(receipt)[:24]
  *
@@ -50,9 +51,9 @@ export function classifyMockReceipt(receipt: string): MockReceiptOutcome {
  * logs + returns false for rejection cases, returns true for pass-through.
  * Every mock validator uses this so their rejection behavior stays in sync.
  */
-function outcomePasses(outcome: MockReceiptOutcome, tag: string): boolean {
+function outcomePasses(outcome: MockReceiptOutcome, tag: 'apple' | 'google'): boolean {
   if (outcome.kind === 'network-error') {
-    throw new Error(`[onesub/mock/${tag}] simulated upstream network error`);
+    throw new ProviderUnavailableError(tag, `[onesub/mock/${tag}] simulated upstream network error`);
   }
   if (outcome.kind === 'valid' || outcome.kind === 'sandbox') return true;
   log.warn('[onesub/mock] receipt rejected', { provider: tag, outcome: outcome.kind });

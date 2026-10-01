@@ -33,7 +33,8 @@ export async function fetchWithTimeout(
   }
 
   const timer = setTimeout(() => {
-    controller.abort(new Error(`[onesub] fetch timed out after ${timeoutMs}ms`));
+    // Named like the platform's own timeout error, so callers can tell it from a refusal.
+    controller.abort(Object.assign(new Error(`[onesub] fetch timed out after ${timeoutMs}ms`), { name: 'TimeoutError' }));
   }, timeoutMs);
 
   try {

@@ -11,7 +11,7 @@ import type {
   PurchaseInfo,
   SubscriptionInfo,
 } from '@onesub/shared';
-import { ROUTES, SUBSCRIPTION_STATUS, ONESUB_ERROR_CODE, PURCHASE_TYPE } from '@onesub/shared';
+import { ROUTES, ONESUB_ERROR_CODE, PURCHASE_TYPE, isSubscriptionEntitled } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError, parseOrSend } from '../errors.js';
@@ -49,13 +49,11 @@ export function evaluateEntitlementFrom(
   const productIdSet = new Set(entitlement.productIds);
 
   // 1. Check subscriptions first (richer signal — has expiry).
+  // Every record, as in 0.27. (/status drops replaced Google tokens; here that
+  // would hide a still-paid old plan behind a deferred replacement.)
   for (const sub of subs) {
     if (!productIdSet.has(sub.productId)) continue;
-    const statusAllows =
-      sub.status === SUBSCRIPTION_STATUS.ACTIVE ||
-      sub.status === SUBSCRIPTION_STATUS.GRACE_PERIOD;
-    if (!statusAllows) continue;
-    if (new Date(sub.expiresAt).getTime() <= now) continue;
+    if (!isSubscriptionEntitled(sub, now)) continue;
     return {
       active: true,
       source: 'subscription',

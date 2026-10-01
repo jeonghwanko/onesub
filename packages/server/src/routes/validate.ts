@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { ValidateReceiptResponse, OneSubServerConfig } from '@onesub/shared';
-import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import type { ValidateReceiptResponse, OneSubServerConfig, SubscriptionInfo } from '@onesub/shared';
+import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS, isSubscriptionEntitled } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
-import { validateGoogleReceipt, acknowledgeGoogleSubscription } from '../providers/google.js';
+import { validateGoogleReceiptOrThrow, acknowledgeGoogleSubscription } from '../providers/google.js';
 import { log } from '../logger.js';
+import { laterStateAsOf } from '../lifecycle.js';
+import { ProviderUnavailableError } from '../providers/errors.js';
 import { sendError, parseOrSend } from '../errors.js';
 import { getAppRegistry, peekAppleBundleId } from '../apps.js';
 import { getTestOverride } from '../test-overrides.js';
@@ -39,11 +41,16 @@ export function createValidateRouter(
 
       // An Apple receipt names its own app, so an Apple client needs no appId.
       // A Google purchase token does not, so it relies on appId (or the default).
-      const appConfig = registry.configFor({
+      const appHint = {
         appId,
         bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
-      });
+      };
+      const appConfig = registry.configFor(appHint);
 
+      // An app this instance does not host gets no credentials — never another
+      // app's — and so the "config missing" 500 below. Deliberately not a 4xx:
+      // clients (the Unity package) read a 4xx as a verdict on the receipt, and
+      // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
         if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_SUB);
@@ -55,7 +62,7 @@ export function createValidateRouter(
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_SUB);
           return;
         }
-        sub = await validateGoogleReceipt(receipt, productId, appConfig.google);
+        sub = await validateGoogleReceiptOrThrow(receipt, productId, appConfig.google);
       }
 
       if (!sub) {
@@ -91,20 +98,50 @@ export function createValidateRouter(
         return;
       }
 
-      // Sandbox-only test override. Apple cannot cancel a sandbox subscription
-      // bought with a real Apple Account, so without this a tester who
-      // subscribed once can never see the paywall again. Gated on the receipt
-      // actually being a Sandbox one, so a Production receipt is unaffected
-      // even when an override exists for this userId.
       const isSandbox = sub.sandbox === true;
       delete sub.sandbox;
+      sub.userId = userId;
+
+      const signedAt = sub.signedAt;
+      delete sub.signedAt;
+      // A failed lookup only skips the guards below; the receipt is still
+      // validated and saved, as in 0.27, rather than failing the purchase.
+      let lookupFailed = false;
+      const existing = await store.getByTransactionId(sub.originalTransactionId).catch((err: unknown) => {
+        log.warn('[onesub/validate] store lookup failed — saving without the ordering guard', { userId, err });
+        lookupFailed = true;
+        return null;
+      });
+      if (existing && platform === 'apple' && keepsStoredAppleState(existing, sub, userId, signedAt)) {
+        log.info('[onesub/validate] older receipt — keeping stored status', {
+          originalTransactionId: sub.originalTransactionId,
+          userId,
+        });
+        sub.status = existing.status;
+        sub.willRenew = existing.willRenew;
+        sub.expiresAt = existing.expiresAt;
+        if (existing.gracePeriodExpiresAt) sub.gracePeriodExpiresAt = existing.gracePeriodExpiresAt;
+      }
+      // Never move the record's snapshot time backwards (lifecycle.ts); the
+      // store also refuses a write older than what it holds.
+      // After a failed lookup the stored time is unknown, so carry none: the
+      // store would otherwise refuse this write as older and the route would
+      // still answer success. Saved without a time, it applies, as in 0.27.
+      const stateAsOf = lookupFailed ? undefined : laterStateAsOf(existing?.stateAsOf, sub.stateAsOf);
+      if (stateAsOf) sub.stateAsOf = stateAsOf;
+      else delete sub.stateAsOf;
+
+      // Sandbox-only test override, applied last so nothing above can undo it.
+      // Apple cannot cancel a sandbox subscription bought with a real Apple
+      // Account, so without this a tester who subscribed once can never see the
+      // paywall again. Gated on the receipt actually being a Sandbox one, so a
+      // Production receipt is unaffected even when an override exists.
       if (isSandbox && getTestOverride(userId) === false) {
         log.warn('[onesub/validate] sandbox test override active — forcing not-entitled', { userId });
         sub.status = SUBSCRIPTION_STATUS.EXPIRED;
         sub.willRenew = false;
       }
 
-      sub.userId = userId;
       await store.save(sub);
 
       // Google requires acknowledgement within 3 days of purchase or the
@@ -117,10 +154,57 @@ export function createValidateRouter(
       const response: ValidateReceiptResponse = { valid: true, subscription: sub };
       res.status(200).json(response);
     } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        log.warn('[onesub/validate] store API unavailable', { userId, productId, platform, err });
+        sendError(res, 503, ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE, 'Store API unavailable — retry later', NO_SUB);
+        return;
+      }
       log.error('[onesub/validate] Unexpected error', { userId, productId, platform, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during receipt validation', NO_SUB);
     }
   });
 
   return router;
+}
+
+/**
+ * Whether an Apple receipt must leave the stored subscription's status alone.
+ *
+ * By default a receipt is applied, exactly as in 0.27: hosts rely on that — a
+ * device re-posting its transaction moves the subscription to its account and
+ * refreshes a stale status. A signed transaction is only a partial view,
+ * though (it never expires and carries no renewal info), so two cases keep
+ * what the store's own notifications recorded, and only while the receipt
+ * shows no later expiry (a renewal or resubscribe is always applied):
+ *
+ * - A refund. A transaction signed before the refund was recorded still
+ *   decodes as active; re-posting it must not undo the refund. One signed
+ *   after it without a revocation means the refund was reversed — apply it.
+ *   Records written before `stateAsOf` existed cannot tell, and keep the refund
+ *   for the same product (another product in the group is a new purchase).
+ * - A billing grace period still running, for the same user. The transaction
+ *   alone reads as expired; Apple says to keep providing service. Never kept
+ *   for another user, so a stored entitlement is never handed to a new account.
+ */
+function keepsStoredAppleState(
+  existing: SubscriptionInfo,
+  incoming: SubscriptionInfo,
+  userId: string,
+  signedAt: string | undefined,
+): boolean {
+  if (Date.parse(incoming.expiresAt) > Date.parse(existing.expiresAt)) return false;
+  if (existing.status === SUBSCRIPTION_STATUS.CANCELED && incoming.status !== SUBSCRIPTION_STATUS.CANCELED) {
+    if (signedAt && existing.stateAsOf) return Date.parse(signedAt) <= Date.parse(existing.stateAsOf);
+    // No times to compare (a record from before 0.28, or a mock receipt). A
+    // different product in the group is a new purchase, never a replay.
+    return incoming.productId === existing.productId;
+  }
+  return (
+    existing.userId === userId &&
+    existing.status === SUBSCRIPTION_STATUS.GRACE_PERIOD &&
+    isSubscriptionEntitled(existing) &&
+    // An expired view only — a revoked transaction (refund) always applies.
+    incoming.status !== SUBSCRIPTION_STATUS.CANCELED &&
+    !isSubscriptionEntitled(incoming)
+  );
 }

@@ -36,12 +36,14 @@ The request body or query failed zod validation — required field missing, wron
 
 - **Symptom**: any 400 on `POST /onesub/validate`, `POST /onesub/purchase/validate`, `GET /onesub/status`, or admin routes.
 - **Fix**: check the `error` string — it contains the zod `issue.message` joined with commas. Common misses: `receipt` missing, `userId` > 256 chars, `type` not one of `consumable`/`non_consumable`.
+- **`error: "Malformed JSON body"`**: the request body is not valid JSON. A body over the 50 kb cap gets status **413** with this same code.
 
 ### `APPLE_CONFIG_MISSING` / `GOOGLE_CONFIG_MISSING` (500)
 
 Request arrived with `platform: 'apple'` but `config.apple` is not set on the server (or same for Google).
 
 - **Symptom**: Apple devices get `APPLE_CONFIG_MISSING`, Android devices work fine (or vice versa).
+- **Also this code**: a request naming an app the server does not host — an unknown `appId`, or an Apple receipt whose `bundleId` no configured app uses. The server never falls back to another app's credentials. It answers 500 rather than 4xx on purpose: clients read a 4xx as a verdict on the receipt, and the server has not judged it.
 - **Fix**: set `APPLE_BUNDLE_ID` / `GOOGLE_PACKAGE_NAME` + credentials in the server's `.env` and restart. For app-only testing without real credentials, use SDK `mockMode: true` instead.
 
 ### `USER_ID_TOO_LONG` (400)
@@ -68,6 +70,15 @@ The platform provider (Apple or Google) rejected the receipt. Covers many underl
   - `[onesub/google] Play Products API error 401` — service account doesn't have "View financial data" permission (use `playstore_verify_service_account` from [`@yoonion/mimi-seed-mcp`](https://github.com/jeonghwanko/app-gen) to diagnose step-by-step)
   - `[onesub/google] Consumable already consumed — possible replay attack` — token was already consumed (replay)
 - **Fix**: match the log line above.
+
+### `PROVIDER_UNAVAILABLE` (503)
+
+The server could not get an answer from Google Play: a 5xx, a 429, a timeout, a network failure, or the server's own service account being refused (401/403, or `400 invalid_grant` from the token exchange for a rotated or deleted key). (Apple receipts are verified locally from their signature, so Apple validation never produces this.) **This is not a verdict on the receipt.** The receipt may be perfectly valid.
+
+- **Symptom**: `valid: false, errorCode: 'PROVIDER_UNAVAILABLE'` from `POST /onesub/validate` or `POST /onesub/purchase/validate`, typically during a store outage. Server logs show `[onesub/google] Receipt validation failed` with the upstream status.
+- **Fix (client)**: treat it like `NETWORK_ERROR` — keep the transaction unfinished and retry later. The SDK already leaves it unfinished, so the store replays it.
+- **Fix (server, if it persists)**: a 401/403 in the log means the service account lacks Play Developer API access; anything else is an upstream outage.
+- **Before this code existed** these failures were reported as `RECEIPT_VALIDATION_FAILED` (422), which clients treat as final.
 
 ### `NO_RECEIPT_DATA`
 
@@ -135,6 +146,14 @@ Google Pub/Sub RTDN body is missing `message.data`. The endpoint expects a stand
 
 - **Fix**: verify the Pub/Sub subscription type is **Push** (not Pull), and the push endpoint URL is `https://.../onesub/webhook/google`.
 
+### `BUNDLE_ID_MISMATCH` (400)
+
+An Apple receipt or notification names a `bundleId` that no app configured on this server uses.
+
+- **Where**: `POST /onesub/webhook/apple`. (Validation routes answer an unhosted app with `APPLE_CONFIG_MISSING`.)
+- **Common cause**: a second app's App Store Server Notifications URL or client pointing at this server, or a multi-app server missing that app in `apps`.
+- **Fix**: add the app under `apps` (see [CONFIGURATION.md](CONFIGURATION.md)), or point the other app at its own server.
+
 ### `PACKAGE_NAME_MISMATCH` (400)
 
 RTDN notification's `packageName` does not match `config.google.packageName`.
@@ -150,7 +169,8 @@ RTDN notification's `packageName` does not match `config.google.packageName`.
 
 Catch-all for unexpected exceptions in route handlers.
 
-- **Fix**: check server logs for the stack trace. Most likely causes: upstream Apple/Google API timeout, JSON parse error, broken Promise chain.
+- **Fix**: check server logs for the stack trace. An error that escapes a route goes to your app's own error handler (`createOneSubServer` logs it as `[onesub] Unhandled route error`). Google Play outages are reported separately, as `PROVIDER_UNAVAILABLE`.
+- **SDK**: also thrown for an unexpected non-2xx response that carries no onesub error body (for example a 403 from a proxy).
 
 ### `STORE_ERROR` (500)
 
@@ -230,7 +250,10 @@ The `<OneSubProvider>` unmounted while a purchase was in flight. Any pending `pu
 
 ### `NETWORK_ERROR`
 
-Thrown from `api.ts` helpers when `fetch()` rejects (offline, DNS failure, TLS error).
+Thrown from `api.ts` helpers when a request to the onesub server does not complete:
+- `fetch()` rejects (offline, DNS failure, TLS error)
+- the request runs past the 60-second deadline
+- a proxy or load balancer answers 5xx / 429 / 408 without a onesub error body
 
 - **Fix (client)**: show "네트워크 상태를 확인해주세요" alert + retry. The server never surfaces this — it's purely client-side.
 
@@ -257,6 +280,7 @@ try {
     case ONESUB_ERROR_CODE.USER_CANCELLED: return;
     case ONESUB_ERROR_CODE.CONCURRENT_PURCHASE: return; // double-tap
     case ONESUB_ERROR_CODE.NETWORK_ERROR:
+    case ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE: // store outage — retry later
     case ONESUB_ERROR_CODE.PURCHASE_TIMEOUT:
       return Alert.alert('네트워크 상태를 확인해주세요.');
     case ONESUB_ERROR_CODE.PRODUCT_NOT_FOUND:

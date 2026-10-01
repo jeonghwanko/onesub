@@ -190,8 +190,10 @@ and let CI apply them.
   or error-code types in consumers.
 - Use `ROUTES`, `SUBSCRIPTION_STATUS`, `PURCHASE_TYPE`, and `ONESUB_ERROR_CODE` instead of repeating
   their string values.
-- Keep the server behind `SubscriptionStore` and `PurchaseStore`. When an interface changes, update
-  the in-memory, PostgreSQL, and Redis implementations and their tests together.
+- Keep the server behind `SubscriptionStore` and `PurchaseStore`. When an interface or a store
+  behaviour changes, update the in-memory, PostgreSQL, and Redis implementations together, and put
+  the behaviour in `packages/server/src/__tests__/store-contract.ts`, which runs one contract against
+  all three (Postgres from `postgres-store.test.ts`). A rule only one store enforces is a parity bug.
 - Preserve single-app compatibility. Multi-app requests resolve through `packages/server/src/apps.ts`;
   an unknown `appId` must never fall back to another app's credentials.
 - Route all server logging through the configured logger and outbound provider calls through the

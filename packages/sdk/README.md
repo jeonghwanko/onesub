@@ -171,6 +171,7 @@ try {
         return Alert.alert('이미 구매한 상품입니다.');
       case ONESUB_ERROR_CODE.PURCHASE_TIMEOUT:
       case ONESUB_ERROR_CODE.NETWORK_ERROR:
+      case ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE: // store outage — retry later
         return Alert.alert('네트워크 상태를 확인해주세요.');
       default:
         return Alert.alert('결제 실패', err.message);

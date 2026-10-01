@@ -428,6 +428,65 @@ describe('re-mount on identity change', () => {
     expect(calls.some((u) => u.includes('bob'))).toBe(true);
   });
 
+  it("does not let the previous user's late refresh overwrite the new user's entitlements", async () => {
+    // Alice's mount-time load answers at once; the refresh she triggers hangs
+    // until after the provider has switched to Bob.
+    let aliceEntitlementCalls = 0;
+    let releaseAlice!: (value: Response) => void;
+    vi.stubGlobal('fetch', (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/onesub/entitlements') && url.includes('userId=alice') && ++aliceEntitlementCalls === 2) {
+        return new Promise<Response>((resolve) => { releaseAlice = resolve; });
+      }
+      if (url.includes('/onesub/status')) {
+        return Promise.resolve(new Response(JSON.stringify({ active: false, subscription: null }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ entitlements: {} }), { status: 200 }));
+    });
+
+    const { probe, element } = makeProbe();
+    await mount(baseConfig(), 'alice', element);
+
+    let refresh!: Promise<void>;
+    await act(async () => {
+      refresh = probe.latest().refreshEntitlements();
+    });
+    await rerender(baseConfig(), 'bob', element);
+
+    await act(async () => {
+      releaseAlice(new Response(JSON.stringify({ entitlements: { premium: { active: true, source: 'subscription' } } }), { status: 200 }));
+      await refresh;
+    });
+
+    expect(probe.latest().hasEntitlement('premium')).toBe(false);
+  });
+
+  it("does not let the previous user's refresh closure, called after the switch, write onto the new user", async () => {
+    // The *WithRefresh wrappers hold the refreshEntitlements of the render they
+    // were created in and call it only after their own await — i.e. possibly
+    // after userId changed. That call must still count as the old user's.
+    vi.stubGlobal('fetch', (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/onesub/status')) {
+        return Promise.resolve(new Response(JSON.stringify({ active: false, subscription: null }), { status: 200 }));
+      }
+      const entitlements = url.includes('userId=alice') ? { premium: { active: true, source: 'subscription' } } : {};
+      return Promise.resolve(new Response(JSON.stringify({ entitlements }), { status: 200 }));
+    });
+
+    const { probe, element } = makeProbe();
+    await mount(baseConfig(), 'alice', element);
+    const aliceRefresh = probe.latest().refreshEntitlements;
+    await rerender(baseConfig(), 'bob', element);
+    expect(probe.latest().hasEntitlement('premium')).toBe(false);
+
+    await act(async () => {
+      await aliceRefresh();
+    });
+
+    expect(probe.latest().hasEntitlement('premium')).toBe(false);
+  });
+
   it('does not re-read status for an unrelated config change', async () => {
     // The mount effect depends on serverUrl/userId only, on purpose — re-running
     // it re-opens the IAP connection and replays queued transactions.

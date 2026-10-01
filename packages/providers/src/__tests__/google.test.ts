@@ -303,6 +303,7 @@ describe('createOneTimePurchase', () => {
       { match: (u, m) => u.endsWith('/edits') && m === 'POST', body: { id: 'edit1' } },
       { match: (u, m) => u.includes('/edits/edit1/details') && m === 'GET', body: { defaultLanguage: 'ko-KR' } },
       { match: (u, m) => u.includes('/edits/edit1') && m === 'DELETE', status: 204 },
+      { match: (u, m) => u.includes('/onetimeproducts/coins') && m === 'GET', status: 404, body: { error: { message: 'not found' } } },
       { match: (u, m) => u.includes('/onetimeproducts') && m === 'PATCH', body: {} },
     ]);
 
@@ -326,6 +327,36 @@ describe('createOneTimePurchase', () => {
     // "Missing the listing for the default language ko-KR" otherwise.
     const listings = (create!.body as { listings: Array<{ languageCode: string }> }).listings;
     expect(listings[0].languageCode).toBe('ko-KR');
+  });
+
+  it('refuses to overwrite a product that already exists (the PATCH upsert would replace its prices)', async () => {
+    const calls = mockFetch([
+      { match: (u, m) => u.includes('/onetimeproducts/coins') && m === 'GET', body: { productId: 'coins' } },
+    ]);
+
+    const result = await createOneTimePurchase({
+      productId: 'coins', name: 'Coins', price: 499, currency: 'USD', type: 'consumable',
+      packageName: 'com.example', serviceAccountKey,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe('DUPLICATE');
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
+  });
+
+  it('does not create blind when the existence check itself fails', async () => {
+    const calls = mockFetch([
+      { match: (u, m) => u.includes('/onetimeproducts/coins') && m === 'GET', status: 403, body: { error: { message: 'forbidden' } } },
+    ]);
+
+    const result = await createOneTimePurchase({
+      productId: 'coins', name: 'Coins', price: 499, currency: 'USD', type: 'consumable',
+      packageName: 'com.example', serviceAccountKey,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBeUndefined();
+    expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
   });
 });
 

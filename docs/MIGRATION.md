@@ -4,6 +4,168 @@ Upgrade notes for releases of `@onesub/server` that need one. While the package 
 
 ---
 
+## `@onesub/server` 0.27.x → 0.28.0
+
+Several failures used to be answered with the wrong status, or with one a client could not act
+on. Each now has the status that says whose fault it is. None needs a configuration change unless
+you run a dev mode in production (first item) or alert on the old codes.
+
+### Breaking: `skipJwsVerification` is refused in production, and `apps[]` is checked too
+
+`createOneSubMiddleware` now **throws at startup** when `NODE_ENV=production` and
+`apple.skipJwsVerification` is set. It already threw for `mockMode`. Both checks now cover every
+`apps[]` entry as well as the top-level config. Before, a `mockMode: true` on one `apps[]` entry
+went straight past the guard, so that app accepted any receipt in production.
+
+**Fix:** remove the flag from production configuration. There is no supported production use for
+it: it accepts unsigned Apple receipts and notifications.
+
+### Breaking: the config is validated at startup
+
+`createOneSubMiddleware` now throws at boot, listing every problem, for a config that cannot work.
+These used to fail later, per request:
+
+| Config problem | Used to |
+|---|---|
+| `defaultAppId` naming no app | route every unrouted request to the first app |
+| empty `apple.bundleId` | — |
+| an `apps[]` entry with an empty `id` | — |
+| a `productReceiptMaxAgeHours` that is not positive (`Infinity` is allowed), negative `metricsCacheTtlSeconds`, unknown `refundPolicy` | — |
+
+These only log a warning:
+- the same `apps[]` id listed twice (the first entry wins)
+- a `google.serviceAccountKey` that is not usable key JSON
+- partial Apple API credentials
+- a half-set promotional-offer key
+- one bundle ID on two apps
+ An empty `serviceAccountKey` string still counts as unset. The full list is in
+[CONFIGURATION.md](CONFIGURATION.md#startup-validation).
+
+**Fix:** if the server now refuses to start, the message names the field. For the warnings, a key passed
+as a file path is the common one: pass the file's contents.
+
+`database` is now optional and deprecated. The server never read it, and a config that set only
+`database.url` kept everything in memory. Pass `store` / `purchaseStore`. The package's own
+`node dist/index.js` entrypoint now builds Postgres stores from `DATABASE_URL`.
+
+### A store outage is `503 PROVIDER_UNAVAILABLE`, not `422 RECEIPT_VALIDATION_FAILED`
+
+When Google Play cannot answer — 5xx, 429, a timeout, a network failure, or the service account
+refused (401/403, or the token exchange failing, including `400 invalid_grant` for a rotated or
+deleted key) — `POST /onesub/validate` and `POST /onesub/purchase/validate` now answer
+**503** with the new `PROVIDER_UNAVAILABLE` code. They used to answer 422, which clients treat as
+final, so valid purchases were dropped during outages. `MOCK_NETWORK_ERROR` receipts give the same
+503 instead of a 500.
+
+The exported `validateGoogleReceipt` keeps its contract: it still returns `null` in these cases, so a
+host that calls it directly sees no change. onesub's own routes use an internal variant that throws
+`ProviderUnavailableError`, which is exported for hosts that want the distinction.
+
+The Google webhook can now fail a delivery too: for a purchase token the server has never seen, a Play
+outage answers 5xx so Pub/Sub redelivers it. Before, the 200 dropped the new subscription. Our own
+credentials being refused (401/403) is acknowledged and logged as before, since retrying cannot fix it.
+
+**Fix:** if your client special-cases `RECEIPT_VALIDATION_FAILED`, treat `PROVIDER_UNAVAILABLE` as
+retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
+
+### Other status corrections
+
+- A purchase whose `transactionId` another request claims concurrently answers **409
+  `TRANSACTION_BELONGS_TO_OTHER_USER`**, not 500.
+- Two concurrent copies of the same `/onesub/purchase/validate` request no longer both answer
+  `action: "new"`. The second waits for the first and answers `restored`, so a consumable is granted
+  once. This applies within one server process; separate instances can still race, as in 0.27.
+- Admin `reset`, `transfer` and `grant` answer **500 `STORE_ERROR`** on a store failure instead of
+  leaving the request unanswered. `grant` with a `transactionId` that another user owns answers
+  **409**.
+- A malformed JSON body on a `/onesub/*` route answers **400 `INVALID_INPUT`**, and an oversized
+  one **413**, with the usual JSON error body instead of Express's HTML page. Every other error still
+  reaches your own error handler, as before. `createOneSubServer`, which has no host handler, answers
+  those with a JSON 500.
+- An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
+  of crashing the handler.
+- An error that escapes a webhook handler now reaches your app's error handler. Under Express 4 it
+  used to be an unhandled promise rejection: the request hung, or, on Node 15+ without an
+  `unhandledRejection` handler, the process exited.
+
+### Apple `/validate` no longer undoes a refund or ends a grace period early
+
+A receipt is still applied as in 0.27, including moving the subscription to the requesting account.
+Two exceptions now keep the stored status, and only while the receipt shows no later expiry. A renewal
+or resubscribe is always applied.
+
+- **A refund.** A transaction signed before the refund was recorded still decodes as active, and
+  re-posting it used to re-activate the refunded subscription. It no longer does. A transaction signed
+  *after* the refund without a revocation means the refund was reversed, and is applied. Records
+  written before 0.28 cannot tell the two apart, so they keep the refund, but only for the same product:
+  another product in the group is a new purchase.
+- **A billing grace period, for the same user.** The transaction alone reads as expired, while Apple
+  says to keep providing service through the grace period.
+
+The stored entitlement is never copied onto another account.
+
+### New columns `state_as_of` and `grace_period_expires_at`; out-of-order notifications are ignored
+
+`SubscriptionInfo` gains `stateAsOf`, the time of the newest store-state snapshot applied to the record.
+A notification older than that no longer changes status, expiry or renewal, so a late
+EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. Refunds are final, so they apply whatever their time: Apple REFUND/REVOKE of a one-time purchase, Google voided purchases, and Google `SUBSCRIPTION_REVOKED`. See
+[ARCHITECTURE.md](ARCHITECTURE.md#ordering-newest-snapshot-wins).
+
+**Postgres:** `initSchema()` adds the column. If your DBAs apply `sql/schema.sql` by hand instead, run:
+
+```sql
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS state_as_of TIMESTAMPTZ;
+ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS grace_period_expires_at TIMESTAMPTZ;
+```
+
+Run it before deploying if your host calls `initSchema()` without awaiting it. Until the columns
+exist, the store keeps saving the way 0.27 did: it logs one error line and skips the ordering guard, so
+nothing fails. Only the admin metrics query needs the new columns.
+
+Redis and in-memory stores need nothing. A custom `SubscriptionStore` must persist the new field, or
+ordering is not enforced for its records.
+
+### Apple grace period grants access; `/onesub/status` looks at every subscription
+
+- **Grace period:** during an Apple billing grace period, the new `gracePeriodExpiresAt` holds when
+  the grace period ends, and `isSubscriptionEntitled` / `active` count access until then. Before, a
+  `grace_period` record reported `active: false` because its paid period had already ended.
+  `expiresAt` is unchanged: it still means "paid through". Hosts that compute billing cycles from it
+  are unaffected.
+  A refund ends a grace period even under `refundPolicy: 'until_expiry'`, where access then runs to the
+  end of the paid period only.
+- **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
+  most recent one that grants access. Before, it read only the most recently written record, so a webhook
+  for an old expired subscription could hide an active one.
+- **Replaced Google tokens:** in `/onesub/status`, a record that another of the user's records
+  replaced (its token is the newer record's `linkedPurchaseToken`) no longer counts. Before, after a
+  plan change whose replacement was refunded, the old token could report active until its own expiry.
+  The entitlement routes still count every record, as in 0.27, so a still-paid old plan behind a
+  deferred replacement keeps its entitlement.
+
+### Every store refuses a second non-consumable row
+
+All three built-in `PurchaseStore`s refuse a second non-consumable row for the same user and product.
+They throw `{ code: 'NON_CONSUMABLE_ALREADY_OWNED' }`, and `purchaseConflict()` builds that error.
+Postgres already refused it, but with a raw `23505` that surfaced as a 500.
+
+| Route | Answer when the user already owns the non-consumable |
+|---|---|
+| Purchase validation that loses the race | the recorded copy, `action: "restored"` |
+| Admin grant / transfer | 409 |
+
+Redis records the claim under `onesub:purchase:nc:<userId>:<productId>`. A custom `PurchaseStore` should
+enforce the same rule. `packages/server/src/__tests__/store-contract.ts` is the executable statement of
+the contract.
+
+### BullMQ webhook queue
+
+`BullMQWebhookQueue` job ids changed from `apple:<id>` to `apple-<id>`. BullMQ 5 rejects a custom
+id with one `:`, so every enqueue had been failing. No action is needed. A job left over under the
+old format would not be deduplicated against a new one, but none could have been created.
+
+---
+
 ## `@onesub/server` 0.26.x → 0.27.0
 
 ### Breaking: the Google RTDN webhook refuses unauthenticated requests in production

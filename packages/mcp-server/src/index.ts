@@ -103,6 +103,8 @@ server.tool(
     googlePackageName: createProductInputSchema.googlePackageName,
     googleServiceAccountKey: createProductInputSchema.googleServiceAccountKey,
   },
+  // Creates products in live stores.
+  { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   async (args) => {
     return runCreateProduct(args);
   },
@@ -201,7 +203,10 @@ server.tool(
     appleBundleId: manageProductInputSchema.appleBundleId,
     googlePackageName: manageProductInputSchema.googlePackageName,
     googleServiceAccountKey: manageProductInputSchema.googleServiceAccountKey,
+    confirm: manageProductInputSchema.confirm,
   },
+  // Writes to live stores; delete is irreversible.
+  { destructiveHint: true, idempotentHint: false, openWorldHint: true },
   async (args) => {
     return runManageProduct(args);
   },

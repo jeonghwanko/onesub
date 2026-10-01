@@ -137,6 +137,19 @@ describe('sandbox test overrides', () => {
     });
   });
 
+  it('is undone by clearing it, even after a validation stored the forced status', async () => {
+    await withServer(buildApp(), async (base) => {
+      await setOverride(base, false);
+      expect((await validate(base, 'Sandbox')).body.subscription?.status).toBe('expired');
+      await fetch(`${base}/onesub/admin/test-overrides/${USER}`, {
+        method: 'DELETE',
+        headers: { 'x-admin-secret': ADMIN_SECRET },
+      });
+      // The same receipt again must come back active, not stick at the stored 'expired'.
+      expect((await validate(base, 'Sandbox')).body.subscription?.status).toBe('active');
+    });
+  });
+
   it('rejects a wrong admin secret', async () => {
     await withServer(buildApp(), async (base) => {
       const resp = await setOverride(base, false, 'wrong');

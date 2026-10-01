@@ -7,8 +7,58 @@ import {
   mockValidateGoogleSubscription,
   mockValidateGoogleProduct,
 } from './mock.js';
+import { ProviderUnavailableError } from './errors.js';
+import { snapshotTimeFromEpochMs } from '../lifecycle.js';
 
 type GoogleConfig = NonNullable<OneSubServerConfig['google']>;
+
+/** A non-2xx Play Developer API response, keeping the status for classification. */
+class GooglePlayHttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'GooglePlayHttpError';
+  }
+}
+
+/**
+ * A non-2xx from the OAuth token endpoint: our credentials, never the receipt.
+ * Kept apart from GooglePlayHttpError because its 400 (`invalid_grant` — a
+ * rotated or deleted key, clock skew) would otherwise read as "token rejected".
+ */
+class GoogleTokenError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'GoogleTokenError';
+  }
+}
+
+/**
+ * Statuses where Play has looked at the token and said no: malformed (400),
+ * unknown (404), or no longer valid (410). Everything else — 5xx, 429, our own
+ * credentials refused (401/403), a timeout, a failed token exchange — is Play
+ * being unable to answer, and must not be reported as a rejected receipt.
+ */
+const GOOGLE_RECEIPT_REJECTED_STATUSES = new Set([400, 404, 410]);
+
+function isGoogleReceiptRejection(err: unknown): boolean {
+  return err instanceof GooglePlayHttpError && GOOGLE_RECEIPT_REJECTED_STATUSES.has(err.status);
+}
+
+/**
+ * Play could not answer. Transient for an outage — 5xx, 429, a network failure
+ * or timeout. Not for our own credentials being refused (401/403, a failed token
+ * exchange) or a key that cannot sign: those need an operator, not a retry.
+ */
+function googleUnavailable(err: unknown): ProviderUnavailableError {
+  const e = err as { name?: unknown; code?: unknown } | null;
+  const transient = err instanceof GooglePlayHttpError || err instanceof GoogleTokenError
+    ? err.status >= 500 || err.status === 429
+    : err instanceof TypeError ||
+      e?.name === 'AbortError' ||
+      e?.name === 'TimeoutError' ||
+      (typeof e?.code === 'string' && /^E[A-Z]+$/.test(e.code) && !e.code.startsWith('ERR_'));
+  return new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err, transient });
+}
 
 /**
  * Google Play Developer API v3 — SubscriptionPurchaseV2 resource (partial).
@@ -266,7 +316,7 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
   });
 
   if (!resp.ok) {
-    throw new Error(`[onesub/google] Token request failed: ${resp.status}`);
+    throw new GoogleTokenError(resp.status, `[onesub/google] Token request failed: ${resp.status}`);
   }
 
   const data = (await resp.json()) as { access_token?: string };
@@ -296,7 +346,7 @@ async function fetchSubscriptionPurchaseV2(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`[onesub/google] Play API v2 error ${resp.status}: ${body}`);
+    throw new GooglePlayHttpError(resp.status, `[onesub/google] Play API v2 error ${resp.status}: ${body}`);
   }
 
   return resp.json() as Promise<GoogleSubscriptionPurchaseV2>;
@@ -323,7 +373,7 @@ async function fetchProductPurchase(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`[onesub/google] Play Products API error ${resp.status}: ${body}`);
+    throw new GooglePlayHttpError(resp.status, `[onesub/google] Play Products API error ${resp.status}: ${body}`);
   }
 
   return resp.json() as Promise<GoogleProductPurchase>;
@@ -505,6 +555,25 @@ function deriveStatusV2(
 }
 
 /**
+ * Public, 0.27-compatible form of `validateGoogleReceiptOrThrow`: `null` for any
+ * failure, including Play being unavailable. Hosts call this directly (e.g. to
+ * pre-check a purchase token), so its contract stays as it was. onesub's own
+ * routes use the throwing form, to answer an outage with a retryable 503.
+ */
+export async function validateGoogleReceipt(
+  receipt: string,
+  productId: string,
+  config: GoogleConfig,
+): Promise<SubscriptionInfo | null> {
+  try {
+    return await validateGoogleReceiptOrThrow(receipt, productId, config);
+  } catch (err) {
+    if (err instanceof ProviderUnavailableError && !config.mockMode) return null;
+    throw err;
+  }
+}
+
+/**
  * Validate a Google Play purchase token via purchases.subscriptionsv2.get.
  *
  * The productId argument is used to pick the matching `lineItems` entry. If
@@ -516,7 +585,7 @@ function deriveStatusV2(
  * @param productId  Expected subscription productId — must match a lineItem
  * @param config     Google config with packageName + optional serviceAccountKey
  */
-export async function validateGoogleReceipt(
+export async function validateGoogleReceiptOrThrow(
   receipt: string,
   productId: string,
   config: GoogleConfig
@@ -531,6 +600,9 @@ export async function validateGoogleReceipt(
     return null;
   }
 
+  // Live state as of the moment we asked. Taken before the call, so an event
+  // that lands while the request is in flight is never mistaken for older.
+  const stateAsOf = new Date().toISOString();
   let purchase: GoogleSubscriptionPurchaseV2;
   try {
     const token = await getCachedAccessToken(config.serviceAccountKey);
@@ -541,7 +613,8 @@ export async function validateGoogleReceipt(
       packageName: config.packageName,
       err,
     });
-    return null;
+    if (isGoogleReceiptRejection(err)) return null;
+    throw googleUnavailable(err);
   }
 
   const status = deriveStatusV2(purchase.subscriptionState);
@@ -596,6 +669,7 @@ export async function validateGoogleReceipt(
     // logic) can follow upgrade/downgrade chains.
     linkedPurchaseToken: purchase.linkedPurchaseToken,
     autoResumeTime,
+    stateAsOf,
     ...(boundAccountId ? { boundAccountId } : {}),
   };
 }
@@ -666,7 +740,8 @@ export async function validateGoogleProductReceipt(
       type,
       err,
     });
-    return null;
+    if (isGoogleReceiptRejection(err)) return null;
+    throw googleUnavailable(err);
   }
 
   // purchaseState 0 = completed (1 = canceled, 2 = pending)
@@ -735,6 +810,8 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   purchaseToken: string;
   subscriptionId: string;
   packageName: string;
+  /** The RTDN's eventTimeMillis as ISO — its snapshot time (see lifecycle.ts). */
+  stateAsOf?: string;
 } | null {
   let notification: GoogleDeveloperNotification;
 
@@ -751,12 +828,14 @@ export function decodeGoogleNotification(payload: GoogleNotificationPayload): {
   }
 
   const { notificationType, purchaseToken, subscriptionId } = notification.subscriptionNotification;
+  const stateAsOf = snapshotTimeFromEpochMs(notification.eventTimeMillis);
 
   return {
     notificationType,
     purchaseToken,
     subscriptionId,
     packageName: notification.packageName,
+    ...(stateAsOf ? { stateAsOf } : {}),
   };
 }
 
@@ -776,6 +855,8 @@ export interface GoogleVoidedNotification {
   /** 1 = Full refund, 2 = Quantity-based partial refund (consumables) */
   refundType: 1 | 2;
   packageName: string;
+  /** The RTDN's eventTimeMillis as ISO — when the refund happened (see lifecycle.ts). */
+  stateAsOf?: string;
 }
 
 /**
@@ -797,6 +878,7 @@ export function decodeGoogleVoidedNotification(
   if (!notification.voidedPurchaseNotification) return null;
 
   const { purchaseToken, orderId, productType, refundType } = notification.voidedPurchaseNotification;
+  const stateAsOf = snapshotTimeFromEpochMs(notification.eventTimeMillis);
 
   return {
     purchaseToken,
@@ -804,6 +886,7 @@ export function decodeGoogleVoidedNotification(
     productType,
     refundType,
     packageName: notification.packageName,
+    ...(stateAsOf ? { stateAsOf } : {}),
   };
 }
 
@@ -858,6 +941,11 @@ export function isGoogleCanceledNotification(notificationType: GoogleNotificatio
     notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_CANCELED ||
     notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_REVOKED
   );
+}
+
+/** A refund or chargeback revoked the subscription — final, whatever its time. */
+export function isGoogleRevokedNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_REVOKED;
 }
 
 export function isGoogleExpiredNotification(notificationType: GoogleNotificationType): boolean {

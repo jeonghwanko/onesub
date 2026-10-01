@@ -183,7 +183,7 @@ describe('purchase route', () => {
 describe('status route', () => {
   it('a store failure names the user whose status was being read', async () => {
     const store = new InMemorySubscriptionStore();
-    store.getByUserId = () => Promise.reject(new Error('read timeout'));
+    store.getAllByUserId = () => Promise.reject(new Error('read timeout'));
     const { app } = makeApp({ store });
     const lines = capture();
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ROUTES, DEFAULT_PORT, SUBSCRIPTION_STATUS } from '../constants.js';
+import { ROUTES, DEFAULT_PORT, SUBSCRIPTION_STATUS, isSubscriptionEntitled } from '../constants.js';
 
 describe('shared constants', () => {
   describe('ROUTES', () => {
@@ -53,6 +53,19 @@ describe('shared constants', () => {
 
     it('NONE equals "none"', () => {
       expect(SUBSCRIPTION_STATUS.NONE).toBe('none');
+    });
+  });
+
+  describe('isSubscriptionEntitled', () => {
+    const now = Date.parse('2026-06-01T00:00:00.000Z');
+    it('grants an entitled status until the later of expiresAt and gracePeriodExpiresAt', () => {
+      expect(isSubscriptionEntitled({ status: 'active', expiresAt: '2026-07-01T00:00:00.000Z' }, now)).toBe(true);
+      expect(isSubscriptionEntitled({ status: 'active', expiresAt: '2026-05-01T00:00:00.000Z' }, now)).toBe(false);
+      expect(isSubscriptionEntitled({ status: 'grace_period', expiresAt: '2026-05-01T00:00:00.000Z', gracePeriodExpiresAt: '2026-06-10T00:00:00.000Z' }, now)).toBe(true);
+      expect(isSubscriptionEntitled({ status: 'on_hold', expiresAt: '2026-07-01T00:00:00.000Z' }, now)).toBe(false);
+    });
+    it('does not let an unparsable grace end void a valid expiry', () => {
+      expect(isSubscriptionEntitled({ status: 'active', expiresAt: '2026-07-01T00:00:00.000Z', gracePeriodExpiresAt: 'garbage' }, now)).toBe(true);
     });
   });
 });

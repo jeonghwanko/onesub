@@ -13,7 +13,7 @@ import type {
 import { PURCHASE_TYPE, ONESUB_ERROR_CODE, ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { evaluateEntitlementFrom } from './entitlements.js';
-import { sendError, parseOrSend } from '../errors.js';
+import { sendError, parseOrSend, isOwnershipConflict, isNonConsumableOwnedConflict } from '../errors.js';
 import type { WebhookQueue } from '../webhook-queue.js';
 import { fetchAppleSubscriptionStatus } from '../providers/apple.js';
 import { secretsEqual } from './secret-compare.js';
@@ -84,8 +84,13 @@ export function createAdminRouter(
       message: 'userId and productId required',
     });
     if (!params) return;
-    const deleted = await purchaseStore.deletePurchases(params.userId, params.productId);
-    res.json({ ok: true, deleted });
+    try {
+      const deleted = await purchaseStore.deletePurchases(params.userId, params.productId);
+      res.json({ ok: true, deleted });
+    } catch (err) {
+      log.error('[onesub/admin/reset] store error', { userId: params.userId, productId: params.productId, err });
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
+    }
   });
 
   // POST /onesub/purchase/admin/transfer — reassign transactionId to a new userId
@@ -97,22 +102,31 @@ export function createAdminRouter(
   router.post('/onesub/purchase/admin/transfer', async (req: Request, res: Response) => {
     const body = parseOrSend(res, transferSchema, req.body);
     if (!body) return;
-    const existing = await purchaseStore.getPurchaseByTransactionId(body.transactionId);
-    if (!existing) {
-      sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
-      return;
+    try {
+      const existing = await purchaseStore.getPurchaseByTransactionId(body.transactionId);
+      if (!existing) {
+        sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
+        return;
+      }
+      // Move only this transaction. deletePurchases(userId, productId) would
+      // also destroy sibling consumable rows for the same product.
+      const moved = await purchaseStore.reassignPurchase(body.transactionId, body.newUserId);
+      if (!moved) {
+        // Row vanished between the lookup above and the reassign (e.g. a
+        // concurrent refund webhook deleted it) — don't report a false success.
+        sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
+        return;
+      }
+      const migrated: PurchaseInfo = { ...existing, userId: body.newUserId };
+      res.json({ ok: true, purchase: migrated });
+    } catch (err) {
+      if (isNonConsumableOwnedConflict(err)) {
+        sendError(res, 409, ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED, 'newUserId already owns this product');
+        return;
+      }
+      log.error('[onesub/admin/transfer] store error', { transactionId: body.transactionId, err });
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
     }
-    // Move only this transaction. deletePurchases(userId, productId) would
-    // also destroy sibling consumable rows for the same product.
-    const moved = await purchaseStore.reassignPurchase(body.transactionId, body.newUserId);
-    if (!moved) {
-      // Row vanished between the lookup above and the reassign (e.g. a
-      // concurrent refund webhook deleted it) — don't report a false success.
-      sendError(res, 404, ONESUB_ERROR_CODE.TRANSACTION_NOT_FOUND, 'TRANSACTION_NOT_FOUND');
-      return;
-    }
-    const migrated: PurchaseInfo = { ...existing, userId: body.newUserId };
-    res.json({ ok: true, purchase: migrated });
   });
 
   // POST /onesub/purchase/admin/grant
@@ -138,7 +152,21 @@ export function createAdminRouter(
       quantity: 1,
       purchasedAt: new Date().toISOString(),
     };
-    await purchaseStore.savePurchase(purchase);
+    try {
+      await purchaseStore.savePurchase(purchase);
+    } catch (err) {
+      if (isOwnershipConflict(err)) {
+        sendError(res, 409, ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER, 'TRANSACTION_BELONGS_TO_OTHER_USER');
+        return;
+      }
+      if (isNonConsumableOwnedConflict(err)) {
+        sendError(res, 409, ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED, 'User already owns this product');
+        return;
+      }
+      log.error('[onesub/admin/grant] store error', { userId: body.userId, productId: body.productId, err });
+      sendError(res, 500, ONESUB_ERROR_CODE.STORE_ERROR, 'Internal server error');
+      return;
+    }
     res.json({ ok: true, purchase });
   });
 

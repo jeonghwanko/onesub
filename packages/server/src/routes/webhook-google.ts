@@ -8,11 +8,12 @@ import {
   decodeGoogleNotification,
   decodeGoogleVoidedNotification,
   decodeGoogleOneTimeProductNotification,
-  validateGoogleReceipt,
+  validateGoogleReceiptOrThrow,
   acknowledgeGoogleProduct,
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
+  isGoogleRevokedNotification,
   isGoogleGracePeriodNotification,
   isGoogleOnHoldNotification,
   isGooglePausedNotification,
@@ -23,6 +24,8 @@ import type {
   GoogleOneTimeProductNotification,
 } from '../providers/google.js';
 import { log } from '../logger.js';
+import { ProviderUnavailableError } from '../providers/errors.js';
+import { isStaleSnapshot, laterStateAsOf } from '../lifecycle.js';
 import { getAppRegistry } from '../apps.js';
 import { sendError } from '../errors.js';
 import type { WebhookEventStore } from '../webhook-events.js';
@@ -193,6 +196,46 @@ export function warnIfGoogleWebhookOpen(config: OneSubServerConfig): void {
  * mode" — it accepts notifications for any package and uses the default
  * credentials. Once any app names a package, only known packages are served.
  */
+function stateAsOfField(stateAsOf: string | undefined): { stateAsOf?: string } {
+  return stateAsOf ? { stateAsOf } : {};
+}
+
+/**
+ * Re-fetch live state for a notification. A Play outage degrades to "no fresh
+ * state" — the notification-derived status is still applied, as before — rather
+ * than failing the whole delivery.
+ */
+async function refetchGoogleSubscription(
+  purchaseToken: string,
+  subscriptionId: string,
+  google: NonNullable<OneSubServerConfig['google']>,
+): Promise<SubscriptionInfo | null> {
+  try {
+    return await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, google);
+  } catch (err) {
+    if (!(err instanceof ProviderUnavailableError)) throw err;
+    log.warn('[onesub/webhook/google] Play unavailable — applying notification only', {
+      purchaseToken,
+      err,
+    });
+    return null;
+  }
+}
+
+/** Like `refetchGoogleSubscription`, but a transient Play outage throws (so the delivery is retried). */
+async function refetchUnlessTransient(
+  purchaseToken: string,
+  subscriptionId: string,
+  google: NonNullable<OneSubServerConfig['google']>,
+): Promise<SubscriptionInfo | null> {
+  try {
+    return await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, google);
+  } catch (err) {
+    if (err instanceof ProviderUnavailableError && !err.transient) return null;
+    throw err;
+  }
+}
+
 function googleResolver(config: OneSubServerConfig) {
   const registry = getAppRegistry(config);
   const restricted = registry.apps.some((app) => !!app.google?.packageName);
@@ -231,9 +274,12 @@ export async function processGoogleNotification(
     if (voided.productType === 1) {
       const existing = await store.getByTransactionId(voided.purchaseToken);
       if (existing) {
+        // A refund is final, so it applies whatever its time, and records that
+        // time: an RTDN from before the refund arriving later must not revive it.
+        const asOf = stateAsOfField(laterStateAsOf(existing.stateAsOf, voided.stateAsOf));
         const updated = config.refundPolicy === 'until_expiry'
-          ? { ...existing, willRenew: false }
-          : { ...existing, status: SUBSCRIPTION_STATUS.CANCELED };
+          ? { ...existing, willRenew: false, ...asOf }
+          : { ...existing, status: SUBSCRIPTION_STATUS.CANCELED, ...asOf };
         await store.save(updated);
       } else {
         log.warn('[onesub/webhook/google] voided subscription for unknown purchaseToken', {
@@ -274,9 +320,15 @@ export async function processGoogleNotification(
     return;
   }
 
-  const { notificationType, purchaseToken, subscriptionId, packageName } = work.notification;
+  const { notificationType, purchaseToken, subscriptionId, packageName, stateAsOf: eventAt } = work.notification;
 
   const existing = await store.getByTransactionId(purchaseToken);
+  // An RTDN older than state already applied must not set the status it
+  // implies. A live re-fetch below is still applied — it is current by
+  // construction — but the stale notification's own status is not.
+  // A revocation (refund) is final, like a voided purchase: it applies whatever
+  // its time, so it is never dropped as stale when Play cannot be read.
+  const stale = !isGoogleRevokedNotification(notificationType) && isStaleSnapshot(existing, eventAt);
 
   let finalStatus: SubscriptionInfo['status'];
   if (isGoogleActiveNotification(notificationType)) {
@@ -310,18 +362,27 @@ export async function processGoogleNotification(
   }
 
   if (existing) {
-    let updated: SubscriptionInfo = { ...existing, status: finalStatus };
+    let updated: SubscriptionInfo | null = stale
+      ? null
+      : { ...existing, status: finalStatus, ...stateAsOfField(laterStateAsOf(existing.stateAsOf, eventAt)) };
 
     if (subGoogleCfg?.serviceAccountKey) {
-      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, subGoogleCfg);
+      // A stale notification is only applied through a fresh read, so if Play is
+      // down for it, fail the delivery and let Pub/Sub retry rather than ack it.
+      const fresh = stale
+        ? await refetchUnlessTransient(purchaseToken, subscriptionId, subGoogleCfg)
+        : await refetchGoogleSubscription(purchaseToken, subscriptionId, subGoogleCfg);
       if (fresh) {
         // Preserve grace/on-hold only when the NOTIFICATION said so — a
         // finalStatus inherited from the stored record (unknown types above)
         // must not block the re-fetched status, or a lost recovery RTDN
         // leaves the record stuck on_hold while Google reports active.
+        // A stale one never does: that is the late ON_HOLD that used to leave
+        // a recovered subscription stuck on_hold.
         const preserveNotificationStatus =
-          isGoogleGracePeriodNotification(notificationType) ||
-          isGoogleOnHoldNotification(notificationType);
+          !stale &&
+          (isGoogleGracePeriodNotification(notificationType) ||
+            isGoogleOnHoldNotification(notificationType));
         updated = {
           ...existing,
           status: preserveNotificationStatus ? finalStatus : fresh.status,
@@ -329,14 +390,43 @@ export async function processGoogleNotification(
           willRenew: fresh.willRenew,
           autoResumeTime: fresh.autoResumeTime,
           linkedPurchaseToken: fresh.linkedPurchaseToken ?? existing.linkedPurchaseToken,
+          // A status taken from the notification is only as current as the
+          // notification. Stamping the read time on it would make an earlier
+          // RECOVERED look older than the ON_HOLD being preserved here.
+          ...stateAsOfField(
+            preserveNotificationStatus
+              ? laterStateAsOf(existing.stateAsOf, eventAt)
+              : laterStateAsOf(existing.stateAsOf, eventAt, fresh.stateAsOf),
+          ),
         };
       }
     }
 
+    if (!updated) {
+      log.info('[onesub/webhook/google] stale notification ignored', {
+        purchaseToken,
+        notificationType,
+      });
+      return;
+    }
     await store.save(updated);
   } else {
     if (subGoogleCfg?.serviceAccountKey) {
-      const fresh = await validateGoogleReceipt(purchaseToken, subscriptionId, subGoogleCfg);
+      // No record to fall back on: a Play outage here must fail the delivery so
+      // Pub/Sub retries it, or a new subscription is never recorded. Refused
+      // credentials are not an outage — retrying for days cannot fix them — so
+      // that case is acknowledged and logged, as in 0.27.
+      let fresh: SubscriptionInfo | null;
+      try {
+        fresh = await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, subGoogleCfg);
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError) || err.transient) throw err;
+        log.error('[onesub/webhook/google] Play refused our credentials — unknown token dropped', {
+          purchaseToken,
+          err,
+        });
+        fresh = null;
+      }
       if (fresh) {
         // Consume the account identity out of the record: it seeds the
         // placeholder userId, but must never be persisted (validate route
@@ -411,7 +501,8 @@ export async function handleGoogleWebhook(
     }
   }
 
-  const body = req.body as Partial<GoogleNotificationPayload>;
+  // `req.body` is undefined for a non-JSON request, and anything for a hostile one.
+  const body = (req.body ?? {}) as Partial<GoogleNotificationPayload>;
 
   if (!body.message?.data) {
     sendError(res, 400, ONESUB_ERROR_CODE.MISSING_MESSAGE_DATA, 'Missing message.data');

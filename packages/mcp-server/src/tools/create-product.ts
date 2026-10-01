@@ -20,7 +20,9 @@ export const createProductInputSchema = {
   name: z.string().describe('Display name (e.g. "Premium Monthly")'),
   price: z
     .number()
-    .describe('Price in the smallest unit (e.g. 499 for $4.99, 4900 for ₩4,900)'),
+    .int()
+    .positive()
+    .describe('Price in the smallest unit (e.g. 499 for $4.99, 4900 for ₩4,900) — an integer, never 4.99'),
   currency: z.string().default('USD').describe('Currency code (USD, KRW, etc.)'),
   productType: z
     .enum(['subscription', 'consumable', 'non_consumable'])
@@ -31,7 +33,7 @@ export const createProductInputSchema = {
     .default('monthly')
     .describe('Billing period — only applies to subscriptions'),
   extraRegions: z
-    .array(z.object({ currency: z.string(), price: z.number() }))
+    .array(z.object({ currency: z.string(), price: z.number().int().positive() }))
     .optional()
     .describe('Additional region prices, e.g. [{ currency: "KRW", price: 4900 }, { currency: "JPY", price: 600 }]'),
   appleKeyId: z.string().optional().describe('App Store Connect API Key ID'),
@@ -75,7 +77,7 @@ type GoogleCreateResult = GoogleCreateSubscriptionResult | GoogleCreateOneTimePu
 
 export async function runCreateProduct(
   args: CreateProductArgs,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
   const currency = args.currency ?? 'USD';
   const productType = args.productType ?? 'subscription';
   const period = args.period ?? 'monthly';
@@ -204,7 +206,12 @@ export async function runCreateProduct(
     existingAppleProducts,
   });
 
-  return { content: [{ type: 'text', text }] };
+  // A failed store call must not read as success to the MCP client.
+  const anyFailed =
+    (needsApple && (!!appleConfigError || appleResult?.success === false)) ||
+    (needsGoogle && (!!googleConfigError || googleResult?.success === false));
+
+  return { content: [{ type: 'text', text }], ...(anyFailed ? { isError: true } : {}) };
 }
 
 function buildCreateOutput(opts: {

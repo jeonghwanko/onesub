@@ -1,3 +1,5 @@
+import type { SubscriptionInfo, SubscriptionStatus } from './types.js';
+
 /** API route paths */
 export const ROUTES = {
   VALIDATE: '/onesub/validate',
@@ -59,6 +61,37 @@ export const PURCHASE_TYPE = {
 } as const;
 
 /**
+ * Statuses during which the store still grants access. `grace_period` counts:
+ * the store is retrying payment and tells apps to keep providing service.
+ * `on_hold` and `paused` do not.
+ */
+export const ENTITLED_SUBSCRIPTION_STATUSES: readonly SubscriptionStatus[] = [
+  SUBSCRIPTION_STATUS.ACTIVE,
+  SUBSCRIPTION_STATUS.GRACE_PERIOD,
+];
+
+/**
+ * Whether a subscription grants access at `nowMs`: an entitled status AND access
+ * that has not run out — `expiresAt`, or for an Apple billing grace period the
+ * later `gracePeriodExpiresAt`. The one definition of "active" — the status
+ * route, entitlements and metrics use it, and so can a host; the Postgres metrics
+ * query is its SQL translation and is tested against it.
+ *
+ * The expiry check is not redundant with the status: a refund under
+ * `refundPolicy: 'until_expiry'` keeps `status: 'active'` until the paid period
+ * ends, and a missed EXPIRED notification leaves a stale `active` behind.
+ */
+export function isSubscriptionEntitled(
+  sub: Pick<SubscriptionInfo, 'status' | 'expiresAt' | 'gracePeriodExpiresAt'>,
+  nowMs: number = Date.now(),
+): boolean {
+  if (!ENTITLED_SUBSCRIPTION_STATUSES.includes(sub.status)) return false;
+  // An unparsable grace end must not void a valid expiry (Math.max with NaN is NaN).
+  const graceUntil = sub.gracePeriodExpiresAt ? Date.parse(sub.gracePeriodExpiresAt) : Number.NaN;
+  return Date.parse(sub.expiresAt) > nowMs || graceUntil > nowMs;
+}
+
+/**
  * Canonical error codes returned by the server and thrown by the SDK.
  * Clients should branch on these machine-readable codes rather than parsing
  * human-readable `error` strings. The `OneSubError` class in `@jeonghwanko/onesub-sdk`
@@ -74,6 +107,8 @@ export const ONESUB_ERROR_CODE = {
   // ── Receipt validation ──
   RECEIPT_VALIDATION_FAILED: 'RECEIPT_VALIDATION_FAILED',
   NO_RECEIPT_DATA: 'NO_RECEIPT_DATA',
+  /** The store's API could not be reached or failed (5xx, timeout, auth). Not a verdict on the receipt — retry later. */
+  PROVIDER_UNAVAILABLE: 'PROVIDER_UNAVAILABLE',
 
   // ── Authorization ──
   UNAUTHORIZED: 'UNAUTHORIZED',

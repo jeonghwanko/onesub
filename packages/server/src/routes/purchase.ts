@@ -17,7 +17,8 @@ import {
   acknowledgeGoogleProduct,
 } from '../providers/google.js';
 import { log } from '../logger.js';
-import { sendError, parseOrSend } from '../errors.js';
+import { ProviderUnavailableError } from '../providers/errors.js';
+import { sendError, parseOrSend, isOwnershipConflict, isNonConsumableOwnedConflict } from '../errors.js';
 
 const NO_PURCHASE = { valid: false, purchase: null } as const;
 
@@ -77,18 +78,23 @@ export function createPurchaseRouter(
    * - Google: checks consumptionState for consumables (replay prevention),
    *   enforces 72h receipt age, uses orderId as the dedup key
    */
+  // Per-transaction lock for the lookup → save below (see lockTransaction).
+  const claimLocks = new Map<string, Promise<void>>();
+
   router.post(ROUTES.VALIDATE_PURCHASE, async (req: Request, res: Response) => {
     const body = parseOrSend(res, validatePurchaseSchema, req.body, { extra: NO_PURCHASE });
     if (!body) return;
+    let releaseClaim: (() => void) | undefined;
 
     const { platform, receipt, userId, productId, type, appId } = body;
 
     // An Apple receipt names its own app; a Google purchase token does not, so it
     // relies on appId (or the default app).
-    const appConfig = registry.configFor({
+    const appHint = {
       appId,
       bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
-    });
+    };
+    const appConfig = registry.configFor(appHint);
 
     try {
       // Non-consumable idempotent restore. If the user already owns this
@@ -104,21 +110,23 @@ export function createPurchaseRouter(
       // intact and is safe: ownership was already proven by the prior validated
       // purchase recorded under this userId (same idempotent-restore semantics
       // as the transactionId-match path below).
-      if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-        // Scoped to this product rather than reading the user's whole purchase
-        // history — a consumable-heavy account otherwise paid for every one of
-        // its rows on each lifetime-product purchase.
+      //
+      // Scoped to this product rather than reading the user's whole purchase
+      // history — a consumable-heavy account otherwise paid for every one of
+      // its rows on each lifetime-product purchase. Also the answer when a
+      // write below loses a race to another copy of this non-consumable.
+      const sendOwnedRestore = async (): Promise<boolean> => {
         const owned = (await purchasesForProduct(purchaseStore, userId, productId))[0];
-        if (owned) {
-          const response: ValidatePurchaseResponse = {
-            valid: true,
-            purchase: { ...owned, userId },
-            action: 'restored',
-          };
-          res.status(200).json(response);
-          return;
-        }
-      }
+        if (!owned) return false;
+        const response: ValidatePurchaseResponse = {
+          valid: true,
+          purchase: { ...owned, userId },
+          action: 'restored',
+        };
+        res.status(200).json(response);
+        return true;
+      };
+      if (type === PURCHASE_TYPE.NON_CONSUMABLE && (await sendOwnedRestore())) return;
 
       // Validate receipt via the appropriate platform-specific product validator.
       // Note: these are separate from the subscription validators — they call
@@ -134,6 +142,10 @@ export function createPurchaseRouter(
       // whether we have a record of it — see the replay guard before the INSERT.
       let alreadyConsumed = false;
 
+      // An app this instance does not host gets no credentials — never another
+      // app's — and so the "config missing" 500 below. Deliberately not a 4xx:
+      // clients (the Unity package) read a 4xx as a verdict on the receipt, and
+      // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
         if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);
@@ -205,6 +217,9 @@ export function createPurchaseRouter(
       // - Different userId + non_consumable → reassign (device reinstall)
       // - Different userId + consumable → reject (receipts can't be reused)
       // - No existing row → fresh purchase, INSERT below
+      // Two concurrent copies of one request would otherwise both read "not
+      // recorded" and both answer `new` — a consumable granted twice.
+      releaseClaim = await lockTransaction(claimLocks, `${platform}:${transactionId}`);
       const existing = await purchaseStore.getPurchaseByTransactionId(transactionId);
       let action: 'new' | 'restored' = 'new';
 
@@ -212,7 +227,13 @@ export function createPurchaseRouter(
         action = 'restored';
         if (existing.userId !== userId) {
           if (type === PURCHASE_TYPE.NON_CONSUMABLE) {
-            await purchaseStore.reassignPurchase(transactionId, userId);
+            try {
+              await purchaseStore.reassignPurchase(transactionId, userId);
+            } catch (err) {
+              if (!isNonConsumableOwnedConflict(err)) throw err;
+              if (await sendOwnedRestore()) return;
+              throw err;
+            }
             log.info('[onesub/purchase] reassigned transaction to a new user', {
               transactionId,
               fromUserId: existing.userId,
@@ -264,7 +285,25 @@ export function createPurchaseRouter(
         quantity: 1,
       };
 
-      await purchaseStore.savePurchase(purchase);
+      try {
+        await purchaseStore.savePurchase(purchase);
+      } catch (err) {
+        // The user came to own this non-consumable (another transaction, a
+        // concurrent request) after the owned-check at the top of this route.
+        if (isNonConsumableOwnedConflict(err) && (await sendOwnedRestore())) return;
+        // The lookup above found no record, but a concurrent request for the
+        // same receipt claimed it for another user before this INSERT landed.
+        if (!isOwnershipConflict(err)) throw err;
+        log.warn('[onesub/purchase] transaction claimed by another user concurrently', { transactionId, userId });
+        sendError(
+          res,
+          409,
+          ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER,
+          'TRANSACTION_BELONGS_TO_OTHER_USER',
+          NO_PURCHASE,
+        );
+        return;
+      }
 
       // Google requires acknowledgement within 3 days of purchase or the
       // transaction is auto-refunded.
@@ -288,8 +327,15 @@ export function createPurchaseRouter(
       };
       res.status(200).json(response);
     } catch (err) {
+      if (err instanceof ProviderUnavailableError) {
+        log.warn('[onesub/purchase/validate] store API unavailable', { userId, productId, platform, err });
+        sendError(res, 503, ONESUB_ERROR_CODE.PROVIDER_UNAVAILABLE, 'Store API unavailable — retry later', NO_PURCHASE);
+        return;
+      }
       log.error('[onesub/purchase/validate] Unexpected error', { userId, productId, platform, type, err });
       sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error during purchase validation', NO_PURCHASE);
+    } finally {
+      releaseClaim?.();
     }
   });
 
@@ -324,4 +370,31 @@ export function createPurchaseRouter(
   });
 
   return router;
+}
+
+/**
+ * Wait for any request already working on `key`, then hold it until released.
+ * In-process only: instances behind a load balancer can still race, as before.
+ */
+export async function lockTransaction(
+  locks: Map<string, Promise<void>>,
+  key: string,
+  maxWaitMs = 30_000,
+): Promise<() => void> {
+  const prev = locks.get(key);
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => { release = resolve; });
+  const tail = (prev ?? Promise.resolve()).then(() => mine);
+  locks.set(key, tail);
+  if (prev) {
+    // Never wait forever behind a request whose store call hangs: after
+    // maxWaitMs, go ahead unserialized, as 0.27 always did.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([prev, new Promise<void>((resolve) => { timer = setTimeout(resolve, maxWaitMs); })]);
+    clearTimeout(timer);
+  }
+  return () => {
+    release();
+    if (locks.get(key) === tail) locks.delete(key);
+  };
 }

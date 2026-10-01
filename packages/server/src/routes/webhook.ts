@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { OneSubServerConfig } from '@onesub/shared';
 import { ROUTES } from '@onesub/shared';
 import type { SubscriptionStore, PurchaseStore } from '../store.js';
@@ -46,8 +46,8 @@ export function createWebhookRouter(
 
   const router = Router();
 
-  router.post(ROUTES.WEBHOOK_APPLE, (req: Request, res: Response) =>
-    handleAppleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue),
+  router.post(ROUTES.WEBHOOK_APPLE, (req: Request, res: Response, next: NextFunction) =>
+    handleAppleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue).catch(next),
   );
 
   // Google's route is mounted only for deployments that actually serve Google
@@ -63,8 +63,8 @@ export function createWebhookRouter(
   // against the bundled Apple roots on every request regardless of config, so it
   // is not open in the same way.
   if (servesGoogle(config)) {
-    router.post(ROUTES.WEBHOOK_GOOGLE, (req: Request, res: Response) =>
-      handleGoogleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue),
+    router.post(ROUTES.WEBHOOK_GOOGLE, (req: Request, res: Response, next: NextFunction) =>
+      handleGoogleWebhook(req, res, config, store, purchaseStore, webhookEventStore, webhookQueue).catch(next),
     );
   }
 

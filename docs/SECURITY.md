@@ -94,8 +94,9 @@ authentication middleware.
    maps have no eviction policy. Use PostgreSQL or Redis stores and Redis-backed cache/idempotency for
    durable or multi-instance deployments
 3. **Mock/degraded verification modes**: `apple.mockMode`, `google.mockMode`, and
-   `skipJwsVerification` are for local testing only. Mock provider modes are rejected when
-   `NODE_ENV=production`; do not rely on environment guards as a substitute for production config review
+   `skipJwsVerification` are for local testing only. All three are rejected when
+   `NODE_ENV=production`, on the top-level config and on every `apps[]` entry; do not rely on
+   environment guards as a substitute for production config review
 4. **No rate limiting**: the only built-in request bound is the 50 kb JSON body cap. The
    unauthenticated validation routes are the most expensive ones — JWS verification, and on the Google
    path an outbound store API call — so request volume must be limited by the host, at the proxy or in

@@ -28,6 +28,7 @@ import {
   mapNativePurchaseErrorCode,
   extractReceiptToken,
   extractTransactionId,
+  isAlreadyOwnedResponse,
   type InFlightEntry,
 } from './purchaseFlow.js';
 import { OneSubError, isOneSubErrorCode } from './OneSubError.js';
@@ -224,6 +225,14 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   // requestPurchase), true = provider teardown (the parked caller must abort
   // — see awaitDrainComplete, which maps it to a PROVIDER_UNMOUNTED throw).
   const drainWaitersRef = useRef<Array<(aborted: boolean) => void>>([]);
+  // The userId currently mounted. Async callbacks compare it with the userId
+  // their closure was created for, and skip their state writes when they differ
+  // — otherwise user A's restore or entitlement refresh that resolves after a
+  // switch to user B writes A's state onto B. Comparing against the closure's
+  // own userId (not a counter read at call time) also covers the *WithRefresh
+  // wrappers, which call the previous render's refresh after their own await.
+  const userIdRef = useRef(userId);
+  userIdRef.current = userId;
   const DRAIN_WINDOW_MS = 2500;
   const mockMode = config.mockMode === true;
 
@@ -594,6 +603,13 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
     setIsBusy(true);
     setIsLoading(true);
 
+    const isCurrentUser = () => userIdRef.current === userId;
+    const applyStatus = (active: boolean, sub: SubscriptionInfo | null) => {
+      if (!isCurrentUser()) return;
+      setIsActive(active);
+      setSubscription(sub);
+    };
+
     try {
       const platform = getCurrentPlatform();
       const purchases = await RNIap.getAvailablePurchases();
@@ -604,8 +620,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
 
       if (!match) {
         const status = await checkStatus(cfg.serverUrl, userId);
-        setIsActive(status.active);
-        setSubscription(status.subscription);
+        applyStatus(status.active, status.subscription);
         return;
       }
 
@@ -625,15 +640,19 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
       });
 
       if (result.valid && result.subscription) {
-        setIsActive(true);
-        setSubscription(result.subscription);
+        applyStatus(true, result.subscription);
       } else {
         const status = await checkStatus(cfg.serverUrl, userId);
-        setIsActive(status.active);
-        setSubscription(status.subscription);
+        applyStatus(status.active, status.subscription);
       }
     } finally {
-      releaseIapOperation();
+      if (isCurrentUser()) {
+        releaseIapOperation();
+      } else {
+        // Free the SDK-wide lock, but leave isLoading to the new user's own load.
+        isBusyRef.current = false;
+        setIsBusy(false);
+      }
     }
   }, [userId, mockMode, releaseIapOperation]);
 
@@ -779,7 +798,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
         // carrying the store transactionId so receipt-forwarding hosts can
         // re-entitle. (Defensive: updated servers return the recorded purchase
         // via the valid:true branch above; this covers legacy 409 servers.)
-        if (validationResult.error === 'NON_CONSUMABLE_ALREADY_OWNED') {
+        if (isAlreadyOwnedResponse(validationResult)) {
           return {
             productId,
             userId,
@@ -811,7 +830,7 @@ export function OneSubProvider({ config, userId, accountToken, children }: OneSu
   const refreshEntitlements = useCallback(async () => {
     try {
       const result = await checkEntitlements(config.serverUrl, userId);
-      setEntitlements(result.entitlements);
+      if (userIdRef.current === userId) setEntitlements(result.entitlements);
     } catch {
       // Leave previous map in place on transient failure.
     }

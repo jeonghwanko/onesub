@@ -1,7 +1,8 @@
-import type { Response } from 'express';
+import type { ErrorRequestHandler, Response } from 'express';
 import { z } from 'zod';
 import type { OneSubErrorCode } from '@onesub/shared';
 import { ONESUB_ERROR_CODE } from '@onesub/shared';
+import { log } from './logger.js';
 
 /**
  * Send a structured error response. Every onesub HTTP endpoint uses this
@@ -88,3 +89,68 @@ export function parseOrSend<S extends z.ZodType>(
   }
   return undefined;
 }
+
+/**
+ * True for the ownership-conflict error every PurchaseStore throws from
+ * `savePurchase` when the transactionId is already recorded for another user —
+ * including when a concurrent request won the race to claim it.
+ */
+export function isOwnershipConflict(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER;
+}
+
+/**
+ * True for the conflict a PurchaseStore throws when the user already holds this
+ * non-consumable under a different transactionId (see `purchaseConflict`).
+ */
+export function isNonConsumableOwnedConflict(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === ONESUB_ERROR_CODE.NON_CONSUMABLE_ALREADY_OWNED;
+}
+
+/**
+ * Error handler for the onesub router: answers body-parser rejections on
+ * `/onesub/*` with the `{ error, errorCode }` body every client parses, instead
+ * of Express's HTML page.
+ *
+ * Everything else goes on to the host's own error handler via `next(err)`, so a
+ * host that alerts on route errors keeps seeing onesub's. `createOneSubServer`,
+ * which has no host, adds `oneSubFallbackErrorHandler` after the router.
+ *
+ * Scoped to `/onesub/*`: the router's JSON parser runs for every request that
+ * passes through it, and a host's own routes must keep reaching the host's
+ * error handler.
+ */
+export const oneSubErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  // Express matches routes case-insensitively, so must this.
+  const { type, status } = (err ?? {}) as { type?: unknown; status?: unknown };
+  if (res.headersSent || typeof type !== 'string' || !req.path.toLowerCase().startsWith('/onesub/')) {
+    next(err);
+    return;
+  }
+  if (type === 'entity.parse.failed') {
+    sendError(res, 400, ONESUB_ERROR_CODE.INVALID_INPUT, 'Malformed JSON body');
+  } else if (type === 'entity.too.large') {
+    sendError(res, 413, ONESUB_ERROR_CODE.INVALID_INPUT, 'Request body too large');
+  } else if (typeof status === 'number' && status >= 400 && status < 500) {
+    // Unsupported charset/encoding, an aborted upload: the client's, keep its 4xx.
+    sendError(res, status, ONESUB_ERROR_CODE.INVALID_INPUT, 'Unreadable request body');
+  } else {
+    next(err);
+  }
+};
+
+/** For `createOneSubServer`: a JSON answer for any error nothing else answered. */
+export const oneSubFallbackErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  // A client error raised anywhere (body parser on another path, http-errors): keep its 4xx.
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    sendError(res, status, ONESUB_ERROR_CODE.INVALID_INPUT, 'Bad request');
+    return;
+  }
+  log.error('[onesub] Unhandled route error', { route: req.path, err });
+  sendError(res, 500, ONESUB_ERROR_CODE.INTERNAL_ERROR, 'Internal server error');
+};

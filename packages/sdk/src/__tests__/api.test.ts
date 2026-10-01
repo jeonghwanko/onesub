@@ -8,7 +8,9 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { validateReceipt, validatePurchase } from '../api.js';
+import { ONESUB_ERROR_CODE } from '@onesub/shared';
+import { validateReceipt, validatePurchase, checkStatus, checkEntitlement, REQUEST_TIMEOUT_MS } from '../api.js';
+import { OneSubError } from '../OneSubError.js';
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -181,5 +183,82 @@ describe('validatePurchase — non-2xx handling', () => {
         type: 'consumable',
       }),
     ).rejects.toThrow(/fetch failed/);
+  });
+});
+
+describe('error codes on thrown failures', () => {
+  const req = {
+    platform: 'apple' as const,
+    receipt: 'r',
+    userId: 'u1',
+    productId: 'pro_monthly',
+  };
+
+  it('maps a rejected fetch to OneSubError NETWORK_ERROR', async () => {
+    vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('Network request failed'));
+    const err = await validateReceipt('https://api.example.com', req).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OneSubError);
+    expect((err as OneSubError).code).toBe(ONESUB_ERROR_CODE.NETWORK_ERROR);
+  });
+
+  it('gives up after REQUEST_TIMEOUT_MS with NETWORK_ERROR instead of hanging', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.spyOn(global, 'fetch').mockImplementation(
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          }),
+      );
+      const pending = checkStatus('https://api.example.com', 'u1').catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
+      const err = await pending;
+      expect(err).toBeInstanceOf(OneSubError);
+      expect((err as OneSubError).code).toBe(ONESUB_ERROR_CODE.NETWORK_ERROR);
+      expect((err as OneSubError).message).toMatch(/timed out/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('maps a bodyless proxy 502 to NETWORK_ERROR (transient)', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async () => mockBrokenResponse(502));
+    const err = await validateReceipt('https://api.example.com', req).catch((e: unknown) => e);
+    expect((err as OneSubError).code).toBe(ONESUB_ERROR_CODE.NETWORK_ERROR);
+  });
+
+  it('maps an unexpected 4xx without a onesub body to INTERNAL_ERROR', async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async () => mockJsonResponse(403, { message: 'nope' }));
+    const err = await checkStatus('https://api.example.com', 'u1').catch((e: unknown) => e);
+    expect((err as OneSubError).code).toBe(ONESUB_ERROR_CODE.INTERNAL_ERROR);
+  });
+
+  it("keeps the server's own errorCode on a GET failure", async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async () =>
+      mockJsonResponse(404, { active: false, error: 'Unknown entitlement', errorCode: 'ENTITLEMENT_NOT_FOUND' }),
+    );
+    const notFound = await checkEntitlement('https://api.example.com', 'u1', 'nope').catch((e: unknown) => e);
+    expect((notFound as OneSubError).code).toBe(ONESUB_ERROR_CODE.ENTITLEMENT_NOT_FOUND);
+    expect((notFound as OneSubError).message).toMatch(/Entitlement check failed: 404/);
+
+    // A database outage is not "check your connection".
+    vi.spyOn(global, 'fetch').mockImplementation(async () =>
+      mockJsonResponse(500, { active: false, subscription: null, error: 'Internal server error', errorCode: 'STORE_ERROR' }),
+    );
+    const storeDown = await checkStatus('https://api.example.com', 'u1').catch((e: unknown) => e);
+    expect((storeDown as OneSubError).code).toBe(ONESUB_ERROR_CODE.STORE_ERROR);
+  });
+
+  it("returns the server's PROVIDER_UNAVAILABLE body untouched, so purchaseFlow keeps its errorCode", async () => {
+    vi.spyOn(global, 'fetch').mockImplementation(async () =>
+      mockJsonResponse(503, {
+        valid: false,
+        subscription: null,
+        error: 'Store API unavailable — retry later',
+        errorCode: 'PROVIDER_UNAVAILABLE',
+      }),
+    );
+    const result = await validateReceipt('https://api.example.com', req);
+    expect(result.errorCode).toBe('PROVIDER_UNAVAILABLE');
   });
 });

@@ -31,14 +31,35 @@ app.use(createOneSubMiddleware({
 }));
 ```
 
-Important: `database.url` does not construct or select a store. Pass `store` and `purchaseStore`
-explicitly. Without them, middleware uses in-memory stores even when `database.url` is populated.
+Important: `database.url` does not construct or select a store, and is optional and deprecated since
+0.28.0. Pass `store` and `purchaseStore` explicitly. Without them, middleware uses in-memory stores
+even when `database.url` is populated. (The package's own `npm start` / `node dist/index.js`
+entrypoint is the exception: it builds Postgres stores from `DATABASE_URL`.)
+
+### Startup validation
+
+`createOneSubMiddleware` checks the config before mounting anything, and throws with every problem
+listed when one cannot work:
+- a `defaultAppId` that names no app
+- an empty `apple.bundleId`
+- a `productReceiptMaxAgeHours` that is not positive (`Infinity`, which switches the age check off, is allowed)
+- a negative `metricsCacheTtlSeconds`
+- an unknown `refundPolicy`
+
+Settings that only disable a feature, or are ambiguous but deterministic, log a warning instead:
+- a `google.serviceAccountKey` that is not key JSON with `client_email` and `private_key` (a common slip
+  is passing the file path). Google validation then fails; Apple is unaffected
+- Apple `keyId` / `issuerId` / `privateKey` only partly set
+- only one of `offerKeyId` / `offerPrivateKey`
+- one bundle ID or package name on two apps, or one `id` listed twice — the first listed wins
+
+An empty `serviceAccountKey` string counts as unset.
 
 ## Top-Level Server Options
 
 | Option | Required | Default/activation | Purpose |
 |---|---|---|---|
-| `database.url` | Type-required | No automatic connection | Compatibility/config metadata; construct durable stores separately |
+| `database.url` | No (deprecated) | Not read | Kept for compatibility. Construct durable stores and pass `store` / `purchaseStore` |
 | `apple` | One provider normally | Disabled | Apple validation and webhooks for the default app |
 | `google` | One provider normally | Disabled | Google validation and RTDN for the default app |
 | `apps` | No | Single-app mode | Credentials for multiple isolated applications |
@@ -66,8 +87,8 @@ Apple uses signed JWS payloads. Google push authentication is configured with `p
 | `mockMode` | Development only | Bypasses Apple calls and accepts deterministic mock receipt scenarios |
 | `skipJwsVerification` | Development only | Skips Apple JWS verification; never enable in production |
 
-`mockMode` is rejected when `NODE_ENV=production`. `skipJwsVerification` is still a dangerous
-degraded mode and must be excluded from production configuration.
+`mockMode` and `skipJwsVerification` are both rejected when `NODE_ENV=production`, at the top level
+and on every `apps[]` entry: `createOneSubMiddleware` throws at startup.
 
 ## Google Options
 
@@ -122,9 +143,9 @@ An `appId` may also equal a configured bundle ID or package name. Unknown explic
 Google purchase tokens do not contain a package name, so a non-default Google validation request
 must send `appId`.
 
-The Unity client sends `Application.identifier` as `appId`. The current React Native provider does
-not expose an app-ID option; use the default app or a host HTTP adapter when routing a non-default
-Google app.
+The Unity client sends `Application.identifier` as `appId`. The React Native provider sends
+`config.appId` when it is set (see [the SDK README](../packages/sdk/README.md)); set it for any
+non-default Google app.
 
 ## Middleware Infrastructure Options
 

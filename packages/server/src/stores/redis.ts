@@ -5,6 +5,7 @@ import type {
   ListFilteredOptions,
   ListFilteredResult,
 } from '../store.js';
+import { purchaseConflict } from '../store.js';
 import type { CacheAdapter } from '../cache.js';
 import type { WebhookEventStore } from '../webhook-events.js';
 
@@ -35,12 +36,14 @@ type IORedis = import('ioredis').Redis;
  *
  * Key layout:
  *   onesub:sub:tx:<originalTransactionId>      → JSON SubscriptionInfo
- *   onesub:sub:owner:<originalTransactionId>   → userId (cheap prev-owner lookup in save(); written in the same MULTI as the record)
+ *   onesub:sub:owner:<originalTransactionId>   → userId (cheap prev-owner lookup in save(); written by the same script as the record)
+ *   onesub:sub:asof:<originalTransactionId>    → the record's stateAsOf, compared atomically by save()
  *   onesub:sub:user:<userId>                   → SortedSet of originalTransactionIds, scored by updatedAt (ms)
  *   onesub:sub:all:sorted                      → SortedSet of originalTransactionIds, scored by save time (for listAll/listFiltered)
  *   onesub:purchase:tx:<transactionId>         → JSON PurchaseInfo
  *   onesub:purchase:user:<userId>              → SortedSet of transactionIds, scored by purchasedAt (ms)
  *   onesub:purchase:user_product:<u>:<p>       → Set of transactionIds (for non-consumable hasPurchased)
+ *   onesub:purchase:nc:<u>:<p>                 → transactionId holding this user's non-consumable (SET NX claim)
  *   onesub:purchase:all                        → Set of transactionIds
  *   onesub:cache:<key>                         → string with TTL (RedisCacheAdapter)
  *   onesub:webhook:event:<provider>:<id>       → "1" with TTL (RedisWebhookEventStore)
@@ -52,10 +55,48 @@ const SUB_USER_PREFIX = 'onesub:sub:user:';
 // Global sorted set (score = save timestamp ms) — enables ordered listAll and
 // O(log n + limit) fast-path pagination when no secondary filters are applied.
 const SUB_ALL_SORTED = 'onesub:sub:all:sorted';
+// Snapshot time of the record (`stateAsOf`) as a plain string, so the save
+// script can compare it without decoding JSON.
+const SUB_AS_OF_PREFIX = 'onesub:sub:asof:';
+
+/**
+ * Upsert a subscription unless the stored snapshot is newer (lifecycle.ts).
+ * `stateAsOf` values are all `Date#toISOString()` output — fixed width, UTC — so
+ * string order is time order.
+ *
+ * KEYS: tx record, as-of, owner, new user's set, global set.
+ * ARGV: record JSON, stateAsOf ('' = none), userId, score, originalTransactionId,
+ *       previous owner for records without an owner key ('' = none), user-set prefix.
+ */
+const SAVE_SUBSCRIPTION_SCRIPT = `
+local asof = ARGV[2]
+if asof ~= '' then
+  local cur = redis.call('GET', KEYS[2])
+  if cur and cur > asof then return 0 end
+end
+local prev = redis.call('GET', KEYS[3])
+if not prev and ARGV[6] ~= '' then prev = ARGV[6] end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[3], ARGV[3])
+if asof ~= '' then redis.call('SET', KEYS[2], asof) else redis.call('DEL', KEYS[2]) end
+if prev and prev ~= ARGV[3] then redis.call('ZREM', ARGV[7] .. prev, ARGV[5]) end
+redis.call('ZADD', KEYS[4], ARGV[4], ARGV[5])
+redis.call('ZADD', KEYS[5], ARGV[4], ARGV[5])
+return 1
+`;
 
 const PUR_TX_PREFIX = 'onesub:purchase:tx:';
 const PUR_USER_PREFIX = 'onesub:purchase:user:';
 const PUR_USER_PRODUCT_PREFIX = 'onesub:purchase:user_product:';
+const PUR_NON_CONSUMABLE_PREFIX = 'onesub:purchase:nc:';
+/** SET KEYS[1] to ARGV[2] only if it still holds ARGV[1]. Returns 1 when set. */
+const COMPARE_AND_SET_SCRIPT = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+`;
 const PUR_ALL = 'onesub:purchase:all';
 
 export class RedisSubscriptionStore implements SubscriptionStore {
@@ -65,30 +106,34 @@ export class RedisSubscriptionStore implements SubscriptionStore {
     const score = Date.now();
     const txKey = SUB_TX_PREFIX + sub.originalTransactionId;
     const ownerKey = SUB_OWNER_PREFIX + sub.originalTransactionId;
-    const userKey = SUB_USER_PREFIX + sub.userId;
 
-    // If this transaction was previously bound to a different userId (the
-    // validate route rebinds ownership on re-validation), drop it from the
-    // old user's index — otherwise both userIds would resolve the same live
-    // subscription forever. The owner side-key keeps that check to a small
-    // string GET on the hot path instead of a GET + JSON.parse of the full
-    // record; records written before the side-key existed fall back to the
-    // full record once and are backfilled by the MULTI below.
-    let prevUserId: string | null = await this.redis.get(ownerKey);
-    if (prevUserId === null) {
+    // Records written before the owner side-key existed have none; read the
+    // previous owner from the record once, and the script backfills the key.
+    let legacyPrevUserId = '';
+    if ((await this.redis.exists(ownerKey)) === 0) {
       const prevRaw = await this.redis.get(txKey);
-      prevUserId = prevRaw ? (JSON.parse(prevRaw) as SubscriptionInfo).userId : null;
+      legacyPrevUserId = prevRaw ? (JSON.parse(prevRaw) as SubscriptionInfo).userId : '';
     }
 
-    const pipeline = this.redis.multi();
-    pipeline.set(txKey, JSON.stringify(sub));
-    pipeline.set(ownerKey, sub.userId);
-    if (prevUserId !== null && prevUserId !== sub.userId) {
-      pipeline.zrem(SUB_USER_PREFIX + prevUserId, sub.originalTransactionId);
-    }
-    pipeline.zadd(userKey, score, sub.originalTransactionId);
-    pipeline.zadd(SUB_ALL_SORTED, score, sub.originalTransactionId);
-    await pipeline.exec();
+    // One script, so the ordering check and every write are atomic: WATCH would
+    // not do, because it is per connection and this client is shared by
+    // concurrent requests and queue workers.
+    await this.redis.eval(
+      SAVE_SUBSCRIPTION_SCRIPT,
+      5,
+      txKey,
+      SUB_AS_OF_PREFIX + sub.originalTransactionId,
+      ownerKey,
+      SUB_USER_PREFIX + sub.userId,
+      SUB_ALL_SORTED,
+      JSON.stringify(sub),
+      sub.stateAsOf ?? '',
+      sub.userId,
+      String(score),
+      sub.originalTransactionId,
+      legacyPrevUserId,
+      SUB_USER_PREFIX,
+    );
   }
 
   async getByUserId(userId: string): Promise<SubscriptionInfo | null> {
@@ -169,6 +214,64 @@ export class RedisSubscriptionStore implements SubscriptionStore {
 export class RedisPurchaseStore implements PurchaseStore {
   constructor(private readonly redis: IORedis) {}
 
+  /**
+   * Claim "this user's copy of this non-consumable" for `transactionId` — the
+   * rule Postgres enforces with a partial unique index. SET NX makes the claim
+   * atomic between concurrent saves. Returns true when this call took a fresh
+   * claim (the caller releases it if its own write then fails); throws
+   * NON_CONSUMABLE_ALREADY_OWNED when another live transaction holds it.
+   */
+  private async claimNonConsumable(userId: string, productId: string, transactionId: string): Promise<boolean> {
+    const ncKey = PUR_NON_CONSUMABLE_PREFIX + userId + ':' + productId;
+    if ((await this.redis.set(ncKey, transactionId, 'NX')) === 'OK') {
+      // Rows written before this key existed have no claim. Look for one so a
+      // legacy owner is still honoured, and backfill the claim to it.
+      const legacy = await this.otherNonConsumable(userId, productId, transactionId);
+      if (legacy) {
+        await this.redis.set(ncKey, legacy);
+        throw purchaseConflict('NON_CONSUMABLE_ALREADY_OWNED');
+      }
+      return true;
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const holder = await this.redis.get(ncKey);
+      if (holder === transactionId) return false;
+      if (holder === null) {
+        if ((await this.redis.set(ncKey, transactionId, 'NX')) === 'OK') return true;
+        continue;
+      }
+      // Rows are written before their claim, so a claim whose row is gone — a
+      // crash after the claim, or a moved/deleted row — is not ownership.
+      const raw = await this.redis.get(PUR_TX_PREFIX + holder);
+      const held = raw ? (JSON.parse(raw) as PurchaseInfo) : null;
+      if (held && held.userId === userId && held.productId === productId) {
+        throw purchaseConflict('NON_CONSUMABLE_ALREADY_OWNED');
+      }
+      // Take it over only if nobody else did meanwhile.
+      if ((await this.redis.eval(COMPARE_AND_SET_SCRIPT, 1, ncKey, holder, transactionId)) === 1) return false;
+    }
+    throw new Error('[onesub/redis] non-consumable claim is contended; retry');
+  }
+
+  private async otherNonConsumable(userId: string, productId: string, transactionId: string): Promise<string | null> {
+    const ids = (await this.redis.smembers(PUR_USER_PRODUCT_PREFIX + userId + ':' + productId)).filter(
+      (id) => id !== transactionId,
+    );
+    if (ids.length === 0) return null;
+    const raws = await this.redis.mget(...ids.map((id) => PUR_TX_PREFIX + id));
+    for (const raw of raws) {
+      const p = raw ? (JSON.parse(raw) as PurchaseInfo) : null;
+      if (p?.type === 'non_consumable') return p.transactionId;
+    }
+    return null;
+  }
+
+  /** Release a non-consumable claim, only if `transactionId` is the one holding it. */
+  private async releaseNonConsumable(userId: string, productId: string, transactionId: string): Promise<void> {
+    const ncKey = PUR_NON_CONSUMABLE_PREFIX + userId + ':' + productId;
+    if ((await this.redis.get(ncKey)) === transactionId) await this.redis.del(ncKey);
+  }
+
   async savePurchase(purchase: PurchaseInfo): Promise<void> {
     const txKey = PUR_TX_PREFIX + purchase.transactionId;
 
@@ -184,15 +287,23 @@ export class RedisPurchaseStore implements PurchaseStore {
       // receipt could be re-bound to a different account.
       const existing = await this.redis.get(txKey);
       const owner = existing ? (JSON.parse(existing) as PurchaseInfo).userId : null;
-      if (owner !== null && owner !== purchase.userId) {
-        const err = new Error('TRANSACTION_BELONGS_TO_OTHER_USER') as Error & { code?: string };
-        err.code = 'TRANSACTION_BELONGS_TO_OTHER_USER';
-        throw err;
-      }
+      if (owner !== null && owner !== purchase.userId) throw purchaseConflict('TRANSACTION_BELONGS_TO_OTHER_USER');
       // Same user: fall through to the index writes below instead of returning.
       // They are idempotent (zadd/sadd), and skipping them would make a crash
       // between the SET NX and the pipeline permanent — the tx key would exist
       // with no indexes and no retry could ever backfill them.
+    }
+
+    // The non-consumable claim is taken AFTER the row exists. A claim whose row
+    // is missing is therefore abandoned (a crash), never still in flight — the
+    // distinction claimNonConsumable relies on to take one over safely.
+    if (purchase.type === 'non_consumable') {
+      try {
+        await this.claimNonConsumable(purchase.userId, purchase.productId, purchase.transactionId);
+      } catch (err) {
+        if (claimed === 'OK') await this.redis.del(txKey);
+        throw err;
+      }
     }
 
     const score = Date.parse(purchase.purchasedAt) || Date.now();
@@ -247,6 +358,10 @@ export class RedisPurchaseStore implements PurchaseStore {
     if (!raw) return false;
     const existing = JSON.parse(raw) as PurchaseInfo;
     if (existing.userId === newUserId) return true;
+    if (existing.type === 'non_consumable') {
+      await this.claimNonConsumable(newUserId, existing.productId, transactionId);
+      await this.releaseNonConsumable(existing.userId, existing.productId, transactionId);
+    }
 
     const updated: PurchaseInfo = { ...existing, userId: newUserId };
     const score = Date.parse(updated.purchasedAt) || Date.now();
@@ -275,6 +390,8 @@ export class RedisPurchaseStore implements PurchaseStore {
       pipeline.srem(PUR_ALL, id);
     }
     pipeline.del(userProductKey);
+    // Every row for this user + product is going, so its claim goes too.
+    pipeline.del(PUR_NON_CONSUMABLE_PREFIX + userId + ':' + productId);
     await pipeline.exec();
     return ids.length;
   }
@@ -284,6 +401,9 @@ export class RedisPurchaseStore implements PurchaseStore {
     const raw = await this.redis.get(txKey);
     if (!raw) return false;
     const existing = JSON.parse(raw) as PurchaseInfo;
+    if (existing.type === 'non_consumable') {
+      await this.releaseNonConsumable(existing.userId, existing.productId, transactionId);
+    }
 
     const pipeline = this.redis.multi();
     pipeline.del(txKey);

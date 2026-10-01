@@ -40,17 +40,46 @@
 // webhook startup warning. Cumulative growth this session: 32.78 → 35.47 KB,
 // each step recorded above. Raised because 0.53 KB of headroom means the next
 // unrelated commit fails this gate rather than the change that earned it.
+//
+// 2026-10-01: raised 40 → 45 KB (approved by the maintainer) for the hardening
+// pass recorded in docs/MIGRATION.md 0.28.0: startup config validation
+// (`config-check.ts`), snapshot ordering (`lifecycle.ts`, `stateAsOf`), the
+// router error handler, `ProviderUnavailableError` / 503 mapping, the Redis
+// non-consumable claim, and the dev-mode production guard. Measured 38.11/38.45 KB
+// before, 39.28/39.75 KB after the bug-fix half, 42.84/43.25 KB at the bump.
+//
+// 2026-10-01: 43.97/44.44 KB after the review fixes to that pass (atomic
+// ordering in every store's save, including a Redis Lua script; the Apple
+// receipt decision; the Redis claim CAS). Limit unchanged; 0.56 KB of headroom
+// left on CJS, so the next server addition needs a decision here.
+//
+// 2026-10-01: 44.17/44.66 KB after the backward-compatibility pass for existing
+// hosts (separate gracePeriodExpiresAt, 0.27 save fallback for a table without
+// the new columns, public validateGoogleReceipt keeping its null contract).
+// Limit unchanged; 0.34 KB of headroom on CJS.
+//
+// 2026-10-01: 44.50/44.96 KB after the second review (refund/grace rules for
+// Apple /validate, transient-vs-credential Play failures, column-fallback
+// recheck), with new log messages shortened to stay under. ~0.04 KB headroom:
+// the next server addition needs a decision here.
+//
+// 2026-10-02: raised 45 → 47 KB (approved by the maintainer) for the third
+// review's payment fixes: per-transaction serialization of purchase/validate
+// (a consumable was granted twice to concurrent duplicate requests), replaced
+// Google tokens no longer granting access, stale-RTDN retry during a Play
+// outage, and refund-time snapshots. Measured 45.05/45.40 KB at the bump;
+// 45.15/45.50 KB after the fourth review's fixes.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
     path: 'dist/index.js',
-    limit: '40 KB',
+    limit: '47 KB',
     gzip: true,
   },
   {
     name: 'cjs bundle (gzipped)',
     path: 'dist/index.cjs',
-    limit: '40 KB',
+    limit: '47 KB',
     gzip: true,
   },
 ];

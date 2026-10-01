@@ -18,6 +18,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { PurchaseInfo, SubscriptionInfo } from '@onesub/shared';
 import { PostgresSubscriptionStore, PostgresPurchaseStore } from '../stores/postgres.js';
+import { describeStoreContract, type StoreFactory } from './store-contract.js';
+import { describeFullFlow } from './full-flow.js';
 import {
   aggregateActiveSubscriptions,
   aggregateNonConsumablePurchases,
@@ -86,6 +88,22 @@ describePg('Postgres stores', () => {
   // ── schema ───────────────────────────────────────────────────────────────
 
   describe('schema', () => {
+    it('keeps saving, as 0.27 did, while the 0.28 columns are not there yet', async () => {
+      // A host that calls initSchema() without awaiting it serves its first
+      // requests before the ALTER lands; a hand-managed schema may lag a deploy.
+      await pool.query('ALTER TABLE onesub_subscriptions DROP COLUMN state_as_of, DROP COLUMN grace_period_expires_at');
+      try {
+        await store.save(sub({ stateAsOf: '2026-01-01T00:00:00.000Z' }));
+        const rec = await store.getByTransactionId('sub-1');
+        expect(rec).not.toBeNull();
+        expect(rec?.stateAsOf).toBeUndefined();
+      } finally {
+        await store.initSchema();
+      }
+      await store.save(sub({ stateAsOf: '2026-01-02T00:00:00.000Z' }));
+      expect((await store.getByTransactionId('sub-1'))?.stateAsOf).toBe('2026-01-02T00:00:00.000Z');
+    });
+
     it('initSchema is safe to run repeatedly', async () => {
       // Hosts are told to call it at every startup, so it has to be idempotent
       // against an already-migrated database, not just an empty one.
@@ -383,11 +401,15 @@ describePg('Postgres stores', () => {
       // Excluded: on_hold / paused do not grant entitlement.
       await store.save(sub({ originalTransactionId: 'e', status: 'on_hold', expiresAt: '2026-07-01T00:00:00.000Z' }));
       await store.save(sub({ originalTransactionId: 'f', status: 'paused', expiresAt: '2026-07-01T00:00:00.000Z' }));
+      // Included: an Apple grace period — paid period over, grace still running.
+      await store.save(sub({ originalTransactionId: 'g', status: 'grace_period', expiresAt: '2026-01-01T00:00:00.000Z', gracePeriodExpiresAt: '2026-07-01T00:00:00.000Z' }));
+      // Excluded: a grace end that has passed too.
+      await store.save(sub({ originalTransactionId: 'h', status: 'grace_period', expiresAt: '2026-01-01T00:00:00.000Z', gracePeriodExpiresAt: '2026-01-02T00:00:00.000Z' }));
 
       const { sql, memory } = await bothWays();
       expect(sql).toEqual(memory);
-      expect(sql.active).toBe(3);
-      expect(sql.gracePeriod).toBe(2);
+      expect(sql.active).toBe(4);
+      expect(sql.gracePeriod).toBe(3);
     });
 
     it('agrees on the expiry boundary, which is strictly greater-than', async () => {
@@ -572,3 +594,36 @@ describePg('Postgres stores', () => {
     });
   });
 });
+
+// The behavioural contract and the full-middleware flows shared with the
+// in-memory and Redis stores (see store-contract.ts / full-flow.ts). They run
+// from this file, after the suite above, because all of them truncate the same
+// tables and Vitest runs files in parallel workers.
+if (DATABASE_URL) {
+  let sharedSubs: PostgresSubscriptionStore | undefined;
+  let sharedPurchases: PostgresPurchaseStore | undefined;
+  let sharedPool: import('pg').Pool | undefined;
+  const postgresFactory: StoreFactory = {
+    name: 'postgres',
+    async setup() {
+      const pg = await import('pg');
+      const Pool = pg.default?.Pool ?? (pg as unknown as { Pool: typeof import('pg').Pool }).Pool;
+      sharedPool = new Pool({ connectionString: DATABASE_URL, max: 2 });
+      sharedSubs = new PostgresSubscriptionStore(DATABASE_URL);
+      sharedPurchases = new PostgresPurchaseStore(DATABASE_URL);
+      await sharedSubs.initSchema();
+      await sharedPurchases.initSchema();
+    },
+    async reset() {
+      await sharedPool!.query('TRUNCATE onesub_subscriptions, onesub_purchases');
+      return { subs: sharedSubs!, purchases: sharedPurchases! };
+    },
+    async teardown() {
+      await sharedSubs?.close();
+      await sharedPurchases?.close();
+      await sharedPool?.end();
+    },
+  };
+  describeStoreContract(postgresFactory);
+  describeFullFlow(postgresFactory);
+}
