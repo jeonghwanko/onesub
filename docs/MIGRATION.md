@@ -29,6 +29,7 @@ These used to fail later, per request:
 |---|---|
 | `defaultAppId` naming no app | route every unrouted request to the first app |
 | empty `apple.bundleId` | — |
+| an `apps[]` entry with an empty `id` | — |
 | a `productReceiptMaxAgeHours` that is not positive (`Infinity` is allowed), negative `metricsCacheTtlSeconds`, unknown `refundPolicy` | — |
 
 These only log a warning:
@@ -50,7 +51,8 @@ as a file path is the common one: pass the file's contents.
 ### A store outage is `503 PROVIDER_UNAVAILABLE`, not `422 RECEIPT_VALIDATION_FAILED`
 
 When Google Play cannot answer — 5xx, 429, a timeout, a network failure, or the service account
-refused (401/403) — `POST /onesub/validate` and `POST /onesub/purchase/validate` now answer
+refused (401/403, or the token exchange failing, including `400 invalid_grant` for a rotated or
+deleted key) — `POST /onesub/validate` and `POST /onesub/purchase/validate` now answer
 **503** with the new `PROVIDER_UNAVAILABLE` code. They used to answer 422, which clients treat as
 final, so valid purchases were dropped during outages. `MOCK_NETWORK_ERROR` receipts give the same
 503 instead of a 500.
@@ -82,6 +84,8 @@ retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
   those with a JSON 500.
 - An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
   of crashing the handler.
+- An error that escapes a webhook handler now reaches your app's error handler. Under Express 4 it
+  used to be left unhandled, so the request hung.
 
 ### Apple `/validate` no longer undoes a refund or ends a grace period early
 
@@ -102,7 +106,7 @@ The stored entitlement is never copied onto another account.
 ### New columns `state_as_of` and `grace_period_expires_at`; out-of-order notifications are ignored
 
 `SubscriptionInfo` gains `stateAsOf`, the time of the newest store-state snapshot applied to the record.
-A notification or receipt older than that no longer changes status, expiry or renewal, so a late
+A notification older than that no longer changes status, expiry or renewal, so a late
 EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. See
 [ARCHITECTURE.md](ARCHITECTURE.md#ordering-newest-snapshot-wins).
 
@@ -114,7 +118,7 @@ ALTER TABLE onesub_subscriptions ADD COLUMN IF NOT EXISTS grace_period_expires_a
 ```
 
 Run it before deploying if your host calls `initSchema()` without awaiting it. Until the columns
-exist, the store keeps saving the way 0.27 did: it logs one warning and skips the ordering guard, so
+exist, the store keeps saving the way 0.27 did: it logs one error line and skips the ordering guard, so
 nothing fails. Only the admin metrics query needs the new columns.
 
 Redis and in-memory stores need nothing. A custom `SubscriptionStore` must persist the new field, or
@@ -130,10 +134,11 @@ ordering is not enforced for its records.
 - **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
   most recent one that grants access. Before, it read only the most recently written record, so a webhook
   for an old expired subscription could hide an active one.
-- **Replaced Google tokens:** a record that another of the user's records replaced (its token is the
-  newer record's `linkedPurchaseToken`) no longer grants access in `/onesub/status` or the entitlement
-  routes. Before, after a plan change whose replacement was refunded, the old token could keep access
-  alive until its own expiry.
+- **Replaced Google tokens:** in `/onesub/status`, a record that another of the user's records
+  replaced (its token is the newer record's `linkedPurchaseToken`) no longer counts. Before, after a
+  plan change whose replacement was refunded, the old token could report active until its own expiry.
+  The entitlement routes still count every record, as in 0.27, so a still-paid old plan behind a
+  deferred replacement keeps its entitlement.
 
 ### Every store refuses a second non-consumable row
 

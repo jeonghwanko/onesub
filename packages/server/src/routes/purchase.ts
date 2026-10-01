@@ -376,13 +376,23 @@ export function createPurchaseRouter(
  * Wait for any request already working on `key`, then hold it until released.
  * In-process only: instances behind a load balancer can still race, as before.
  */
-async function lockTransaction(locks: Map<string, Promise<void>>, key: string): Promise<() => void> {
+export async function lockTransaction(
+  locks: Map<string, Promise<void>>,
+  key: string,
+  maxWaitMs = 30_000,
+): Promise<() => void> {
   const prev = locks.get(key);
   let release!: () => void;
   const mine = new Promise<void>((resolve) => { release = resolve; });
   const tail = (prev ?? Promise.resolve()).then(() => mine);
   locks.set(key, tail);
-  await prev;
+  if (prev) {
+    // Never wait forever behind a request whose store call hangs: after
+    // maxWaitMs, go ahead unserialized, as 0.27 always did.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([prev, new Promise<void>((resolve) => { timer = setTimeout(resolve, maxWaitMs); })]);
+    clearTimeout(timer);
+  }
   return () => {
     release();
     if (locks.get(key) === tail) locks.delete(key);

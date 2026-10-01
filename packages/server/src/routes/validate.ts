@@ -106,8 +106,10 @@ export function createValidateRouter(
       delete sub.signedAt;
       // A failed lookup only skips the guards below; the receipt is still
       // validated and saved, as in 0.27, rather than failing the purchase.
+      let lookupFailed = false;
       const existing = await store.getByTransactionId(sub.originalTransactionId).catch((err: unknown) => {
         log.warn('[onesub/validate] store lookup failed — saving without the ordering guard', { userId, err });
+        lookupFailed = true;
         return null;
       });
       if (existing && platform === 'apple' && keepsStoredAppleState(existing, sub, userId, signedAt)) {
@@ -122,7 +124,10 @@ export function createValidateRouter(
       }
       // Never move the record's snapshot time backwards (lifecycle.ts); the
       // store also refuses a write older than what it holds.
-      const stateAsOf = laterStateAsOf(existing?.stateAsOf, sub.stateAsOf);
+      // After a failed lookup the stored time is unknown, so carry none: the
+      // store would otherwise refuse this write as older and the route would
+      // still answer success. Saved without a time, it applies, as in 0.27.
+      const stateAsOf = lookupFailed ? undefined : laterStateAsOf(existing?.stateAsOf, sub.stateAsOf);
       if (stateAsOf) sub.stateAsOf = stateAsOf;
       else delete sub.stateAsOf;
 

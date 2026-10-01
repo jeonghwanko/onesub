@@ -13,3 +13,4 @@ Answer failures with the status that says whose fault it is, and close two produ
 - Apple summary notifications no longer crash the webhook.
 - `BullMQWebhookQueue` job ids no longer contain `:`, which BullMQ 5 rejected on every enqueue.
 - Concurrent duplicate `/onesub/purchase/validate` requests for one transaction no longer both answer `action: "new"` (a consumable granted twice); within a process the second answers `restored`.
+- A rejected Google service-account key (OAuth `400 invalid_grant`) answers 503 `PROVIDER_UNAVAILABLE` instead of a final 422. A failed store lookup in `/validate` no longer drops the save. A request waiting behind a hung purchase claim proceeds after 30 s.

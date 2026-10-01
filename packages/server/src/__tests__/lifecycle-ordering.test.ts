@@ -17,6 +17,8 @@ import { ROUTES, SUBSCRIPTION_STATUS } from '@onesub/shared';
 import { createValidateRouter } from '../routes/validate.js';
 import { createWebhookRouter } from '../routes/webhook.js';
 import { createStatusRouter } from '../routes/status.js';
+import { lockTransaction } from '../routes/purchase.js';
+import { evaluateEntitlementFrom } from '../routes/entitlements.js';
 import { InMemorySubscriptionStore, InMemoryPurchaseStore } from '../store.js';
 import { FAKE_SERVICE_ACCOUNT_KEY } from './test-utils.js';
 import { isStaleSnapshot, laterStateAsOf, isoFromEpochMs, snapshotTimeFromEpochMs } from '../lifecycle.js';
@@ -546,6 +548,113 @@ describe('third review: money-path regressions', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe('fourth review: guards and fixes', () => {
+  function keyConfig(): OneSubServerConfig {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const key = JSON.stringify({ client_email: 'sa@example.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+    return {
+      apple: { bundleId: 'com.example.app', skipJwsVerification: true },
+      google: { packageName: 'com.example.app', serviceAccountKey: key, allowUnauthenticatedWebhook: true },
+      database: { url: '' },
+    };
+  }
+  function appFor(cfg: OneSubServerConfig, store = new InMemorySubscriptionStore()) {
+    const app = express();
+    app.use(express.json());
+    app.use(createValidateRouter(cfg, store));
+    app.use(createStatusRouter(store));
+    app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
+    return { app, store };
+  }
+  const playActive = {
+    startTime: '2026-01-01T00:00:00Z',
+    subscriptionState: 'SUBSCRIPTION_STATE_ACTIVE',
+    latestOrderId: 'GPA.1',
+    acknowledgementState: 'ACKNOWLEDGEMENT_STATE_ACKNOWLEDGED',
+    lineItems: [{ productId: 'pro_monthly', expiryTime: new Date(Date.now() + 30 * DAY).toISOString(), autoRenewingPlan: { autoRenewEnabled: true } }],
+  };
+  function mockPlay(subscription: unknown, tokenStatus = 200) {
+    return vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com')) {
+        return { ok: tokenStatus === 200, status: tokenStatus, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '{"error":"invalid_grant"}' } as Response;
+      }
+      return { ok: true, status: 200, json: async () => subscription, text: async () => JSON.stringify(subscription) } as Response;
+    });
+  }
+
+  it('with credentials, a late ON_HOLD does not override the recovery Play reports', async () => {
+    const { app, store } = appFor(keyConfig());
+    await store.save(stored({ originalTransactionId: 'gh', platform: 'google' }));
+    const spy = mockPlay(playActive);
+    try {
+      const t = Date.now();
+      await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(1, 'gh', t)); // RECOVERED
+      await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(5, 'gh', t - 60_000)); // ON_HOLD, older
+      expect((await store.getByTransactionId('gh'))?.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("another user's expired receipt during a grace period never gets the stored grace entitlement", async () => {
+    const { app, store } = appFor(config as OneSubServerConfig);
+    const t = Date.now();
+    await store.save(stored({ originalTransactionId: 'gx', userId: 'u1', status: SUBSCRIPTION_STATUS.GRACE_PERIOD, expiresAt: new Date(t - DAY).toISOString(), gracePeriodExpiresAt: new Date(t + 6 * DAY).toISOString() }));
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: appleTx('gx', t - DAY, t - 40 * DAY), userId: 'u2', productId: 'pro_monthly' });
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.EXPIRED);
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'u2' })).body.active).toBe(false);
+  });
+
+  it('a rejected service-account key (OAuth 400 invalid_grant) is a retryable 503, not a final 422', async () => {
+    const { app } = appFor(keyConfig());
+    const spy = mockPlay(playActive, 400);
+    try {
+      const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'google', receipt: 'ptok-grant', userId: 'u1', productId: 'pro_monthly' });
+      expect(res.status).toBe(503);
+      expect(res.body.errorCode).toBe('PROVIDER_UNAVAILABLE');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a failed lookup still saves the receipt, even over a record with a newer snapshot time', async () => {
+    const store = new InMemorySubscriptionStore();
+    const t = Date.now();
+    await store.save(stored({ originalTransactionId: 'lf', userId: 'u1', stateAsOf: new Date(t - 4 * DAY).toISOString() }));
+    const real = store.getByTransactionId.bind(store);
+    let calls = 0;
+    store.getByTransactionId = (id: string) => (++calls === 1 ? Promise.reject(new Error('connection reset')) : real(id));
+    const { app } = appFor(config as OneSubServerConfig, store);
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: appleTx('lf', t + 20 * DAY, t - 5 * DAY), userId: 'u2', productId: 'pro_monthly' });
+    expect(res.status).toBe(200);
+    expect((await real('lf'))?.userId).toBe('u2');
+  });
+
+  it('entitlements keep counting every record, as in 0.27; /status alone drops replaced tokens', () => {
+    const now = Date.now();
+    const subs = [
+      stored({ originalTransactionId: 'old', platform: 'google', productId: 'pro_monthly', expiresAt: new Date(now + 20 * DAY).toISOString() }),
+      stored({ originalTransactionId: 'new', platform: 'google', productId: 'basic_monthly', linkedPurchaseToken: 'old' }),
+    ];
+    const result = evaluateEntitlementFrom(subs, [], { productIds: ['pro_monthly'] }, now);
+    expect(result.active).toBe(true);
+  });
+});
+
+describe('lockTransaction', () => {
+  it('serializes holders of one key, and gives up waiting after maxWaitMs', async () => {
+    const locks = new Map<string, Promise<void>>();
+    await lockTransaction(locks, 'k'); // never released — a hung store call
+    const started = Date.now();
+    const release = await lockTransaction(locks, 'k', 50);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(45);
+    release();
+    const other = await lockTransaction(locks, 'other', 50);
+    other();
   });
 });
 

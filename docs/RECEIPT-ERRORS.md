@@ -73,7 +73,7 @@ The platform provider (Apple or Google) rejected the receipt. Covers many underl
 
 ### `PROVIDER_UNAVAILABLE` (503)
 
-The server could not get an answer from Google Play: a 5xx, a 429, a timeout, a network failure, or the server's own service account being refused (401/403). (Apple receipts are verified locally from their signature, so Apple validation never produces this.) **This is not a verdict on the receipt.** The receipt may be perfectly valid.
+The server could not get an answer from Google Play: a 5xx, a 429, a timeout, a network failure, or the server's own service account being refused (401/403, or `400 invalid_grant` from the token exchange for a rotated or deleted key). (Apple receipts are verified locally from their signature, so Apple validation never produces this.) **This is not a verdict on the receipt.** The receipt may be perfectly valid.
 
 - **Symptom**: `valid: false, errorCode: 'PROVIDER_UNAVAILABLE'` from `POST /onesub/validate` or `POST /onesub/purchase/validate`, typically during a store outage. Server logs show `[onesub/google] Receipt validation failed` with the upstream status.
 - **Fix (client)**: treat it like `NETWORK_ERROR` — keep the transaction unfinished and retry later. The SDK already leaves it unfinished, so the store replays it.

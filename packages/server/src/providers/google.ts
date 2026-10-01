@@ -21,6 +21,18 @@ class GooglePlayHttpError extends Error {
 }
 
 /**
+ * A non-2xx from the OAuth token endpoint: our credentials, never the receipt.
+ * Kept apart from GooglePlayHttpError because its 400 (`invalid_grant` — a
+ * rotated or deleted key, clock skew) would otherwise read as "token rejected".
+ */
+class GoogleTokenError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+    this.name = 'GoogleTokenError';
+  }
+}
+
+/**
  * Statuses where Play has looked at the token and said no: malformed (400),
  * unknown (404), or no longer valid (410). Everything else — 5xx, 429, our own
  * credentials refused (401/403), a timeout, a failed token exchange — is Play
@@ -39,7 +51,7 @@ function isGoogleReceiptRejection(err: unknown): boolean {
  */
 function googleUnavailable(err: unknown): ProviderUnavailableError {
   const e = err as { name?: unknown; code?: unknown } | null;
-  const transient = err instanceof GooglePlayHttpError
+  const transient = err instanceof GooglePlayHttpError || err instanceof GoogleTokenError
     ? err.status >= 500 || err.status === 429
     : err instanceof TypeError ||
       e?.name === 'AbortError' ||
@@ -304,7 +316,7 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
   });
 
   if (!resp.ok) {
-    throw new GooglePlayHttpError(resp.status, `[onesub/google] Token request failed: ${resp.status}`);
+    throw new GoogleTokenError(resp.status, `[onesub/google] Token request failed: ${resp.status}`);
   }
 
   const data = (await resp.json()) as { access_token?: string };

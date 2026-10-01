@@ -15,7 +15,6 @@ import { ROUTES, ONESUB_ERROR_CODE, PURCHASE_TYPE, isSubscriptionEntitled } from
 import type { PurchaseStore, SubscriptionStore } from '../store.js';
 import { log } from '../logger.js';
 import { sendError, parseOrSend } from '../errors.js';
-import { withoutReplaced } from '../lifecycle.js';
 
 /**
  * Evaluate one entitlement against records the caller already holds.
@@ -50,7 +49,9 @@ export function evaluateEntitlementFrom(
   const productIdSet = new Set(entitlement.productIds);
 
   // 1. Check subscriptions first (richer signal — has expiry).
-  for (const sub of withoutReplaced(subs)) {
+  // Every record, as in 0.27. (/status drops replaced Google tokens; here that
+  // would hide a still-paid old plan behind a deferred replacement.)
+  for (const sub of subs) {
     if (!productIdSet.has(sub.productId)) continue;
     if (!isSubscriptionEntitled(sub, now)) continue;
     return {

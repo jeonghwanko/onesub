@@ -67,7 +67,8 @@
 // review's payment fixes: per-transaction serialization of purchase/validate
 // (a consumable was granted twice to concurrent duplicate requests), replaced
 // Google tokens no longer granting access, stale-RTDN retry during a Play
-// outage, and refund-time snapshots. Measured 45.05/45.40 KB at the bump.
+// outage, and refund-time snapshots. Measured 45.05/45.40 KB at the bump;
+// 45.15/45.50 KB after the fourth review's fixes.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',
