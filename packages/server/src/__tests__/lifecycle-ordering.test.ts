@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { generateKeyPairSync } from 'node:crypto';
 import express from 'express';
 import request from 'supertest';
 import type { OneSubServerConfig, SubscriptionInfo } from '@onesub/shared';
@@ -291,17 +292,49 @@ describe('Apple /validate ordering', () => {
     expect((await store.getByTransactionId('v3'))?.willRenew).toBe(false);
   });
 
-  it('an old receipt from another user cannot take over an active subscription, nor reveal it', async () => {
+  it("an old receipt from another user gets that receipt's own (expired) state, never the stored entitlement", async () => {
+    // 0.27 behaviour for a receipt posted under another userId is to apply it —
+    // hosts depend on that (a second device on the same Apple ID). What must
+    // never happen is the stored, active state being copied onto the requester.
     const { app, store } = buildApp();
     const t = Date.now();
-    await store.save(stored({ originalTransactionId: 'v4', userId: 'victim', expiresAt: new Date(t + 20 * DAY).toISOString(), stateAsOf: new Date(t - DAY).toISOString() }));
+    const victimExpiry = new Date(t + 20 * DAY).toISOString();
+    await store.save(stored({ originalTransactionId: 'v4', userId: 'victim', expiresAt: victimExpiry, stateAsOf: new Date(t - DAY).toISOString() }));
     const oldReceipt = appleTx('v4', t - 10 * DAY, t - 40 * DAY);
 
     const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: oldReceipt, userId: 'mallory', productId: 'pro_monthly' });
-    expect(res.status).toBe(409);
-    expect(res.body.subscription).toBeNull();
+    expect(res.status).toBe(200);
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.EXPIRED);
+    expect(res.body.subscription.expiresAt).not.toBe(victimExpiry);
     expect((await request(app).get(ROUTES.STATUS).query({ userId: 'mallory' })).body.active).toBe(false);
-    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'victim' })).body.active).toBe(true);
+  });
+
+  it('a second device posting an older, still-valid transaction of the same subscription is applied, as in 0.27', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    await store.save(stored({ originalTransactionId: 'v6', userId: 'device-a', expiresAt: new Date(t + 30 * DAY).toISOString() }));
+    const res = await request(app).post(ROUTES.VALIDATE).send({
+      platform: 'apple', receipt: appleTx('v6', t + 2 * DAY, t - DAY), userId: 'device-b', productId: 'pro_monthly',
+    });
+    expect(res.status).toBe(200);
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'device-b' })).body.active).toBe(true);
+  });
+
+  it('a refund the device later shows as reversed (no revocation, signed after) is applied', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    const expires = t + 20 * DAY;
+    await store.save(stored({ originalTransactionId: 'v7', status: SUBSCRIPTION_STATUS.CANCELED, expiresAt: new Date(expires).toISOString(), stateAsOf: new Date(t - DAY).toISOString() }));
+    const res = await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: appleTx('v7', expires, t), userId: 'u1', productId: 'pro_monthly' });
+    expect(res.body.subscription.status).toBe(SUBSCRIPTION_STATUS.ACTIVE);
+  });
+
+  it('re-posting the last transaction of an expired subscription stores it as expired, as in 0.27', async () => {
+    const { app, store } = buildApp();
+    const t = Date.now();
+    await store.save(stored({ originalTransactionId: 'v8', status: SUBSCRIPTION_STATUS.ACTIVE, expiresAt: new Date(t - DAY).toISOString() }));
+    await request(app).post(ROUTES.VALIDATE).send({ platform: 'apple', receipt: appleTx('v8', t - DAY, t), userId: 'u1', productId: 'pro_monthly' });
+    expect((await store.getByTransactionId('v8'))?.status).toBe(SUBSCRIPTION_STATUS.EXPIRED);
   });
 
   it('a current receipt still moves the subscription to a new account (reinstall)', async () => {
@@ -377,20 +410,41 @@ describe('Google refunds and outages', () => {
     expect((await store.getByTransactionId('gtok'))?.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
   });
 
-  it('fails the delivery (so Pub/Sub retries) when Play is down for a token we have never seen', async () => {
-    const cfg: OneSubServerConfig = {
-      google: { packageName: 'com.example.app', serviceAccountKey: FAKE_SERVICE_ACCOUNT_KEY, allowUnauthenticatedWebhook: true },
+  function realKeyConfig(): OneSubServerConfig {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const key = JSON.stringify({ client_email: 'sa@example.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+    return {
+      google: { packageName: 'com.example.app', serviceAccountKey: key, allowUnauthenticatedWebhook: true },
       database: { url: '' },
     };
+  }
+
+  function webhookApp(cfg: OneSubServerConfig) {
     const store = new InMemorySubscriptionStore();
     const app = express();
     app.use(express.json());
     app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
+    return { app, store };
+  }
+
+  it('fails the delivery (so Pub/Sub retries) when Play is down for a token we have never seen', async () => {
+    const { app, store } = webhookApp(realKeyConfig());
     const spy = vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
     try {
       const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(4, 'brand-new-token', Date.now()));
       expect(res.status).toBe(500);
       expect(await store.getByTransactionId('brand-new-token')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('acknowledges, as 0.27 did, when Play refuses our credentials — retrying for days cannot fix that', async () => {
+    const { app } = webhookApp(realKeyConfig());
+    const spy = vi.spyOn(global, 'fetch').mockResolvedValue({ ok: false, status: 403, text: async () => 'forbidden', json: async () => ({}) } as Response);
+    try {
+      const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(4, 'other-new-token', Date.now()));
+      expect(res.status).toBe(200);
     } finally {
       spy.mockRestore();
     }

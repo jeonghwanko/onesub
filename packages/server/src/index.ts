@@ -230,7 +230,7 @@ export {
   fetchAppleTransactionHistory,
   signApplePromotionalOffer,
 } from './providers/apple.js';
-export { validateGoogleReceipt } from './providers/google.js';
+export { validateGoogleReceipt, validateGoogleReceiptOrThrow } from './providers/google.js';
 // What onesub's routes see when a store API cannot answer (not a verdict on the receipt).
 // validateGoogleReceipt itself keeps returning null in that case, as before.
 export { ProviderUnavailableError } from './providers/errors.js';
@@ -280,7 +280,7 @@ if (isMain) {
   const dbUrl = process.env['DATABASE_URL'];
   const store = dbUrl ? new PostgresSubscriptionStore(dbUrl) : undefined;
   const purchaseStore = dbUrl ? new PostgresPurchaseStore(dbUrl) : undefined;
-  if (!dbUrl) log.warn('[onesub] DATABASE_URL is not set — state is kept in memory and lost on restart.');
+  if (!dbUrl) log.warn('[onesub] no DATABASE_URL — state is in memory only');
 
   // No top-level await: this file is also the CommonJS bundle.
   Promise.all([store?.initSchema(), purchaseStore?.initSchema()])

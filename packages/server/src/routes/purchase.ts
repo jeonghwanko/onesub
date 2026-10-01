@@ -90,7 +90,7 @@ export function createPurchaseRouter(
       appId,
       bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
     };
-    const appConfig = registry.resolve(appHint);
+    const appConfig = registry.configFor(appHint);
 
     try {
       // Non-consumable idempotent restore. If the user already owns this
@@ -143,7 +143,7 @@ export function createPurchaseRouter(
       // clients (the Unity package) read a 4xx as a verdict on the receipt, and
       // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
-        if (!appConfig?.apple) {
+        if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_PURCHASE);
           return;
         }
@@ -154,7 +154,7 @@ export function createPurchaseRouter(
           boundAccountId = result.appAccountToken ?? null;
         }
       } else {
-        if (!appConfig?.google) {
+        if (!appConfig.google) {
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_PURCHASE);
           return;
         }
@@ -305,7 +305,7 @@ export function createPurchaseRouter(
       // Both must run after savePurchase — if called before, a DB failure would
       // leave the receipt acknowledged/consumed but the entitlement ungranted
       // with no retry path.
-      if (platform === 'google' && appConfig?.google) {
+      if (platform === 'google' && appConfig.google) {
         if (type === PURCHASE_TYPE.CONSUMABLE) {
           void consumeGoogleProductReceipt(receipt, productId, appConfig.google);
         } else {

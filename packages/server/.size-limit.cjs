@@ -57,6 +57,11 @@
 // hosts (separate gracePeriodExpiresAt, 0.27 save fallback for a table without
 // the new columns, public validateGoogleReceipt keeping its null contract).
 // Limit unchanged; 0.34 KB of headroom on CJS.
+//
+// 2026-10-01: 44.50/44.96 KB after the second review (refund/grace rules for
+// Apple /validate, transient-vs-credential Play failures, column-fallback
+// recheck), with new log messages shortened to stay under. ~0.04 KB headroom:
+// the next server addition needs a decision here.
 module.exports = [
   {
     name: 'esm bundle (gzipped)',

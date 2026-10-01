@@ -2,7 +2,7 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ValidateReceiptResponse, OneSubServerConfig, SubscriptionInfo } from '@onesub/shared';
-import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS } from '@onesub/shared';
+import { ROUTES, ONESUB_ERROR_CODE, SUBSCRIPTION_STATUS, isSubscriptionEntitled } from '@onesub/shared';
 import type { SubscriptionStore } from '../store.js';
 import { validateAppleReceipt } from '../providers/apple.js';
 import { validateGoogleReceiptOrThrow, acknowledgeGoogleSubscription } from '../providers/google.js';
@@ -45,20 +45,20 @@ export function createValidateRouter(
         appId,
         bundleId: platform === 'apple' ? peekAppleBundleId(receipt) : undefined,
       };
-      const appConfig = registry.resolve(appHint);
+      const appConfig = registry.configFor(appHint);
 
       // An app this instance does not host gets no credentials — never another
       // app's — and so the "config missing" 500 below. Deliberately not a 4xx:
       // clients (the Unity package) read a 4xx as a verdict on the receipt, and
       // a server that does not know the app has not judged the receipt at all.
       if (platform === 'apple') {
-        if (!appConfig?.apple) {
+        if (!appConfig.apple) {
           sendError(res, 500, ONESUB_ERROR_CODE.APPLE_CONFIG_MISSING, 'Apple configuration not provided', NO_SUB);
           return;
         }
         sub = await validateAppleReceipt(receipt, appConfig.apple);
       } else {
-        if (!appConfig?.google) {
+        if (!appConfig.google) {
           sendError(res, 500, ONESUB_ERROR_CODE.GOOGLE_CONFIG_MISSING, 'Google configuration not provided', NO_SUB);
           return;
         }
@@ -102,29 +102,18 @@ export function createValidateRouter(
       delete sub.sandbox;
       sub.userId = userId;
 
+      const signedAt = sub.signedAt;
+      delete sub.signedAt;
       const existing = await store.getByTransactionId(sub.originalTransactionId);
-      if (existing && platform === 'apple') {
-        const decision = decideAppleReceipt(existing, sub, userId);
-        if (decision === 'outdated-transfer') {
-          // An outdated receipt from this subscription's history must not move
-          // the subscription to another account — nor reveal its current state.
-          log.warn('[onesub/validate] outdated receipt for a subscription bound to another user', {
-            originalTransactionId: sub.originalTransactionId,
-            userId,
-          });
-          sendError(res, 409, ONESUB_ERROR_CODE.TRANSACTION_BELONGS_TO_OTHER_USER, 'TRANSACTION_BELONGS_TO_OTHER_USER', NO_SUB);
-          return;
-        }
-        if (decision === 'keep') {
-          log.info('[onesub/validate] receipt carries nothing newer than the stored state — keeping it', {
-            originalTransactionId: sub.originalTransactionId,
-            userId,
-          });
-          sub.status = existing.status;
-          sub.willRenew = existing.willRenew;
-          sub.expiresAt = existing.expiresAt;
-          if (existing.gracePeriodExpiresAt) sub.gracePeriodExpiresAt = existing.gracePeriodExpiresAt;
-        }
+      if (existing && platform === 'apple' && keepsStoredAppleState(existing, sub, userId, signedAt)) {
+        log.info('[onesub/validate] older receipt — keeping stored status', {
+          originalTransactionId: sub.originalTransactionId,
+          userId,
+        });
+        sub.status = existing.status;
+        sub.willRenew = existing.willRenew;
+        sub.expiresAt = existing.expiresAt;
+        if (existing.gracePeriodExpiresAt) sub.gracePeriodExpiresAt = existing.gracePeriodExpiresAt;
       }
       // Never move the record's snapshot time backwards (lifecycle.ts); the
       // store also refuses a write older than what it holds.
@@ -148,7 +137,7 @@ export function createValidateRouter(
       // Google requires acknowledgement within 3 days of purchase or the
       // transaction is auto-refunded. Fire-and-forget — entitlement is already
       // saved, ack is idempotent on the Play side.
-      if (platform === 'google' && appConfig?.google) {
+      if (platform === 'google' && appConfig.google) {
         void acknowledgeGoogleSubscription(receipt, productId, appConfig.google);
       }
 
@@ -169,30 +158,37 @@ export function createValidateRouter(
 }
 
 /**
- * What to do with a validated Apple receipt for a subscription already stored.
+ * Whether an Apple receipt must leave the stored subscription's status alone.
  *
- * A signed transaction never expires and carries no renewal info, so it is a
- * partial, possibly old, view. It brings news only when it shows a later
- * expiry (a renewal or resubscribe) or a revocation (a refund). Anything else —
- * a re-sent copy, a receipt from before a refund, a transaction-only view of a
- * subscription now in its grace period — must not overwrite what the store's
- * notifications established. That rule needs no `stateAsOf`, so it also covers
- * records written before the field existed.
+ * By default a receipt is applied, exactly as in 0.27: hosts rely on that — a
+ * device re-posting its transaction moves the subscription to its account and
+ * refreshes a stale status. A signed transaction is only a partial view,
+ * though (it never expires and carries no renewal info), so two cases keep
+ * what the store's own notifications recorded, and only while the receipt
+ * shows no later expiry (a renewal or resubscribe is always applied):
  *
- * For another user, the stored state is never copied onto the requester: that
- * would hand an old receipt's holder someone else's active subscription. A
- * receipt older than the stored one is refused outright; a current one moves
- * the subscription as before (reinstall, account migration).
+ * - A refund. A transaction signed before the refund was recorded still
+ *   decodes as active; re-posting it must not undo the refund. One signed
+ *   after it without a revocation means the refund was reversed — apply it.
+ *   Records written before `stateAsOf` existed cannot tell, and keep the refund.
+ * - A billing grace period still running, for the same user. The transaction
+ *   alone reads as expired; Apple says to keep providing service. Never kept
+ *   for another user, so a stored entitlement is never handed to a new account.
  */
-function decideAppleReceipt(
+function keepsStoredAppleState(
   existing: SubscriptionInfo,
   incoming: SubscriptionInfo,
   userId: string,
-): 'apply' | 'keep' | 'outdated-transfer' {
-  const later = Date.parse(incoming.expiresAt) > Date.parse(existing.expiresAt);
-  const revoked = incoming.status === SUBSCRIPTION_STATUS.CANCELED && existing.status !== SUBSCRIPTION_STATUS.CANCELED;
-  if (existing.userId !== userId) {
-    return Date.parse(incoming.expiresAt) < Date.parse(existing.expiresAt) && !revoked ? 'outdated-transfer' : 'apply';
+  signedAt: string | undefined,
+): boolean {
+  if (Date.parse(incoming.expiresAt) > Date.parse(existing.expiresAt)) return false;
+  if (existing.status === SUBSCRIPTION_STATUS.CANCELED && incoming.status !== SUBSCRIPTION_STATUS.CANCELED) {
+    return !signedAt || !existing.stateAsOf || Date.parse(signedAt) <= Date.parse(existing.stateAsOf);
   }
-  return later || revoked ? 'apply' : 'keep';
+  return (
+    existing.userId === userId &&
+    existing.status === SUBSCRIPTION_STATUS.GRACE_PERIOD &&
+    isSubscriptionEntitled(existing) &&
+    !isSubscriptionEntitled(incoming)
+  );
 }

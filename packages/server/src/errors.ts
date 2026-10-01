@@ -139,10 +139,16 @@ export const oneSubErrorHandler: ErrorRequestHandler = (err, req, res, next) => 
   }
 };
 
-/** For `createOneSubServer`: a JSON 500 for any error nothing else answered. */
+/** For `createOneSubServer`: a JSON answer for any error nothing else answered. */
 export const oneSubFallbackErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (res.headersSent) {
     next(err);
+    return;
+  }
+  // A client error raised anywhere (body parser on another path, http-errors): keep its 4xx.
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === 'number' && status >= 400 && status < 500) {
+    sendError(res, status, ONESUB_ERROR_CODE.INVALID_INPUT, 'Bad request');
     return;
   }
   log.error('[onesub] Unhandled route error', { route: req.path, err });

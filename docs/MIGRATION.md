@@ -60,7 +60,8 @@ host that calls it directly sees no change. onesub's own routes use an internal 
 `ProviderUnavailableError`, which is exported for hosts that want the distinction.
 
 The Google webhook can now fail a delivery too: for a purchase token the server has never seen, a Play
-outage answers 5xx so Pub/Sub redelivers it. Before, the 200 dropped the new subscription.
+outage answers 5xx so Pub/Sub redelivers it. Before, the 200 dropped the new subscription. Our own
+credentials being refused (401/403) is acknowledged and logged as before, since retrying cannot fix it.
 
 **Fix:** if your client special-cases `RECEIPT_VALIDATION_FAILED`, treat `PROVIDER_UNAVAILABLE` as
 retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
@@ -79,20 +80,20 @@ retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
 - An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
   of crashing the handler.
 
-### Apple `/validate` only applies a receipt that brings news
+### Apple `/validate` no longer undoes a refund or ends a grace period early
 
-A signed Apple transaction never expires and carries no renewal information. Re-posting one used to
-overwrite whatever the store's notifications had established, for example re-activating a refunded
-subscription or ending a billing grace period early.
+A receipt is still applied as in 0.27, including moving the subscription to the requesting account.
+Two exceptions now keep the stored status, and only while the receipt shows no later expiry. A renewal
+or resubscribe is always applied.
 
-For a subscription already stored for the same user, a receipt now changes it only when it shows a later
-expiry (a renewal or resubscribe) or a revocation (a refund). Otherwise the stored state is kept and
-returned.
+- **A refund.** A transaction signed before the refund was recorded still decodes as active, and
+  re-posting it used to re-activate the refunded subscription. It no longer does. A transaction signed
+  *after* the refund without a revocation means the refund was reversed, and is applied. Records
+  written before 0.28 cannot tell the two apart, so they keep the refund.
+- **A billing grace period, for the same user.** The transaction alone reads as expired, while Apple
+  says to keep providing service through the grace period.
 
-| Receipt for a subscription bound to another user | Answer |
-|---|---|
-| older than the stored one | **409 `TRANSACTION_BELONGS_TO_OTHER_USER`**. It used to rebind the subscription to the requester |
-| current | moves the subscription as before (reinstall, account migration) |
+The stored entitlement is never copied onto another account.
 
 ### New columns `state_as_of` and `grace_period_expires_at`; out-of-order notifications are ignored
 

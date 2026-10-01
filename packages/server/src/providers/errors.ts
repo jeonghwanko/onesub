@@ -9,10 +9,17 @@
  */
 export class ProviderUnavailableError extends Error {
   readonly provider: 'apple' | 'google';
+  /**
+   * Whether trying again later can help: an outage, a 429, a network failure.
+   * False when our own credentials were refused — that needs an operator, and a
+   * webhook must not ask the store to redeliver it for days.
+   */
+  readonly transient: boolean;
 
-  constructor(provider: 'apple' | 'google', message: string, options?: { cause?: unknown }) {
+  constructor(provider: 'apple' | 'google', message: string, options?: { cause?: unknown; transient?: boolean }) {
     super(message, options);
     this.name = 'ProviderUnavailableError';
     this.provider = provider;
+    this.transient = options?.transient ?? true;
   }
 }

@@ -331,6 +331,7 @@ export async function validateAppleReceipt(
   // renewal-info notification signed after the period started (auto-renew off,
   // billing failure) from looking older than this receipt.
   const stateAsOf = snapshotTimeFromEpochMs(tx.purchaseDate);
+  const signedAt = snapshotTimeFromEpochMs(tx.signedDate);
 
   return {
     userId: '',  // caller fills this in from the request body
@@ -346,6 +347,7 @@ export async function validateAppleReceipt(
     // Transient, like boundAccountId: the validate route uses it to decide
     // whether a sandbox-only test override may apply, then strips it.
     ...(tx.environment === 'Sandbox' ? { sandbox: true } : {}),
+    ...(signedAt ? { signedAt } : {}),
   };
 }
 

@@ -4,7 +4,7 @@ This directory holds pending version/changelog entries for `@onesub/*` packages.
 
 ## Workflow
 
-When your PR changes a published package (`@onesub/shared`, `@onesub/server`, `@jeonghwanko/onesub-sdk`, `@onesub/mcp-server`):
+When your PR changes a published package (`@onesub/shared`, `@onesub/server`, `@jeonghwanko/onesub-sdk`, `@onesub/providers`, `@onesub/mcp-server`, `@onesub/cli`):
 
 ```bash
 npm run changeset

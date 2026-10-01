@@ -108,6 +108,12 @@ export interface SubscriptionInfo {
    * the record reaches a store. Never persisted.
    */
   sandbox?: boolean;
+  /**
+   * When Apple signed the transaction a receipt carries (ISO). Transient like
+   * `sandbox`: the validate route reads it — a revocation-free transaction
+   * signed after a stored refund means the refund was reversed — and strips it.
+   */
+  signedAt?: string;
 }
 
 /** Subscription status check response */

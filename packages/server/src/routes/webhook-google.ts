@@ -213,7 +213,7 @@ async function refetchGoogleSubscription(
     return await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, google);
   } catch (err) {
     if (!(err instanceof ProviderUnavailableError)) throw err;
-    log.warn('[onesub/webhook/google] Play API unavailable — applying notification without fresh state', {
+    log.warn('[onesub/webhook/google] Play unavailable — applying notification only', {
       purchaseToken,
       err,
     });
@@ -382,7 +382,7 @@ export async function processGoogleNotification(
     }
 
     if (!updated) {
-      log.info('[onesub/webhook/google] out-of-order notification ignored — newer state already applied', {
+      log.info('[onesub/webhook/google] stale notification ignored', {
         purchaseToken,
         notificationType,
       });
@@ -392,8 +392,20 @@ export async function processGoogleNotification(
   } else {
     if (subGoogleCfg?.serviceAccountKey) {
       // No record to fall back on: a Play outage here must fail the delivery so
-      // Pub/Sub retries it, or a new subscription is never recorded.
-      const fresh = await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, subGoogleCfg);
+      // Pub/Sub retries it, or a new subscription is never recorded. Refused
+      // credentials are not an outage — retrying for days cannot fix them — so
+      // that case is acknowledged and logged, as in 0.27.
+      let fresh: SubscriptionInfo | null;
+      try {
+        fresh = await validateGoogleReceiptOrThrow(purchaseToken, subscriptionId, subGoogleCfg);
+      } catch (err) {
+        if (!(err instanceof ProviderUnavailableError) || err.transient) throw err;
+        log.error('[onesub/webhook/google] Play refused our credentials — unknown token dropped', {
+          purchaseToken,
+          err,
+        });
+        fresh = null;
+      }
       if (fresh) {
         // Consume the account identity out of the record: it seeds the
         // placeholder userId, but must never be persisted (validate route

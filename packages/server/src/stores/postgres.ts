@@ -112,7 +112,8 @@ async function createPgPool(connectionString: string, label: string): Promise<im
  *   app.use(createOneSubMiddleware({ ...config, store }));
  */
 export class PostgresSubscriptionStore implements SubscriptionStore {
-  private warnedMissingColumns = false;
+  /** When a save last found the 0.28 columns missing; undefined once they exist. */
+  private columnsMissingSince: number | undefined;
 
   // Lazy-loaded to avoid requiring `pg` unless this class is actually instantiated.
   private poolPromise: Promise<import('pg').Pool> | null = null;
@@ -135,6 +136,7 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
     // DDL mirrored in packages/server/sql/schema.sql — kept in sync by
     // schema parity test. Edit both (or only the .sql file and regenerate).
     await pool.query(SUBSCRIPTIONS_SCHEMA_SQL);
+    this.columnsMissingSince = undefined; // the DDL adds them
   }
 
   /**
@@ -156,17 +158,24 @@ export class PostgresSubscriptionStore implements SubscriptionStore {
       sub.linkedPurchaseToken ?? null,
       sub.autoResumeTime ?? null,
     ];
+    // While the 0.28 columns are known to be missing, write as 0.27 did, and
+    // look again once a minute rather than failing a query on every save.
+    if (this.columnsMissingSince !== undefined && Date.now() - this.columnsMissingSince < 60_000) {
+      await pool.query(SAVE_SUBSCRIPTION_SQL_LEGACY, base);
+      return;
+    }
     try {
       await pool.query(SAVE_SUBSCRIPTION_SQL, [...base, sub.stateAsOf ?? null, sub.gracePeriodExpiresAt ?? null]);
+      this.columnsMissingSince = undefined;
     } catch (err) {
       // 42703 undefined_column: the 0.28 columns are not there yet — a host
       // that runs initSchema() without awaiting it, or applies sql/schema.sql by
       // hand and has not yet. Write as 0.27 did rather than failing every save.
       if ((err as { code?: unknown }).code !== '42703') throw err;
-      if (!this.warnedMissingColumns) {
-        this.warnedMissingColumns = true;
-        log.warn('[onesub/postgres] state_as_of / grace_period_expires_at columns missing — run initSchema() or sql/schema.sql; saving without ordering until then');
+      if (this.columnsMissingSince === undefined) {
+        log.error('[onesub/postgres] 0.28 columns missing — run initSchema(); saving as 0.27 until then');
       }
+      this.columnsMissingSince = Date.now();
       await pool.query(SAVE_SUBSCRIPTION_SQL_LEGACY, base);
     }
   }

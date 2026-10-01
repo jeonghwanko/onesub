@@ -18,8 +18,6 @@ export interface AppRegistry {
    * `config.google` without knowing about multi-app.
    */
   configFor(hint: AppHint): OneSubServerConfig;
-  /** Like `configFor`, but `undefined` when the hint names no app this instance serves. */
-  resolve(hint: AppHint): OneSubServerConfig | undefined;
 }
 
 export interface AppHint {
@@ -99,20 +97,18 @@ export function buildAppRegistry(config: OneSubServerConfig): AppRegistry {
     return defaultApp;
   }
 
-  function resolve(hint: AppHint): OneSubServerConfig | undefined {
-    const app = match(hint);
-    return app ? { ...config, apple: app.apple, google: app.google } : undefined;
-  }
-
   return {
     apps,
     defaultApp,
     configFor(hint: AppHint): OneSubServerConfig {
-      // No match: hand back a config with no providers, so the caller reports
-      // "config missing" rather than validating against the wrong app.
-      return resolve(hint) ?? { ...config, apple: undefined, google: undefined };
+      const app = match(hint);
+      if (!app) {
+        // Hand back a config with no providers: the route then reports the usual
+        // "config missing" error rather than validating against the wrong app.
+        return { ...config, apple: undefined, google: undefined };
+      }
+      return { ...config, apple: app.apple, google: app.google };
     },
-    resolve,
   };
 }
 

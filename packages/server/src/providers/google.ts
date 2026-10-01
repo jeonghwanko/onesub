@@ -33,6 +33,22 @@ function isGoogleReceiptRejection(err: unknown): boolean {
 }
 
 /**
+ * Play could not answer. Transient for an outage — 5xx, 429, a network failure
+ * or timeout. Not for our own credentials being refused (401/403, a failed token
+ * exchange) or a key that cannot sign: those need an operator, not a retry.
+ */
+function googleUnavailable(err: unknown): ProviderUnavailableError {
+  const e = err as { name?: unknown; code?: unknown } | null;
+  const transient = err instanceof GooglePlayHttpError
+    ? err.status >= 500 || err.status === 429
+    : err instanceof TypeError ||
+      e?.name === 'AbortError' ||
+      e?.name === 'TimeoutError' ||
+      (typeof e?.code === 'string' && /^E[A-Z]+$/.test(e.code) && !e.code.startsWith('ERR_'));
+  return new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err, transient });
+}
+
+/**
  * Google Play Developer API v3 — SubscriptionPurchaseV2 resource (partial).
  * https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.subscriptionsv2/get
  *
@@ -288,7 +304,7 @@ async function getAccessToken(serviceAccountKey: string): Promise<string> {
   });
 
   if (!resp.ok) {
-    throw new Error(`[onesub/google] Token request failed: ${resp.status}`);
+    throw new GooglePlayHttpError(resp.status, `[onesub/google] Token request failed: ${resp.status}`);
   }
 
   const data = (await resp.json()) as { access_token?: string };
@@ -586,7 +602,7 @@ export async function validateGoogleReceiptOrThrow(
       err,
     });
     if (isGoogleReceiptRejection(err)) return null;
-    throw new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err });
+    throw googleUnavailable(err);
   }
 
   const status = deriveStatusV2(purchase.subscriptionState);
@@ -713,7 +729,7 @@ export async function validateGoogleProductReceipt(
       err,
     });
     if (isGoogleReceiptRejection(err)) return null;
-    throw new ProviderUnavailableError('google', 'Google Play API unavailable', { cause: err });
+    throw googleUnavailable(err);
   }
 
   // purchaseState 0 = completed (1 = canceled, 2 = pending)

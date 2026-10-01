@@ -155,7 +155,7 @@ export async function processAppleNotification(
   const existing = await store.getByTransactionId(originalTransactionId);
   if (existing && isStaleSnapshot(existing, work.stateAsOf)) {
     // A retry or a late delivery: the record already reflects newer state.
-    log.info('[onesub/webhook/apple] out-of-order notification ignored — newer state already applied', {
+    log.info('[onesub/webhook/apple] stale notification ignored', {
       originalTransactionId,
       notificationType,
     });

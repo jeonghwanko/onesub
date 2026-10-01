@@ -86,8 +86,9 @@ export function isSubscriptionEntitled(
   nowMs: number = Date.now(),
 ): boolean {
   if (!ENTITLED_SUBSCRIPTION_STATUSES.includes(sub.status)) return false;
-  const until = Math.max(Date.parse(sub.expiresAt), sub.gracePeriodExpiresAt ? Date.parse(sub.gracePeriodExpiresAt) : 0);
-  return until > nowMs;
+  // An unparsable grace end must not void a valid expiry (Math.max with NaN is NaN).
+  const graceUntil = sub.gracePeriodExpiresAt ? Date.parse(sub.gracePeriodExpiresAt) : Number.NaN;
+  return Date.parse(sub.expiresAt) > nowMs || graceUntil > nowMs;
 }
 
 /**

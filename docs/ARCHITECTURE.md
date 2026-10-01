@@ -342,13 +342,14 @@ The rule lives in `packages/server/src/lifecycle.ts`. Edge cases:
   Two deliveries processed at once therefore cannot both pass the routes' check and land in the wrong
   order. Records written before `stateAsOf` existed are unguarded until their next write.
 - Snapshot times more than 10 minutes in the future are ignored. Storing one would freeze the record.
-- An Apple receipt sent to `/validate` is a partial view: a transaction with no renewal info. It changes a
-  stored subscription only when it brings news, meaning a later expiry (renewal, resubscribe) or a
-  revocation (refund). Otherwise the stored state stands. This covers a re-sent copy, a receipt signed
-  before a refund, and a transaction-only view of a subscription now in grace.
-- An Apple receipt for a subscription bound to another user is never merged with the stored state. If it
-  is older than the stored one, it is refused with 409, so a holder of an old receipt can neither take
-  over the subscription nor read it. A current receipt moves the subscription as before.
+- An Apple receipt sent to `/validate` is a partial view: a transaction with no renewal info. It is
+  applied as before (hosts rely on that, for example a second device on the same Apple ID). Two cases
+  keep the stored status, and only while the receipt shows no later expiry:
+  - a refund, when the transaction was signed no later than the refund was recorded (`stateAsOf`). A
+    later-signed transaction with no revocation means the refund was reversed, and is applied.
+  - a running billing grace period of the same user.
+
+  The stored entitlement is never copied onto another account.
 
 ### Apple billing grace period
 
