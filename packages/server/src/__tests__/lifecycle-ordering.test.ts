@@ -543,7 +543,7 @@ describe('third review: money-path regressions', () => {
     app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
     const spy = vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
     try {
-      const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(12, 'skew', Date.now())); // REVOKED
+      const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(3, 'skew', Date.now())); // CANCELED (a revocation would apply regardless)
       expect(res.status).toBe(500);
     } finally {
       spy.mockRestore();
@@ -642,6 +642,48 @@ describe('fourth review: guards and fixes', () => {
     ];
     const result = evaluateEntitlementFrom(subs, [], { productIds: ['pro_monthly'] }, now);
     expect(result.active).toBe(true);
+  });
+});
+
+describe('fifth review', () => {
+  it("a refund under refundPolicy 'until_expiry' ends the grace period: access only to the paid period's end", async () => {
+    const cfg: OneSubServerConfig = { ...config, refundPolicy: 'until_expiry' };
+    const store = new InMemorySubscriptionStore();
+    const app = express();
+    app.use(express.json());
+    app.use(createStatusRouter(store));
+    app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
+    const t = Date.now();
+    await store.save(stored({ originalTransactionId: 'ue', status: SUBSCRIPTION_STATUS.GRACE_PERIOD, expiresAt: new Date(t - DAY).toISOString(), gracePeriodExpiresAt: new Date(t + 15 * DAY).toISOString(), stateAsOf: new Date(t - 2 * DAY).toISOString() }));
+    await request(app).post(ROUTES.WEBHOOK_APPLE).send(appleNotification({ type: 'REFUND', orig: 'ue', expiresDate: t - DAY, signedDate: t }));
+    expect((await store.getByTransactionId('ue'))?.gracePeriodExpiresAt).toBeUndefined();
+    expect((await request(app).get(ROUTES.STATUS).query({ userId: 'u1' })).body.active).toBe(false);
+  });
+
+  it('a stale Google REVOKED with credentials during a Play outage is applied (200, canceled), not retried', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const key = JSON.stringify({ client_email: 'sa@example.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }) });
+    const cfg: OneSubServerConfig = { google: { packageName: 'com.example.app', serviceAccountKey: key, allowUnauthenticatedWebhook: true }, database: { url: '' } };
+    const store = new InMemorySubscriptionStore();
+    await store.save(stored({ originalTransactionId: 'rvo', platform: 'google', stateAsOf: new Date().toISOString() }));
+    const app = express();
+    app.use(express.json());
+    app.use(createWebhookRouter(cfg, store, new InMemoryPurchaseStore()));
+    const spy = vi.spyOn(global, 'fetch').mockRejectedValue(new TypeError('fetch failed'));
+    try {
+      const res = await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(12, 'rvo', Date.now() - 60 * 60_000));
+      expect(res.status).toBe(200);
+      expect((await store.getByTransactionId('rvo'))?.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a Google REVOKED notification is applied even when older than the stored state and Play cannot be read', async () => {
+    const { app, store } = buildApp(); // no service account: no re-fetch possible
+    await store.save(stored({ originalTransactionId: 'rv', platform: 'google', stateAsOf: new Date(Date.now()).toISOString() }));
+    await request(app).post(ROUTES.WEBHOOK_GOOGLE).send(googlePush(12, 'rv', Date.now() - 60 * 60_000)); // REVOKED, an hour older
+    expect((await store.getByTransactionId('rv'))?.status).toBe(SUBSCRIPTION_STATUS.CANCELED);
   });
 });
 

@@ -85,7 +85,8 @@ retryable. See [RECEIPT-ERRORS.md](RECEIPT-ERRORS.md#provider_unavailable-503).
 - An Apple summary notification (`RENEWAL_EXTENSION` / `SUMMARY`) is acknowledged with 200 instead
   of crashing the handler.
 - An error that escapes a webhook handler now reaches your app's error handler. Under Express 4 it
-  used to be left unhandled, so the request hung.
+  used to be an unhandled promise rejection: the request hung, or, on Node 15+ without an
+  `unhandledRejection` handler, the process exited.
 
 ### Apple `/validate` no longer undoes a refund or ends a grace period early
 
@@ -107,7 +108,7 @@ The stored entitlement is never copied onto another account.
 
 `SubscriptionInfo` gains `stateAsOf`, the time of the newest store-state snapshot applied to the record.
 A notification older than that no longer changes status, expiry or renewal, so a late
-EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. See
+EXPIRED or ON_HOLD cannot roll back a renewal or a recovery. Refunds are final, so they apply whatever their time: Apple REFUND/REVOKE of a one-time purchase, Google voided purchases, and Google `SUBSCRIPTION_REVOKED`. See
 [ARCHITECTURE.md](ARCHITECTURE.md#ordering-newest-snapshot-wins).
 
 **Postgres:** `initSchema()` adds the column. If your DBAs apply `sql/schema.sql` by hand instead, run:
@@ -131,6 +132,8 @@ ordering is not enforced for its records.
   `grace_period` record reported `active: false` because its paid period had already ended.
   `expiresAt` is unchanged: it still means "paid through". Hosts that compute billing cycles from it
   are unaffected.
+  A refund ends a grace period even under `refundPolicy: 'until_expiry'`, where access then runs to the
+  end of the paid period only.
 - **Several subscriptions:** `GET /onesub/status` evaluates all of a user's subscriptions and reports the
   most recent one that grants access. Before, it read only the most recently written record, so a webhook
   for an old expired subscription could hide an active one.

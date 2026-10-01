@@ -190,10 +190,10 @@ export async function processAppleNotification(
           expiresAt: expiresAt ?? existing.expiresAt,
           ...(stateAsOf ? { stateAsOf } : {}),
         };
-    if (!keepEntitlement) {
-      if (graceUntil) updated.gracePeriodExpiresAt = graceUntil;
-      else delete updated.gracePeriodExpiresAt;
-    }
+    // A refund ends any grace period, even when `until_expiry` keeps access to
+    // the paid period's end.
+    if (graceUntil && !keepEntitlement) updated.gracePeriodExpiresAt = graceUntil;
+    else delete updated.gracePeriodExpiresAt;
     await store.save(updated);
   } else if (appleConfigForApp?.issuerId && appleConfigForApp?.keyId && appleConfigForApp?.privateKey) {
     const fresh = await fetchAppleSubscriptionStatus(originalTransactionId, appleConfigForApp, {

@@ -943,6 +943,11 @@ export function isGoogleCanceledNotification(notificationType: GoogleNotificatio
   );
 }
 
+/** A refund or chargeback revoked the subscription — final, whatever its time. */
+export function isGoogleRevokedNotification(notificationType: GoogleNotificationType): boolean {
+  return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_REVOKED;
+}
+
 export function isGoogleExpiredNotification(notificationType: GoogleNotificationType): boolean {
   return notificationType === GOOGLE_NOTIFICATION_TYPE.SUBSCRIPTION_EXPIRED;
 }

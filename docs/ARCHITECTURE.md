@@ -342,6 +342,9 @@ The rule lives in `packages/server/src/lifecycle.ts`. Edge cases:
   Two deliveries processed at once therefore cannot both pass the routes' check and land in the wrong
   order. Records written before `stateAsOf` existed are unguarded until their next write.
 - Snapshot times more than 10 minutes in the future are ignored. Storing one would freeze the record.
+- Refunds bypass the check, because they are final: Apple REFUND/REVOKE of a one-time purchase, Google
+  voided purchases, and Google `SUBSCRIPTION_REVOKED`. (A Google voided purchase honours
+  `refundPolicy: 'until_expiry'`; `SUBSCRIPTION_REVOKED` cancels outright, as in 0.27.)
 - An Apple receipt sent to `/validate` is a partial view: a transaction with no renewal info. It is
   applied as before (hosts rely on that, for example a second device on the same Apple ID). Two cases
   keep the stored status, and only while the receipt shows no later expiry:
@@ -391,7 +394,7 @@ isRefund?
   │
   └── Subscription
       ├── refundPolicy === 'until_expiry'
-      │   → store.save({ ...existing, willRenew: false })  // status + expiresAt preserved
+      │   → store.save({ ...existing, willRenew: false })  // status + expiresAt preserved, grace dropped
       │
       └── refundPolicy === 'immediate' (default)
           → store.save({ ...existing, status: 'canceled', willRenew, expiresAt: fresh })

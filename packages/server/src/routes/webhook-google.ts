@@ -13,6 +13,7 @@ import {
   isGoogleActiveNotification,
   isGoogleCanceledNotification,
   isGoogleExpiredNotification,
+  isGoogleRevokedNotification,
   isGoogleGracePeriodNotification,
   isGoogleOnHoldNotification,
   isGooglePausedNotification,
@@ -325,7 +326,9 @@ export async function processGoogleNotification(
   // An RTDN older than state already applied must not set the status it
   // implies. A live re-fetch below is still applied — it is current by
   // construction — but the stale notification's own status is not.
-  const stale = isStaleSnapshot(existing, eventAt);
+  // A revocation (refund) is final, like a voided purchase: it applies whatever
+  // its time, so it is never dropped as stale when Play cannot be read.
+  const stale = !isGoogleRevokedNotification(notificationType) && isStaleSnapshot(existing, eventAt);
 
   let finalStatus: SubscriptionInfo['status'];
   if (isGoogleActiveNotification(notificationType)) {
