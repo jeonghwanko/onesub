@@ -1,5 +1,11 @@
 # @onesub/mcp-server
 
+## 0.5.1
+
+### Patch Changes
+
+- 61a72c1: Require zod ^4.6.5.
+
 ## 0.5.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @onesub/server
 
+## 0.28.1
+
+### Patch Changes
+
+- 61a72c1: Require zod ^4.6.5.
+
 ## 0.28.0
 
 ### Minor Changes
