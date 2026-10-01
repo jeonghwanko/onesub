@@ -579,7 +579,7 @@ describe('fourth review: guards and fixes', () => {
   function mockPlay(subscription: unknown, tokenStatus = 200) {
     return vi.spyOn(global, 'fetch').mockImplementation(async (url) => {
       const u = String(url);
-      if (u.includes('oauth2.googleapis.com')) {
+      if (new URL(u).hostname === 'oauth2.googleapis.com') {
         return { ok: tokenStatus === 200, status: tokenStatus, json: async () => ({ access_token: 'tok', expires_in: 3600 }), text: async () => '{"error":"invalid_grant"}' } as Response;
       }
       return { ok: true, status: 200, json: async () => subscription, text: async () => JSON.stringify(subscription) } as Response;
