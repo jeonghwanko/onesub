@@ -82,7 +82,7 @@
     }
   },
   "devDependencies": {
-    "@size-limit/file": "^12.1.0",
+    "@size-limit/file": "^14.1.0",
     "@types/express": "^5.0.6",
     "@types/ioredis-mock": "^8.2.8",
     "@types/node": "^20.19.43",
