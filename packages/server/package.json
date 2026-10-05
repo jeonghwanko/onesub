@@ -91,7 +91,7 @@
     "express": "^5.2.1",
     "ioredis": "^5.0.0",
     "ioredis-mock": "^8.9.0",
-    "pg": "^8.23.0",
+    "pg": "^8.23.1",
     "size-limit": "^14.1.0",
     "tsup": "^8.3.5",
     "typescript": "^5.7.0"
